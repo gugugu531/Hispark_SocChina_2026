@@ -53,7 +53,7 @@ scripts/build_board.sh            # 默认 Release，产物在 build/socchina_ap
 SDK-free 的纯逻辑模块可在本机直接跑（无需板子/工具链）：
 
 ```sh
-scripts/test_host.sh              # 原生编译 + ctest
+scripts/test_host.sh              # 本机 cc 编译并运行 SDK-free 单元测试
 ```
 
 板端代码组织与测试规范见 [board/README.md](board/README.md) 与 [docs/development-guide.md](docs/development-guide.md) §10。

@@ -82,7 +82,7 @@
 
 ## 5. 模块与代码映射
 
-板端代码按数据通路阶段组织（采集→ISP→缩放→预处理→推理→后处理→合成→显示/串流，加场景控制与公共设施）。起步可放在 `board/` 下少量源文件，模块增多后再按阶段拆分子目录，不预先过度拆分。
+板端代码平铺在 `board/src/`，**每个数据通路阶段一个 `.c`**（`capture/isp/vpss/preproc/infer/postproc/compose/display/stream`，加 `control` 场景控制），头文件在 `board/include/`（公共 `log.h/version.h`，跨模块共享的帧结构/枚举放 `pipeline.h`）。`main.c` 是主程序入口。加文件即扩展，不嵌套子目录（详见 `development-guide.md` §1）。
 
 ## 6. 与数据通路绑定的待验证点
 

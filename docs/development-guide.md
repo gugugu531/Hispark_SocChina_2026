@@ -37,7 +37,7 @@ board/ ── CMakeLists.txt · cmake/ · include/ · src/ · tests/
 
 ## 3. 开发环境与依赖
 
-> 原则：**不绑定特定 conda 环境名**。下面明确列出所用软件包，便于他人自行用任意虚拟环境复现。建议在 `models/requirements.txt` 中锁定确切版本。
+> 原则：**不绑定特定 conda 环境名**。下面明确列出所用软件包，便于他人自行用任意虚拟环境复现。确切版本已锁定在 `models/requirements-model.txt`（训练/导出）与 `models/requirements-atc.txt`（ATC 转换）。
 
 > 依赖版本**以 SDK 官方文档为依据**固化，不依赖某台机器已有的 conda 环境。需两套独立虚拟环境（protobuf/numpy 等版本要求不同）。
 
