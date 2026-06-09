@@ -59,15 +59,25 @@
 
 ## 4. 构建系统（CMake）
 
-板端统一用 **CMake** 构建。
+板端统一用 **CMake** 构建，统一入口 `scripts/build_board.sh`。
+
+统一构建命令：
+
+```sh
+export CROSS_COMPILE_ROOT=/path/to/aarch64-mix210-linux   # 交叉工具链根目录
+export ISL_LIB_DIR=/path/to/libisl                        # 工具链前端缺 libisl.so.19 时设置
+# export SS928_SDK_ROOT=/path/to/ss928_sdk                # 接入硬件模块后再设
+scripts/build_board.sh [Debug|Release]                    # 默认 Release
+```
 
 约定：
 
-- 顶层 `board/CMakeLists.txt`；模块增多后再拆分为库目标，由主程序链接成可执行文件。
-- 交叉编译通过 toolchain file 指定 `aarch64-mix210-linux` 编译器；SDK 头/库路径由变量（如 `SS928_SDK_ROOT`）传入，不写死绝对路径。
-- 构建入口：`scripts/build_board.sh`（封装 `cmake -DCMAKE_TOOLCHAIN_FILE=... && cmake --build`，并 source `scripts/env.sh`）。
-- 构建输出统一进 `build/`（被 git 忽略）。
-- C++ 标准与告警等级在顶层 CMake 统一设定；鼓励 `-Wall -Wextra`。
+- 顶层 `board/CMakeLists.txt`；toolchain file 为 `board/cmake/toolchain-aarch64-mix210-linux.cmake`（指定 `aarch64-mix210-linux` 编译器）。
+- 编译器/SDK 路径全部经环境变量与 CMake 变量传入（`CROSS_COMPILE_ROOT` / `SS928_SDK_ROOT`），**不写死绝对路径**。
+- **未设 `SS928_SDK_ROOT` 时仍可构建最小程序**（`ENABLE_SDK=OFF`），便于新成员先验证工具链；设置后自动开启 SDK 链接。
+- 构建入口封装 `source scripts/env.sh` + `cmake` 配置/编译；输出统一进 `build/`（被 git 忽略）。
+- 模块增多后在 CMake 中拆分为库目标，由主程序链接。
+- C++ 标准（C11 / C++17）与告警等级（`-Wall -Wextra`）在顶层 CMake 统一设定。
 
 ## 5. 编码规范（C/C++）
 

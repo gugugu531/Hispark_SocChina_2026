@@ -1,0 +1,7 @@
+#ifndef SOCCHINA_VERSION_H
+#define SOCCHINA_VERSION_H
+
+#define SOCCHINA_APP_NAME "socchina2026"
+#define SOCCHINA_APP_VERSION "0.0.1"
+
+#endif /* SOCCHINA_VERSION_H */

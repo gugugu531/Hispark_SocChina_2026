@@ -33,12 +33,26 @@ OS08A20 ─► VI ─► ISP(WDR/降噪/LTM/去雾) ─► VPSS(多路缩放)
 
 ## 快速开始
 
-1. 环境准备：见 [docs/development-guide.md](docs/development-guide.md) §3（明确列出所需软件包，不绑定特定 conda 环境）。
-2. 模型转换：`models/`（PyTorch → ONNX → FP16 OM）。
-3. 板端构建：`scripts/build_board.sh`（CMake + 交叉工具链）。
-4. 部署运行：`scripts/deploy_board.sh` → `scripts/run_board.sh`。
+### 板端构建（统一入口）
 
-详细步骤待各模块实现后补充。
+无需 SDK 即可先验证工具链与构建闭环（产出 aarch64 可执行文件）：
+
+```sh
+# 各人按自己机器设置（不写死个人路径）：
+export CROSS_COMPILE_ROOT=/path/to/aarch64-mix210-linux   # 交叉工具链根目录
+export ISL_LIB_DIR=/path/to/libisl                        # 若提示缺 libisl.so.19 时设置
+# 接入硬件后再设置：export SS928_SDK_ROOT=/path/to/ss928_sdk
+
+scripts/build_board.sh            # 默认 Release，产物在 build/socchina_app
+```
+
+设置 `SS928_SDK_ROOT` 后自动开启 SDK 链接（`ENABLE_SDK=ON`）。环境变量说明见 `scripts/env.sh`。
+
+### 其它
+
+- 环境与依赖详解：[docs/development-guide.md](docs/development-guide.md) §3–§4。
+- 模型训练/导出/转换：[models/README.md](models/README.md)（两套独立环境，依据 SDK 文档固化）。
+- 部署/运行脚本（`deploy_board.sh` / `run_board.sh`）：待实现。
 
 ## 文档导航
 
