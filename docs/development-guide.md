@@ -42,29 +42,23 @@ capture → isp → vpss → preprocess → infer → postprocess → compose �
 
 > 原则：**不绑定特定 conda 环境名**。下面明确列出所用软件包，便于他人自行用任意虚拟环境复现。建议在 `models/requirements.txt` 中锁定确切版本。
 
+> 依赖版本**以 SDK 官方文档为依据**固化，不依赖某台机器已有的 conda 环境。需两套独立虚拟环境（protobuf/numpy 等版本要求不同）。
+
 ### 3.1 主机侧 · 模型训练与导出（Python）
 
-核心包（建议 Python 3.9–3.10）：
-
-| 包 | 用途 | 版本备注 |
-| --- | --- | --- |
-| `torch`, `torchvision` | 训练曝光校正/曲线网络 | CPU 或 CUDA 版按机器选 |
-| `numpy` | 数值 | |
-| `opencv-python` | 图像读写/预处理/可视化 | |
-| `pillow` | 图像 IO | |
-| `onnx` | ONNX 模型 | |
-| `onnxsim`（onnx-simplifier） | 图简化 | |
-| `onnxruntime` | 导出后精度校验 | |
-| `tf2onnx` + `tensorflow` | 仅当复用 TF/Keras 权重（如 Zero-DCE Lite）时需要 | `--opset 13` |
-
-导出约定：见 §6（FP16、静态 shape、AIPP 需 NCHW、避免 Resize）。
+- 环境：`conda create -n soc-model python=3.10`（文档要求 `python>=3.8`）。
+- 依赖清单：`models/requirements-model.txt`（已固化版本）。
+- 依据：《Yolov8 模型转换与部署》§2.1（`Reference/09. 进阶功能开发/04.Yolov8移植/01.Yolov8模型转换与部署.pdf`）的 `requirements_yolov8.txt`——`torch==2.1.0`、`torchvision==0.16.0`、`numpy==1.26.4`、`opencv-python==4.8.1.78`、`onnx>=1.12.0`、`onnxsim>=0.4.1`。
+- 复用 TF/Keras 权重（如 Zero-DCE Lite）转 ONNX 时另需 `tensorflow`+`tf2onnx`（`--opset 13`；官方转换文档未覆盖，使用时自行锁定版本）。
+- 导出约定见 §6。
 
 ### 3.2 主机侧 · 模型转换（ATC / CANN）
 
-- 工具：海思 SVP_NNN / NNN ATC（来自 SDK `01.software/pc/NNN` 与 `SVP_NNN`）。
-- CANN 版本：`Ascend-cann-toolkit_5.20.t6.2.b060`（与板端运行库匹配）。
+- 环境：`conda create -n soc-atc python=3.9.2`；依赖清单：`models/requirements-atc.txt`（已固化版本）。
+- 依据：《Yolov8 模型转换与部署》§2.2 + 《NNN/SVP_NNN 驱动和开发环境安装指南》（`ReleaseDoc/zh/01.software/pc/{NNN,SVP_NNN}/`）。文档固化依赖：`protobuf==3.13.0`、`psutil==5.7.0`、`decorator==4.4.0`、`sympy==1.5.1`、`cffi==1.12.3` + numpy/scipy/pyyaml/pathlib2。
+- CANN 工具包（单独安装，非 pip）：`Ascend-cann-toolkit_5.20.t6.2.b060_linux-x86_64.run`（来自 SDK `SVP_PC/NNN_PC/`）。
 - `soc_version` 取 `OPTG`。
-- 转换在独立 Python 3.9 环境运行；避免与 base 环境的高版本 Python/`PYTHONPATH` 混用（高版本会导致 TBE 模块不兼容）。
+- 避免与 base 环境的高版本 Python/`PYTHONPATH` 混用（高版本会导致 TBE 模块不兼容）。
 
 ### 3.3 板端交叉工具链（C/C++）
 
@@ -92,7 +86,8 @@ SDK、交叉工具链、CANN、模型权重、采集数据均为外部大件，*
 ## 5. 编码规范（C/C++）
 
 - 风格：仓库根 `.clang-format`（Google 基础，4 空格，列宽 110）。提交前对改动文件执行 `clang-format`。
-- **返回值必检**：所有 `ss_mpi_*` / `HI_MPI_*` / `acl*` 调用必须检查返回码，失败打印错误码（`%#x`）与上下文后走统一清理路径，禁止忽略。
+- **返回值必检**：所有 `ss_mpi_*` / `acl*` 调用必须检查返回码，失败打印错误码（`%#x`）与上下文后走统一清理路径，禁止忽略。
+- **命名前缀**（核对自 SDK 头文件 `include/hisilicon/`）：本平台 MPI 函数为 **`ss_mpi_*`**（snake_case），类型/枚举为 **`ot_*`**（如 `ot_isp_dehaze_attr`、`OT_WDR_MODE_3To1_LINE`）。**不要**使用 Hi3516 系的 `HI_MPI_*` 命名。
 - **资源去初始化顺序**：媒体/ACL 资源严格按"创建逆序"释放（VENC/VO/VPSS/VI/ISP/SYS、ACL device/context/stream）。每个 init 必须有配对 deinit。
 - 重启鲁棒性：启动前清理可能残留的状态（如 `ss_mpi_isp_exit` 清 ISP0 旧状态），避免 `already inited` 类错误。
 - 日志与计时：用统一日志宏（分级）与计时宏，禁止散落裸 `printf`；性能关键路径打印每级耗时（capture/preprocess/infer/post/display）。

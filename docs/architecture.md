@@ -11,8 +11,8 @@
 
 ```
 ┌─ 采集 + ISP（全程硬件，0 NPU）──────────────────────────────────────┐
-│ OS08A20 ─MIPI CSI─► [VI] ─RAW12(3F WDR/DOL)─► [ISP]                  │
-│   ISP内: 3F-WDR融合 → 3A → BLC/坏点/LSC → demosaic                   │
+│ OS08A20 ─MIPI CSI─► [VI] ─RAW12(WDR/DOL*)─► [ISP]   (*见§7 WDR限制)  │
+│   ISP内: WDR融合 → 3A → BLC/坏点/LSC → demosaic                      │
 │          → 3DNR+HNR(时域+空域降噪)  ← 替代NN多帧融合                  │
 │          → dehaze / LTM / 动态对比度 / 3D-LUT  ← 压高光+提暗部底座    │
 │          → CSC(RGB→YUV)                                              │
@@ -52,9 +52,9 @@
           [VO]→[HDMI 1024x600 DVI] 本地显示      [VENC H.264]→ RTSP 远程
                                                    ↑(零拷贝VB)
         ┌───────────────────────[场景自适应大脑: CPU 轻量]──────────────┐
-        │ 读 ISP AE统计/chn2直方图 → mean_luma, clip_high%, clip_low%   │
+        │ 读 ss_mpi_isp_get_ae_stats / chn2直方图 → mean_luma,clip%   │
         │ → 决策模式{旁路|提暗|压高光|双向} + 迟滞防抖                   │
-        │ → 写回: HI_MPI_ISP_Set{WDR,Dehaze,DRC}Attr 强度 + OM曝光目标  │
+        │ → 写回 ss_mpi_isp_set_{dehaze,drc,clut}_attr + OM 曝光目标    │
         └───────────────────────────────────────────────────────────────┘
 ```
 
@@ -62,8 +62,8 @@
 
 | # | 阶段 | 硬件块 | 输入 | 输出 | 操作 | NPU |
 |---|---|---|---|---|---|---|
-| 1 | 采集 | VI+MIPI | OS08A20 RAW12 3F-WDR | RAW(DOL) | 多曝光交错读出 | 0 |
-| 2 | 宽动态融合 | ISP | 3帧RAW | 1帧宽DR RAW | 3F-WDR融合（源头保高光）| 0 |
+| 1 | 采集 | VI+MIPI | OS08A20 RAW12 WDR/DOL | RAW(DOL) | 多曝光交错读出（OS08A20 WDR 有限制，见§7）| 0 |
+| 2 | 宽动态融合 | ISP | 多帧RAW | 1帧宽DR RAW | WDR融合（源头保高光，受 §7 限制）| 0 |
 | 3 | 降噪 | ISP 3DNR+HNR | RAW/YUV | 去噪YUV | 时域+空域硬件降噪（替代NN融合）| 0 |
 | 4 | 色调底座 | ISP dehaze/LTM/DRC/3D-LUT | YUV | YVU420SP | 压高光+提暗部+去雾 | 0 |
 | 5 | 分发缩放 | VPSS | NV21 全幅 | chn0/chn1/chn2 | 硬件多路缩放 | 0 |
@@ -89,7 +89,31 @@
 1. OM 结构验证：`/4 AvgPool→backbone→ConvTranspose→全分辨率施加` 全落 AICore，实测总耗时（决定 Config-R 是否成立）。
 2. AIPP 在 1024x576 全分辨率的 CSC/归一开销。
 3. 后处理放 Q6 DSP 还是 IVE 更省。
-4. ISP 统计读取：`HI_MPI_ISP_GetStatistics` / AE metadata 可低频取 luma 直方图。
+4. ISP 统计读取：`ss_mpi_isp_get_ae_stats` 可低频取 AE/luma 统计。
 5. VGS 合成替代 GFBG，确认显示无 flicker。
 
+## 7. 已核实的 SDK 接口与关键约束
+
+接口名核对自 SDK 头文件 `tools/local/mpp_sample/.../include/hisilicon/`（`ss_mpi_*` 函数 + `ot_*` 类型）：
+
+| 用途 | 已核实接口 |
+| --- | --- |
+| 去雾 | `ss_mpi_isp_set_dehaze_attr` / `get` |
+| 动态范围/局部色调(DRC/LTM) | `ss_mpi_isp_set_drc_attr` / `get` |
+| 3D-LUT（CLUT） | `ss_mpi_isp_set_clut_attr` / `set_clut_coeff` |
+| 宽动态曝光 | `ss_mpi_isp_set_wdr_exposure_attr`、`ss_mpi_isp_set_expander_attr` |
+| 曝光 | `ss_mpi_isp_set_exposure_attr` |
+| AE/亮度统计 | `ss_mpi_isp_get_ae_stats` |
+| WDR 模式枚举 | `OT_WDR_MODE_{2,3,4}To1_{LINE,FRAME}` 等 |
+| IVE 直方图均衡/CSC/滤波+CSC/阈值 | `ss_mpi_ive_equalize_hist`、`ss_mpi_ive_csc`、`ss_mpi_ive_filter_and_csc`、`ss_mpi_ive_threshold` |
+| VGS 缩放/合成 | `ss_mpi_vgs_add_scale_task`、`ss_mpi_vgs_add_*_task` |
+| VENC 编码 | `ss_mpi_venc_send_frame`、`ss_mpi_venc_get_stream` |
+| VPSS 取帧 | `ss_mpi_vpss_get_chn_frame` |
+
+关键约束：
+
+- **OS08A20 的 WDR 模式有文档记载的限制**（SDK《Sensor support list》：短曝光精度/亮度受影响）。因此"3F-WDR 作为过曝主防线"在当前 OS08A20 上**需先实测验证**；若 WDR 不达预期，过曝防线退化为 **AE 曝光控制 + DRC/CLUT 色调压缩**为主。这是 §2 数据通路第 1–2 级的已知风险。
+- Resize/插值在 NNN 上实测异常，上采样统一用 ConvTranspose（见 `development-guide.md` §6）。
+
 > 调研依据见研究区 `docs/ss928-low-light-research-roadmap.md`（父工作区）。
+

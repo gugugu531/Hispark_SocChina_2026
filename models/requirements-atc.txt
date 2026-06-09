@@ -1,0 +1,23 @@
+# ATC 模型转换（ONNX→OM）环境依赖
+# 依据来源（文档，非本机环境）：
+#   SDK《Yolov8 模型转换与部署》§2.2（Reference/09. 进阶功能开发/04.Yolov8移植/01.Yolov8模型转换与部署.pdf）
+#   SDK《NNN/SVP_NNN 驱动和开发环境安装指南》（ReleaseDoc/zh/01.software/pc/{NNN,SVP_NNN}/）
+# 环境：conda create -n <name> python=3.9.2
+# 安装：pip install -r models/requirements-atc.txt
+#
+# 与训练环境分开（protobuf/numpy 等版本要求不同），避免污染。
+protobuf==3.13.0
+psutil==5.7.0
+decorator==4.4.0
+sympy==1.5.1
+cffi==1.12.3
+numpy
+scipy
+pyyaml
+pathlib2
+#
+# CANN 工具包单独安装（非 pip），来自 SDK：
+#   SVP_PC/NNN_PC/Ascend-cann-toolkit_5.20.t6.2.b060_linux-x86_64.run
+#   ./Ascend-cann-toolkit_5.20.t6.2.b060_linux-x86_64.run --install
+#   source ${INSTALL_DIR}/bin/setenv.bash
+# 转换 soc_version 取 OPTG。
