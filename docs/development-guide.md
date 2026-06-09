@@ -16,7 +16,16 @@
 
 约定：构建产物、生成物、模型权重、采集数据不入库（见根 `.gitignore`）。
 
-板端代码采用**组件式结构**：每个模块一个目录，内含 `include/ src/ tests/`；模块编译成静态库（无 `main`），`tests/` 放该模块测试入口（各自 `main`）。模块名用数据通路实际语义（`capture/isp/vpss/preproc/infer/postproc/compose/display/stream/control`），`common/` 放公共设施，`app/` 放生产主程序。**起步不预建空模块**，由各 owner 按 `modules/control/` 样式增量添加。
+板端采用**常规嵌入式 Linux 工程结构**（拍平，不做框架）：
+
+```
+board/ ── CMakeLists.txt · cmake/ · include/ · src/ · tests/
+```
+
+- `src/` 平铺，每个功能一个 `.c`，命名用数据通路语义（`capture.c/isp.c/vpss.c/infer.c/postproc.c/compose.c/display.c/stream.c/control.c`），`main.c` 为主程序入口；
+- `include/` 放头文件；跨模块共享的帧结构/枚举放 `pipeline.h`；
+- `tests/test_*.c` 每个一个测试入口；
+- 新增功能直接加文件，CMake 自动收集（glob）。起步不预建空文件。
 
 ## 2. 命名约定
 
@@ -133,10 +142,9 @@ scripts/build_board.sh [Debug|Release]                    # 默认 Release
 
 每个模块都有独立测试入口，便于各 owner 自测、互不干扰。
 
-- **一个可执行只能有一个 `main`**：模块代码不放 `main`；`main` 只在 `modules/<x>/tests/test_<x>.c` 与 `app/src/main.c` 中。
-- **模块 = 静态库**（`add_board_module`）；**测试入口 = 薄可执行**（`add_board_test`，链接模块库，注册到 `ctest`）。
+- **一个可执行只能有一个 `main`**：功能代码不放 `main`；`main` 只在 `src/main.c` 与各 `tests/test_*.c` 中。
+- `src/*.c`（除 `main.c`）编成静态库 `socchina`，主程序与测试共用；`tests/test_*.c` 各编一个可执行并注册 `ctest`（CMake 自动收集，无需手登记）。
 - **两类测试**：
-  - 主机单元测试（SDK-free 纯逻辑模块，如 `control`）：`scripts/test_host.sh` 用本机原生编译器构建并 `ctest` 自动运行（不需板子/qemu）。
-  - 板端测试/驱动（触 SDK/硬件 的模块）：交叉编译出的 `test_<模块>` 部署到板上手动运行；标注为"板端手动"，不进自动化。
-- 新增模块按 `modules/control/CMakeLists.txt` 的两行模板登记库与测试。
+  - 主机单元测试（SDK-free 纯逻辑，如 `control`）：`scripts/test_host.sh` 用本机 `cc` 直接编译运行（不需板子/qemu）。
+  - 板端测试/驱动（触 SDK/硬件）：交叉编译出的 `test_<名字>` 部署到板上手动运行，不进自动化。
 - Python（模型组）：测试放 `models/tests/`，用 `pytest`。
