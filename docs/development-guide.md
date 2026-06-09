@@ -5,30 +5,16 @@
 
 ## 1. 目录结构约定
 
-| 路径 | 用途 | 备注 |
-| --- | --- | --- |
-| `board/` | 板端应用（C/C++） | 交叉编译，CMake 构建 |
-| `board/app/` | `main` 与应用编排（线程、帧循环） | |
-| `board/src/<stage>/` | 数据通路各级实现 | 见下表 |
-| `board/include/` | 对外头文件 | |
-| `board/third_party/` | 外部 SDK 头/库的链接说明 | 大件不入库 |
-| `models/` | 模型训练/导出/转换/配置/权重指针 | |
-| `scripts/` | 环境、构建、部署、运行脚本 | |
-| `configs/` | 运行期配置（分辨率/模式/ISP 预设） | |
-| `tools/` | 主机侧工具 | |
-| `tests/` | 单元/集成测试 | |
-| `docs/` | 规范/架构/操作文档 | |
-| `artifacts/` | 生成物 | 绝大部分被 git 忽略 |
+起步保持精简，**子目录随开发推进按需细化**，不预先过度拆分。
 
-`board/src/` 子目录与数据通路一一对应，**代码即架构**：
+| 路径 | 用途 |
+| --- | --- |
+| `board/` | 板端应用（C/C++，交叉编译，CMake 构建） |
+| `models/` | 模型训练 / 导出 / 转换，环境依赖清单 |
+| `scripts/` | 环境、构建、部署、运行脚本 |
+| `docs/` | 规范 / 架构 / 操作文档 |
 
-```
-capture → isp → vpss → preprocess → infer → postprocess → compose → display / stream
-                                                                控制大脑: control
-                                              公共设施: common
-```
-
-新增模块时：在对应 `board/src/<stage>/` 下加源文件，并在该目录留一份简短 `README.md`（目标/接口/注意事项）。
+约定：构建产物、生成物、模型权重、采集数据不入库（见根 `.gitignore`）。新增较大模块时再在对应目录下分子目录，并补一份简短 `README.md`（目标/接口/注意事项）。板端代码可按数据通路阶段（采集→ISP→缩放→预处理→推理→后处理→合成→显示/串流，加场景控制）组织。
 
 ## 2. 命名约定
 
@@ -48,15 +34,15 @@ capture → isp → vpss → preprocess → infer → postprocess → compose �
 
 - 环境：`conda create -n soc-model python=3.10`（文档要求 `python>=3.8`）。
 - 依赖清单：`models/requirements-model.txt`（已固化版本）。
-- 依据：《Yolov8 模型转换与部署》§2.1（`Reference/09. 进阶功能开发/04.Yolov8移植/01.Yolov8模型转换与部署.pdf`）的 `requirements_yolov8.txt`——`torch==2.1.0`、`torchvision==0.16.0`、`numpy==1.26.4`、`opencv-python==4.8.1.78`、`onnx>=1.12.0`、`onnxsim>=0.4.1`。
+- 依据：海思 SS928 SDK《Yolov8 模型转换与部署》§2.1 的 `requirements_yolov8.txt`——`torch==2.1.0`、`torchvision==0.16.0`、`numpy==1.26.4`、`opencv-python==4.8.1.78`、`onnx>=1.12.0`、`onnxsim>=0.4.1`。
 - 复用 TF/Keras 权重（如 Zero-DCE Lite）转 ONNX 时另需 `tensorflow`+`tf2onnx`（`--opset 13`；官方转换文档未覆盖，使用时自行锁定版本）。
 - 导出约定见 §6。
 
 ### 3.2 主机侧 · 模型转换（ATC / CANN）
 
 - 环境：`conda create -n soc-atc python=3.9.2`；依赖清单：`models/requirements-atc.txt`（已固化版本）。
-- 依据：《Yolov8 模型转换与部署》§2.2 + 《NNN/SVP_NNN 驱动和开发环境安装指南》（`ReleaseDoc/zh/01.software/pc/{NNN,SVP_NNN}/`）。文档固化依赖：`protobuf==3.13.0`、`psutil==5.7.0`、`decorator==4.4.0`、`sympy==1.5.1`、`cffi==1.12.3` + numpy/scipy/pyyaml/pathlib2。
-- CANN 工具包（单独安装，非 pip）：`Ascend-cann-toolkit_5.20.t6.2.b060_linux-x86_64.run`（来自 SDK `SVP_PC/NNN_PC/`）。
+- 依据：海思 SS928 SDK《Yolov8 模型转换与部署》§2.2 + 《NNN/SVP_NNN 驱动和开发环境安装指南》。文档固化依赖：`protobuf==3.13.0`、`psutil==5.7.0`、`decorator==4.4.0`、`sympy==1.5.1`、`cffi==1.12.3` + numpy/scipy/pyyaml/pathlib2。
+- CANN 工具包（单独安装，非 pip）：`Ascend-cann-toolkit_5.20.t6.2.b060_linux-x86_64.run`（随海思 SS928 SDK 提供）。
 - `soc_version` 取 `OPTG`。
 - 避免与 base 环境的高版本 Python/`PYTHONPATH` 混用（高版本会导致 TBE 模块不兼容）。
 
@@ -69,15 +55,15 @@ capture → isp → vpss → preprocess → infer → postprocess → compose �
 
 ### 3.4 SDK 与工具链不入库
 
-SDK、交叉工具链、CANN、模型权重、采集数据均为外部大件，**不提交到仓库**。`board/third_party/` 仅保存"从哪获取、放到哪、版本号"的说明文档；实际库通过 `scripts/env.sh` 指向本地路径。
+海思 SS928 SDK、交叉工具链、CANN、模型权重、采集数据均为外部大件，**不提交到仓库**，需自行获取。仓库内仅以文档说明"获取方式、版本号、放置位置"；实际库路径通过 `scripts/env.sh` 指向本地，不写死。
 
 ## 4. 构建系统（CMake）
 
-板端统一用 **CMake** 构建（与研究区 `zero-dce-npu-om` 一致）。
+板端统一用 **CMake** 构建。
 
 约定：
 
-- 顶层 `board/CMakeLists.txt`；各 `src/<stage>/` 以静态库或对象库形式组织，由 `app/` 链接成最终可执行文件。
+- 顶层 `board/CMakeLists.txt`；模块增多后再拆分为库目标，由主程序链接成可执行文件。
 - 交叉编译通过 toolchain file 指定 `aarch64-mix210-linux` 编译器；SDK 头/库路径由变量（如 `SS928_SDK_ROOT`）传入，不写死绝对路径。
 - 构建入口：`scripts/build_board.sh`（封装 `cmake -DCMAKE_TOOLCHAIN_FILE=... && cmake --build`，并 source `scripts/env.sh`）。
 - 构建输出统一进 `build/`（被 git 忽略）。
@@ -87,7 +73,7 @@ SDK、交叉工具链、CANN、模型权重、采集数据均为外部大件，*
 
 - 风格：仓库根 `.clang-format`（Google 基础，4 空格，列宽 110）。提交前对改动文件执行 `clang-format`。
 - **返回值必检**：所有 `ss_mpi_*` / `acl*` 调用必须检查返回码，失败打印错误码（`%#x`）与上下文后走统一清理路径，禁止忽略。
-- **命名前缀**（核对自 SDK 头文件 `include/hisilicon/`）：本平台 MPI 函数为 **`ss_mpi_*`**（snake_case），类型/枚举为 **`ot_*`**（如 `ot_isp_dehaze_attr`、`OT_WDR_MODE_3To1_LINE`）。**不要**使用 Hi3516 系的 `HI_MPI_*` 命名。
+- **命名前缀**（核对自海思 SS928 SDK 头文件）：本平台 MPI 函数为 **`ss_mpi_*`**（snake_case），类型/枚举为 **`ot_*`**（如 `ot_isp_dehaze_attr`、`OT_WDR_MODE_3To1_LINE`）。**不要**使用 Hi3516 系的 `HI_MPI_*` 命名。
 - **资源去初始化顺序**：媒体/ACL 资源严格按"创建逆序"释放（VENC/VO/VPSS/VI/ISP/SYS、ACL device/context/stream）。每个 init 必须有配对 deinit。
 - 重启鲁棒性：启动前清理可能残留的状态（如 `ss_mpi_isp_exit` 清 ISP0 旧状态），避免 `already inited` 类错误。
 - 日志与计时：用统一日志宏（分级）与计时宏，禁止散落裸 `printf`；性能关键路径打印每级耗时（capture/preprocess/infer/post/display）。
@@ -102,7 +88,7 @@ SDK、交叉工具链、CANN、模型权重、采集数据均为外部大件，*
 - **禁用 Resize/插值上采样**：NNN 不支持 Resize（实测异常）。上采样一律用 **ConvTranspose**（固定 bilinear 权重模拟双线性），训练态/部署态分别用插值/转置卷积。
 - 算子探测先行：任何新模型上板前，先转 OM 并检查图中无 `AICPU`/`Cast` 残留、profiling 确认全部落 AICore。
 - OM 与 ONNX 同源：记录权重来源、导出命令、opset、输入输出名与 shape；OM 文件大小不代表参数量。
-- 版本化：模型按 §2 命名，权重大件不入库，`models/weights/` 仅留 `.md` 指针（来源/精度/指标）。
+- 版本化：模型按 §2 命名，权重大件不入库，仅在 `models/` 下留 `.md` 指针（来源/精度/指标）。
 
 ## 7. 板端运行规范
 
@@ -120,7 +106,7 @@ SDK、交叉工具链、CANN、模型权重、采集数据均为外部大件，*
 - 提交信息格式：`<类型>: <简述>`，类型用 `feat`/`fix`/`docs`/`chore`/`refactor`/`test`/`build`。正文说明动机与影响。
 - 提交粒度：一个提交聚焦一件事；构建产物、日志、模型权重、采集数据不提交。
 - **入库**：源码、脚本、CMake、配置、文档、小型示例配置。
-- **不入库**：`build/`、`artifacts/` 大件、模型权重/ONNX/OM、SDK/工具链、`*.yuv/*.raw/*.h264`、日志（见根 `.gitignore`）。
+- **不入库**：`build/` 输出、生成物（profile/截图/日志）、模型权重/ONNX/OM、SDK/工具链、`*.yuv/*.raw/*.h264`（见根 `.gitignore`）。
 - 大件如需共享，走外部存储并在文档中留指针。
 
 ## 9. 文档规范

@@ -82,7 +82,7 @@
 
 ## 5. 模块与代码映射
 
-`board/src/` 子目录与上表逐级对应：`capture`(1) · `isp`(2-4) · `vpss`(5) · `preprocess`(6) · `infer`(7) · `postprocess`(8) · `compose`(9) · `display`(10a) · `stream`(10b) · `control`(11) · `common`(日志/VB/计时)。
+板端代码按数据通路阶段组织（采集→ISP→缩放→预处理→推理→后处理→合成→显示/串流，加场景控制与公共设施）。起步可放在 `board/` 下少量源文件，模块增多后再按阶段拆分子目录，不预先过度拆分。
 
 ## 6. 与数据通路绑定的待验证点
 
@@ -94,7 +94,7 @@
 
 ## 7. 已核实的 SDK 接口与关键约束
 
-接口名核对自 SDK 头文件 `tools/local/mpp_sample/.../include/hisilicon/`（`ss_mpi_*` 函数 + `ot_*` 类型）：
+接口名核对自海思 SS928 SDK 头文件（`ss_mpi_*` 函数 + `ot_*` 类型）：
 
 | 用途 | 已核实接口 |
 | --- | --- |
@@ -114,6 +114,4 @@
 
 - **OS08A20 的 WDR 模式有文档记载的限制**（SDK《Sensor support list》：短曝光精度/亮度受影响）。因此"3F-WDR 作为过曝主防线"在当前 OS08A20 上**需先实测验证**；若 WDR 不达预期，过曝防线退化为 **AE 曝光控制 + DRC/CLUT 色调压缩**为主。这是 §2 数据通路第 1–2 级的已知风险。
 - Resize/插值在 NNN 上实测异常，上采样统一用 ConvTranspose（见 `development-guide.md` §6）。
-
-> 调研依据见研究区 `docs/ss928-low-light-research-roadmap.md`（父工作区）。
 

@@ -1,6 +1,6 @@
 # 模型训练与 ONNX 导出环境依赖
 # 依据来源（文档，非本机环境）：
-#   SDK《Yolov8 模型转换与部署》§2.1（Reference/09. 进阶功能开发/04.Yolov8移植/01.Yolov8模型转换与部署.pdf）
+#   海思 SS928 SDK《Yolov8 模型转换与部署》§2.1
 # 环境：conda create -n <name> python=3.10   （文档要求 python>=3.8，示例用 3.10）
 # 安装：pip install -r models/requirements-model.txt
 #
