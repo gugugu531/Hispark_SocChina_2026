@@ -1,0 +1,54 @@
+# ===== 构建产物 =====
+build/
+cmake-build-*/
+*.o
+*.obj
+*.so
+*.so.*
+*.a
+*.out
+
+# ===== 生成物 / 运行输出 =====
+artifacts/*
+!artifacts/.gitkeep
+!artifacts/README.md
+
+# ===== 模型权重与大文件（不入库，仅留指针说明）=====
+models/weights/*
+!models/weights/.gitkeep
+!models/weights/*.md
+*.om
+*.onnx
+*.pt
+*.pth
+*.caffemodel
+*.prototxt.bin
+*.wk
+
+# ===== 外部 SDK / 工具链（外部依赖，不入库）=====
+board/third_party/sdk/
+board/third_party/lib/
+board/third_party/include/
+
+# ===== Python =====
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.egg-info/
+.ipynb_checkpoints/
+
+# ===== 采集数据 / 媒体 / 日志 =====
+*.yuv
+*.raw
+*.nv21
+*.h264
+*.h265
+*.bmp
+*.log
+
+# ===== 编辑器 / 系统 =====
+.vscode/
+.idea/
+*.swp
+.DS_Store

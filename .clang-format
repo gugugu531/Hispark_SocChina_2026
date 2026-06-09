@@ -1,0 +1,16 @@
+# C/C++ 代码风格（板端应用统一使用）
+# 基于 Google 风格，适配海思 MPP/ACL 代码习惯
+BasedOnStyle: Google
+Language: Cpp
+IndentWidth: 4
+TabWidth: 4
+UseTab: Never
+ColumnLimit: 110
+DerivePointerAlignment: false
+PointerAlignment: Left
+AllowShortFunctionsOnASingleLine: Inline
+AllowShortIfStatementsOnASingleLine: false
+AllowShortLoopsOnASingleLine: false
+SortIncludes: false
+SpaceAfterCStyleCast: true
+AlignConsecutiveMacros: true
