@@ -14,7 +14,9 @@
 | `scripts/` | 环境、构建、部署、运行脚本 |
 | `docs/` | 规范 / 架构 / 操作文档 |
 
-约定：构建产物、生成物、模型权重、采集数据不入库（见根 `.gitignore`）。新增较大模块时再在对应目录下分子目录，并补一份简短 `README.md`（目标/接口/注意事项）。板端代码可按数据通路阶段（采集→ISP→缩放→预处理→推理→后处理→合成→显示/串流，加场景控制）组织。
+约定：构建产物、生成物、模型权重、采集数据不入库（见根 `.gitignore`）。
+
+板端代码采用**组件式结构**：每个模块一个目录，内含 `include/ src/ tests/`；模块编译成静态库（无 `main`），`tests/` 放该模块测试入口（各自 `main`）。模块名用数据通路实际语义（`capture/isp/vpss/preproc/infer/postproc/compose/display/stream/control`），`common/` 放公共设施，`app/` 放生产主程序。**起步不预建空模块**，由各 owner 按 `modules/control/` 样式增量添加。
 
 ## 2. 命名约定
 
@@ -126,3 +128,15 @@ scripts/build_board.sh [Debug|Release]                    # 默认 Release
 - 记录统一采用：**目标 / 命令路径 / 结果 / 解读** 四段式。
 - 结论若有前提或测量条件，紧贴数字写明（如"实测/估算"、分辨率、是否含预处理）。
 - 结果依赖生成文件时，同时链接结论文档与产物路径。
+
+## 10. 测试规范
+
+每个模块都有独立测试入口，便于各 owner 自测、互不干扰。
+
+- **一个可执行只能有一个 `main`**：模块代码不放 `main`；`main` 只在 `modules/<x>/tests/test_<x>.c` 与 `app/src/main.c` 中。
+- **模块 = 静态库**（`add_board_module`）；**测试入口 = 薄可执行**（`add_board_test`，链接模块库，注册到 `ctest`）。
+- **两类测试**：
+  - 主机单元测试（SDK-free 纯逻辑模块，如 `control`）：`scripts/test_host.sh` 用本机原生编译器构建并 `ctest` 自动运行（不需板子/qemu）。
+  - 板端测试/驱动（触 SDK/硬件 的模块）：交叉编译出的 `test_<模块>` 部署到板上手动运行；标注为"板端手动"，不进自动化。
+- 新增模块按 `modules/control/CMakeLists.txt` 的两行模板登记库与测试。
+- Python（模型组）：测试放 `models/tests/`，用 `pytest`。

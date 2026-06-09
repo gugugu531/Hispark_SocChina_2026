@@ -11,27 +11,29 @@ if(NOT CMAKE_BUILD_TYPE)
 endif()
 
 add_compile_options(-Wall -Wextra)
+enable_testing()
 
-# ---- 海思 SS928 SDK（外部依赖，可选）----
-# 设置 -DENABLE_SDK=ON -DSS928_SDK_ROOT=<SDK路径> 后可链接 MPP/ISP/IVE/VGS/ACL 等库。
-# 未启用时仍可构建最小程序，便于先验证工具链与构建闭环（新成员无需 SDK 即可上手）。
+include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/helpers.cmake)
+set(BOARD_COMMON_INCLUDE "${CMAKE_CURRENT_SOURCE_DIR}/common/include")
+
+# 海思 SS928 SDK（外部依赖，可选）。设 -DENABLE_SDK=ON -DSS928_SDK_ROOT=<路径> 接入硬件。
 option(ENABLE_SDK "链接海思 SS928 SDK（需 SS928_SDK_ROOT）" OFF)
 
-add_executable(socchina_app
-    src/main.c
-)
-target_include_directories(socchina_app PRIVATE include)
+# 仅构建主机可测的 SDK-free 模块及其单元测试（本机原生编译，配合 scripts/test_host.sh）。
+option(BOARD_HOST_TESTS "主机单元测试模式：只构建 SDK-free 模块与其测试" OFF)
 
-if(ENABLE_SDK)
-    if(NOT SS928_SDK_ROOT)
-        message(FATAL_ERROR "ENABLE_SDK=ON 时必须设置 -DSS928_SDK_ROOT=<SDK 根目录>")
-    endif()
-    message(STATUS "链接 SS928 SDK: ${SS928_SDK_ROOT}")
-    target_include_directories(socchina_app PRIVATE "${SS928_SDK_ROOT}/include")
-    target_link_directories(socchina_app PRIVATE "${SS928_SDK_ROOT}/lib")
-    target_compile_definitions(socchina_app PRIVATE WITH_SS928_SDK=1)
-    # 各模块接入硬件时在此追加具体库，例如：
-    # target_link_libraries(socchina_app PRIVATE ss_mpi securec ...)
+# 公共设施（header-only：日志/计时/错误检查/版本）
+add_library(board_common INTERFACE)
+target_include_directories(board_common INTERFACE "${BOARD_COMMON_INCLUDE}")
+
+# ---- SDK-free 模块（主机可单元测试）----
+add_subdirectory(modules/control)
+
+# ---- 完整(交叉)构建：触 SDK/硬件 的模块 + 最终应用 ----
+if(NOT BOARD_HOST_TESTS)
+    # 各 owner 在此登记自己的硬件模块，例如：
+    #   add_subdirectory(modules/capture)
+    #   add_subdirectory(modules/isp)
+    #   add_subdirectory(modules/infer)
+    add_subdirectory(app)
 endif()
-
-install(TARGETS socchina_app RUNTIME DESTINATION bin)

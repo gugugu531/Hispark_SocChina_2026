@@ -43,10 +43,20 @@ export CROSS_COMPILE_ROOT=/path/to/aarch64-mix210-linux   # 交叉工具链根�
 export ISL_LIB_DIR=/path/to/libisl                        # 若提示缺 libisl.so.19 时设置
 # 接入硬件后再设置：export SS928_SDK_ROOT=/path/to/ss928_sdk
 
-scripts/build_board.sh            # 默认 Release，产物在 build/socchina_app
+scripts/build_board.sh            # 默认 Release，产物在 build/app/socchina_app
 ```
 
 设置 `SS928_SDK_ROOT` 后自动开启 SDK 链接（`ENABLE_SDK=ON`）。环境变量说明见 `scripts/env.sh`。
+
+### 主机单元测试
+
+SDK-free 的纯逻辑模块可在本机直接跑（无需板子/工具链）：
+
+```sh
+scripts/test_host.sh              # 原生编译 + ctest
+```
+
+板端代码组织与测试规范见 [board/README.md](board/README.md) 与 [docs/development-guide.md](docs/development-guide.md) §10。
 
 ### 其它
 
