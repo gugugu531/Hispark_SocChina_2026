@@ -112,9 +112,10 @@ scripts/build_board.sh [Debug|Release]                    # 默认 Release
 
 ## 8. Git 规范
 
-- 默认分支 `main`；初始脚手架与基础文档可直接落 `main`，**功能开发用特性分支**（如 `feat/isp-wdr`、`feat/infer-acl`），经自测后合并。
+- 默认分支 `main`，**直接提交并推送到 `main`**（当前不强制走 PR）。提交前确保本地能构建通过。
 - 提交信息格式：`<类型>: <简述>`，类型用 `feat`/`fix`/`docs`/`chore`/`refactor`/`test`/`build`。正文说明动机与影响。
 - 提交粒度：一个提交聚焦一件事；构建产物、日志、模型权重、采集数据不提交。
+- 多人协作下减少冲突：提交前先 `git pull --rebase`；改动尽量按模块/数据通路阶段分工，避免同文件并发修改。
 - **入库**：源码、脚本、CMake、配置、文档、小型示例配置。
 - **不入库**：`build/` 输出、生成物（profile/截图/日志）、模型权重/ONNX/OM、SDK/工具链、`*.yuv/*.raw/*.h264`（见根 `.gitignore`）。
 - 大件如需共享，走外部存储并在文档中留指针。
