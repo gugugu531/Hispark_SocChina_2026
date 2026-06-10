@@ -54,6 +54,18 @@ ssh root@192.168.1.168 '/root/socchina-2026/test_display 10'   # 10 秒, 彩条/
 # 观察面板画面; 健康判据见 docs/board-operations.md §3 (/proc/umap/hdmi0)
 ```
 
+板端实测（2026-06-10，板卡刚重启、媒体状态干净）：
+
+- 命令：`/root/socchina-2026/test_display 12` 与 `test_display 20` 各一次。
+- 结果：两次均 PASS（240 帧/12s、501 帧/20s），全程无 MPI 错误；`ss_mpi_vo_send_frame`
+  阻塞送帧单次 0–16 ms。稳态 `/proc/umap/hdmi0`：`tmds mode: DVI`、`rsen/phy output enable: YES`、
+  `hactive/vactive: 1024/600`、`hsync/vsync total: 1312/624`、HSync 负/VSync 正；`/proc/umap/vo`：
+  `intf_sync USER`、`pixel_clk 49000`、layer 1024x600 YVU-SP420——与前期实验已验证状态一致。
+  退出后 `run status: CLOSE`、计数器归零、无残留进程，dmesg 无 HDMI/VO 报错。
+- 注意：`hdmi_start` 后约 4s 内 `/proc/umap/hdmi0` 时序计数器可能短暂显示驱动默认 1080p
+  （瞬态，未刷新），以稳态读数为准。
+- 待人工确认：面板画面内容（彩条/渐变交替）与 flicker 观感（架构 §6 待验证点 5）需现场目视。
+
 ## 测试
 
 - **主机单元测试**（SDK-free 纯逻辑，如 control）：`scripts/test_host.sh`（本机 cc 直接编译运行）。
