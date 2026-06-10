@@ -42,6 +42,9 @@ scripts/build_board.sh                      # 产物 build/socchina_app (aarch64
 - 视频层 chn0 接收 NV21（`YVU_SEMIPLANAR_420`）帧，零拷贝送显；上层（VGS 合成输出）经
   `display_send_frame` 直接送 VB 帧。
 - 模块只管 VO/HDMI；**SYS/VB 由上层先初始化**。`display_init` 启动前会尽力清理残留 VO/HDMI 状态。
+- **黑场预帧**：`display_init` 先把 VO 通道稳定在一帧全黑 NV21 上、等 2 个 vsync，再
+  `ss_mpi_hdmi_start` 使能 PHY——板端实测若直接启动，面板锁定瞬间会显示无信号样杂线。
+  预帧需公共 VB 池有一块 ≥1024x600 NV21 空闲块，取不到时退化为直接启动（仅告警）。
 - 链接依赖：`libss_mpi.a + libss_hdmi.a + libsecurec.a`（音频 VQE/AAC 库为 `libss_mpi.a`
   的被动依赖，本应用不用音频），已在 CMake `ENABLE_SDK` 分支配置。
 
