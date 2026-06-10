@@ -17,4 +17,14 @@
         }                                                        \
     } while (0)
 
+/* 返回值检查 + 失败时跳统一清理路径（goto cleanup 模式）。 */
+#define CHECK_RET_GOTO(expr, label)                              \
+    do {                                                         \
+        int _ret = (expr);                                       \
+        if (_ret != 0) {                                         \
+            LOG_ERR("%s failed: %#x", #expr, (unsigned)_ret);    \
+            goto label;                                          \
+        }                                                        \
+    } while (0)
+
 #endif /* SOCCHINA_LOG_H */

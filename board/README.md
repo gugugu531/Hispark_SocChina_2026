@@ -8,8 +8,8 @@
 board/
 ├── CMakeLists.txt
 ├── cmake/toolchain-aarch64-mix210-linux.cmake   # 交叉编译 toolchain file
-├── include/     # 头文件: log.h / version.h / control.h / pipeline.h(后续共享帧结构)
-├── src/         # 源码, 按功能分文件: main.c / control.c (+ capture.c isp.c infer.c ... 后续)
+├── include/     # 头文件: log.h / version.h / control.h / display.h / pipeline.h(后续共享帧结构)
+├── src/         # 源码, 按功能分文件: main.c / control.c / display.c (+ capture.c isp.c infer.c ... 后续)
 └── tests/       # 单元/驱动测试: test_<名字>.c, 各编一个可执行 + ctest
 ```
 
@@ -25,6 +25,33 @@ export CROSS_COMPILE_ROOT=/path/to/aarch64-mix210-linux
 export ISL_LIB_DIR=/path/to/libisl          # 提示缺 libisl.so.19 时设置
 # export SS928_SDK_ROOT=/path/to/ss928_sdk  # 接入硬件后再设
 scripts/build_board.sh                      # 产物 build/socchina_app (aarch64)
+```
+
+## 模块
+
+### display — VO→HDMI 本地显示驱动（数据通路第 10a 级）
+
+接口见 `include/display.h`：`display_init` / `display_send_frame` / `display_deinit`。
+
+- 固定输出 Waveshare 7 寸 **1024x600@60 类 DVI 面板**（HDMI0）：原生时序 + DVI 模式（`hdmi_en=FALSE`）+
+  音频禁用 + RGB full CSC（`BT709FULL_TO_RGBFULL`）。该组合是此面板已验证可点亮的唯一稳定路径。
+- 时序为面板 EDID 原生 Modeline `49.00 MHz, 1024 1072 1168 1312, 600 603 613 624, -hsync +vsync`；
+  `ot_vo_sync_info.hbb/vbb` 按 SDK sample 约定 = 同步脉冲 + 后廊（`hbb=240`、`vbb=21`）；
+  VO PLL `fb_div=49 / ref_div=1 / post_div1=6 / post_div2=4`。来源：前期点亮实验
+  （工作区 `experiments/display-hdmi/README.md`，含失败参数与排查记录）。
+- 视频层 chn0 接收 NV21（`YVU_SEMIPLANAR_420`）帧，零拷贝送显；上层（VGS 合成输出）经
+  `display_send_frame` 直接送 VB 帧。
+- 模块只管 VO/HDMI；**SYS/VB 由上层先初始化**。`display_init` 启动前会尽力清理残留 VO/HDMI 状态。
+- 链接依赖：`libss_mpi.a + libss_hdmi.a + libsecurec.a`（音频 VQE/AAC 库为 `libss_mpi.a`
+  的被动依赖，本应用不用音频），已在 CMake `ENABLE_SDK` 分支配置。
+
+板端冒烟测试 `test_display`（验证架构 §6 待验证点 5——VO 视频层送帧替代 GFBG 是否无 flicker）：
+
+```sh
+# 前置: 板上无其他媒体进程争用 SYS/VB/VO(勿与厂商 sample_hdmi 并跑)
+scp build/test_display root@192.168.1.168:/root/socchina-2026/
+ssh root@192.168.1.168 '/root/socchina-2026/test_display 10'   # 10 秒, 彩条/灰阶渐变交替
+# 观察面板画面; 健康判据见 docs/board-operations.md §3 (/proc/umap/hdmi0)
 ```
 
 ## 测试

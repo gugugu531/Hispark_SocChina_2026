@@ -22,10 +22,26 @@ if(ENABLE_SDK)
     if(NOT SS928_SDK_ROOT)
         message(FATAL_ERROR "ENABLE_SDK=ON 时必须设置 -DSS928_SDK_ROOT=<SDK 根目录>")
     endif()
-    target_include_directories(socchina PUBLIC "${SS928_SDK_ROOT}/include")
-    target_link_directories(socchina PUBLIC "${SS928_SDK_ROOT}/lib")
+    # 兼容两种 SDK 目录布局：<root>/include[/hisilicon] 与 <root>/lib[/linux/hisilicon]
+    set(SDK_INC_DIRS "${SS928_SDK_ROOT}/include")
+    if(EXISTS "${SS928_SDK_ROOT}/include/hisilicon")
+        list(APPEND SDK_INC_DIRS "${SS928_SDK_ROOT}/include/hisilicon")
+    endif()
+    set(SDK_LIB_DIRS "${SS928_SDK_ROOT}/lib")
+    if(EXISTS "${SS928_SDK_ROOT}/lib/linux/hisilicon")
+        list(APPEND SDK_LIB_DIRS "${SS928_SDK_ROOT}/lib/linux/hisilicon")
+    endif()
+    target_include_directories(socchina PUBLIC ${SDK_INC_DIRS})
+    target_link_directories(socchina PUBLIC ${SDK_LIB_DIRS})
     target_compile_definitions(socchina PUBLIC WITH_SS928_SDK=1)
-    # 接入硬件时追加具体库，例如： target_link_libraries(socchina PUBLIC ss_mpi securec ...)
+    # 静态链接 MPP 库（与厂商 sample 一致），模块增多按需在 group 内追加。
+    # 音频 VQE/AAC 库为 libss_mpi.a 内音频适配代码的被动依赖，本应用不使用音频。
+    target_link_libraries(socchina PUBLIC
+        -Wl,--start-group -l:libss_mpi.a -l:libss_hdmi.a -l:libsecurec.a
+        -l:libss_voice_engine.a -l:libss_upvqe.a -l:libss_dnvqe.a
+        -l:libaac_comm.a -l:libaac_enc.a -l:libaac_dec.a -l:libaac_sbr_enc.a -l:libaac_sbr_dec.a
+        -Wl,--end-group
+        pthread m dl)
 endif()
 
 # 主程序
