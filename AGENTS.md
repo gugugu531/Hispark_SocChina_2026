@@ -30,10 +30,11 @@ OS08A20 -> VI -> ISP(WDR/3DNR/LTM/去雾) -> VPSS 多路缩放
 
 1. `README.md` —— 仓库地图与快速开始。
 2. `docs/architecture.md` —— 系统架构、完整数据通路、已核实 SDK 接口与待验证点。
-3. `docs/development-guide.md` —— 开发规范主文档（环境/构建/编码/模型/板端/Git/文档/测试）。
-4. `docs/board-operations.md` —— 板端部署/运行/恢复手册。
-5. `board/README.md` —— 板端代码组织与构建。
-6. `models/README.md` —— 模型环境与导出/转换约定。
+3. `docs/TODO.md` —— 未完成部分与阶段化开发规划（开工前先看当前状态与优先级）。
+4. `docs/development-guide.md` —— 开发规范主文档（环境/构建/编码/模型/板端/Git/文档/测试）。
+5. `docs/board-operations.md` —— 板端部署/运行/恢复手册。
+6. `board/README.md` —— 板端代码组织与构建。
+7. `models/README.md` —— 模型环境与导出/转换约定。
 
 本仓库文档已覆盖关键路径与接口名，不要在已索引文档足够用之前就从搜索整个 SDK 开始。
 

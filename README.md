@@ -69,6 +69,7 @@ scripts/test_host.sh              # 本机 cc 编译并运行 SDK-free 单元测
 - [AGENTS.md](AGENTS.md) — AI 代理/协作者开发指南（阅读顺序、约定汇总、板端习惯、已知坑点）
 - [docs/development-guide.md](docs/development-guide.md) — 开发规范（环境/构建/编码/模型/板端/Git/文档）
 - [docs/architecture.md](docs/architecture.md) — 系统架构与完整数据通路
+- [docs/TODO.md](docs/TODO.md) — 未完成清单与阶段化开发规划
 - [docs/board-operations.md](docs/board-operations.md) — 板端部署/运行/恢复手册
 
 ## 许可证
