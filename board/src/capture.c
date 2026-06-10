@@ -5,15 +5,24 @@
 #ifdef WITH_SS928_SDK
 
 #include <stdlib.h>
+#include <string.h>
 
 #include "sample_comm.h"
 #include "ss_mpi_isp.h"
+#include "ss_mpi_vi.h"
 
 #define CAPTURE_VI_PIPE 0
 #define CAPTURE_VI_CHN  0
 
 static sample_vi_cfg g_vi_cfg;
 static int g_capture_inited = 0;
+
+/* 模式 → SDK 传感器类型（两种均为官方已适配，见 capture.h）。 */
+static sample_sns_type capture_mode_to_sns_type(capture_mode_t mode)
+{
+    return (mode == CAPTURE_MODE_WDR_2TO1) ? OV_OS08A20_MIPI_8M_30FPS_12BIT_WDR2TO1
+                                           : OV_OS08A20_MIPI_8M_30FPS_12BIT;
+}
 
 /* 使能 sensor 时钟（厂商 bspmm 工具写时钟寄存器；与已验证的相机点亮流程一致，
  * 不配置会导致 VPSS 取帧超时）。sensor1 与 sensor0 的时钟寄存器不同。 */
@@ -65,16 +74,19 @@ int capture_query_in_size(unsigned *width, unsigned *height)
     return 0;
 }
 
-int capture_init(int sensor_index)
+int capture_init(const capture_cfg_t *cfg)
 {
+    int sensor_index;
+
     if (g_capture_inited) {
         LOG_WARN("capture already inited");
         return 0;
     }
-    if (sensor_index != 0 && sensor_index != 1) {
-        LOG_ERR("capture_init: invalid sensor_index %d", sensor_index);
+    if (cfg == NULL || (cfg->sensor_index != 0 && cfg->sensor_index != 1)) {
+        LOG_ERR("capture_init: invalid cfg");
         return -1;
     }
+    sensor_index = cfg->sensor_index;
 
     capture_enable_sensor_clock(sensor_index);
 
@@ -82,7 +94,7 @@ int capture_init(int sensor_index)
     CHECK_RET_GOTO(sample_comm_vi_set_vi_vpss_mode(OT_VI_ONLINE_VPSS_OFFLINE, OT_VI_VIDEO_MODE_NORM),
                    fail);
 
-    capture_build_vi_cfg(SENSOR0_TYPE, sensor_index, &g_vi_cfg);
+    capture_build_vi_cfg(capture_mode_to_sns_type(cfg->mode), sensor_index, &g_vi_cfg);
 
     /* 上次异常退出可能残留 ISP0 内存初始化状态；ISP 空闲时 exit 无害，
      * 可避免重启时 isp_mem_init 报 0xa01c800c / already inited。 */
@@ -94,10 +106,48 @@ int capture_init(int sensor_index)
     }
 
     g_capture_inited = 1;
-    LOG_INFO("capture up: OS08A20 sensor_index=%d (vi_dev=%d, linear mode)", sensor_index,
-             (sensor_index == 1) ? 2 : 0);
+    LOG_INFO("capture up: OS08A20 sensor_index=%d (vi_dev=%d, %s)", sensor_index,
+             (sensor_index == 1) ? 2 : 0,
+             (cfg->mode == CAPTURE_MODE_WDR_2TO1) ? "WDR 2to1 10bit" : "linear 12bit");
     return 0;
 
+fail:
+    return -1;
+}
+
+int capture_set_fps(float fps)
+{
+    ot_isp_pub_attr pub_attr;
+
+    if (!g_capture_inited) {
+        LOG_ERR("capture_set_fps: capture not inited");
+        return -1;
+    }
+    memset(&pub_attr, 0, sizeof(pub_attr));
+    CHECK_RET_GOTO(ss_mpi_isp_get_pub_attr(CAPTURE_VI_PIPE, &pub_attr), fail);
+    pub_attr.frame_rate = fps;
+    CHECK_RET_GOTO(ss_mpi_isp_set_pub_attr(CAPTURE_VI_PIPE, &pub_attr), fail);
+    LOG_INFO("capture fps -> %.2f", fps);
+    return 0;
+fail:
+    return -1;
+}
+
+int capture_set_mirror_flip(int mirror_en, int flip_en)
+{
+    ot_vi_chn_attr chn_attr;
+
+    if (!g_capture_inited) {
+        LOG_ERR("capture_set_mirror_flip: capture not inited");
+        return -1;
+    }
+    memset(&chn_attr, 0, sizeof(chn_attr));
+    CHECK_RET_GOTO(ss_mpi_vi_get_chn_attr(CAPTURE_VI_PIPE, CAPTURE_VI_CHN, &chn_attr), fail);
+    chn_attr.mirror_en = mirror_en ? TD_TRUE : TD_FALSE;
+    chn_attr.flip_en = flip_en ? TD_TRUE : TD_FALSE;
+    CHECK_RET_GOTO(ss_mpi_vi_set_chn_attr(CAPTURE_VI_PIPE, CAPTURE_VI_CHN, &chn_attr), fail);
+    LOG_INFO("capture mirror=%d flip=%d", mirror_en, flip_en);
+    return 0;
 fail:
     return -1;
 }
@@ -145,10 +195,23 @@ int capture_query_in_size(unsigned *width, unsigned *height)
     return -1;
 }
 
-int capture_init(int sensor_index)
+int capture_init(const capture_cfg_t *cfg)
 {
-    (void)sensor_index;
+    (void)cfg;
     LOG_ERR("capture_init: built without SS928 SDK");
+    return -1;
+}
+
+int capture_set_fps(float fps)
+{
+    (void)fps;
+    return -1;
+}
+
+int capture_set_mirror_flip(int mirror_en, int flip_en)
+{
+    (void)mirror_en;
+    (void)flip_en;
     return -1;
 }
 

@@ -10,6 +10,7 @@
 - `control` 模块：场景曝光模式判决（纯逻辑初版 + 主机单测）。
 - `display` 模块：VO→HDMI 1024x600 DVI 驱动（数据通路第 10a 级），板端冒烟 `test_display` 三轮 PASS（2026-06-10），无 MPI 错误、退出干净。启动序含**黑场预帧**（先稳定黑场再使能 PHY），消除了实测发现的面板锁定瞬间杂线；实现细节与实测数据见 `board/README.md`。
 - `capture` + `vpss` 模块：OS08A20(8M30 线性, sensor1/J4) → VI(online) → ISP → VPSS 多路缩放（数据通路第 1–5 级），封装厂商 sample_comm 层（CMake `vendor_comm` 静态库）。板端冒烟 `test_capture`（2026-06-10）：取帧 29.3 fps、落盘帧画面正常；`--display` 整链相机→VPSS→display 上屏 **30.2 fps 稳定**（阶段 A 最小直通链已在测试驱动中跑通）。
+- capture 扩展 + `isp` 模块（2026-06-11，SDK 已支持功能全量封装）：WDR 2to1 模式（30fps 满帧，同场景高光/暗部裁剪大幅下降，§6 点 6 初步正面）、运行时帧率/镜像/翻转、抗闪烁、AE 补偿/手动曝光、**AE 统计→`control_decide` 闭环**（§6 点 4 ✅）、dehaze/DRC/LDCI 三态控制。CLUT 待 LUT 表方案。
 
 ## 2. 未完成部分
 
@@ -17,8 +18,8 @@
 
 | 通路级 | 模块文件 | 状态 | 说明 |
 | --- | --- | --- | --- |
-| 1 采集 | `capture.c` | ✅ 已完成 | 线性模式板端 30fps 实测；WDR/DOL 模式受 §7 限制需实测 |
-| 2–4 ISP | `isp.c` | 🟡 部分 | 3A 已随 capture 起链运行；dehaze/DRC/3D-LUT 增强参数配置待做 |
+| 1 采集 | `capture.c` | ✅ 已完成 | linear 与 WDR 2to1 均板端 30fps 实测；运行时帧率/镜像/翻转可调 |
+| 2–4 ISP | `isp.c` | ✅ 基本完成 | 抗闪烁/AE 补偿/手动曝光/AE 统计/dehaze/DRC/LDCI 已实测；CLUT 待 LUT 表 |
 | 5 分发缩放 | `vpss.c` | ✅ 已完成 | chn0 1024x600 已实测；chn1/chn2 配置项已留好待启用 |
 | 6 预处理 | （融入 OM 的 AIPP） | ❌ 未开始 | 属模型侧工作，板端只需对齐 chn1 输出格式 |
 | 7 推理 | `infer.c` | ❌ 未开始 | ACL 初始化、OM 加载、零拷贝输入输出 |
@@ -50,9 +51,12 @@
 1. ❌ OM 结构验证：`/4 backbone + ConvTranspose + 全分辨率施加` 全落 AICore 的实测总耗时——**决定 Config-R（30fps）是否成立，最高优先级风险项**。
 2. ❌ AIPP 在 1024x576 全分辨率的 CSC/归一开销。
 3. ❌ 后处理 Q6 DSP vs IVE 比选。
-4. ❌ `ss_mpi_isp_get_ae_stats` 低频读取 AE/luma 统计验证。
+4. ✅ `ss_mpi_isp_get_ae_stats` 低频读取验证（2026-06-11）：`isp_get_luma_stats` 归约
+   1024-bin 直方图为 mean/clip%，直接喂 `control_decide`，判决与实际场景相符。
 5. 🟡 VGS+VO 替代 GFBG 是否无 flicker：链路侧冒烟 PASS，**面板观感需现场目视确认**。
-6. ❌ OS08A20 WDR/DOL 实测（§7 已知限制）；若不达预期，过曝防线退化为 AE 控制 + DRC/CLUT。
+6. 🟡 OS08A20 WDR 2to1 实测（2026-06-11）初步**正面**：30fps 满帧稳定，同场景暗部裁剪
+   36.5%→5.3%、高光 5.7%→1.6%，灯管轮廓 linear 过曝白斑→WDR 清晰可辨。
+   待测：切帧率收敛速度（文档已知限制）、WDR 画质细调与长时稳定性。
 
 ## 3. 开发规划
 

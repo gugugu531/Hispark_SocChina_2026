@@ -18,13 +18,32 @@
 
 #define CAPTURE_SENSOR_INDEX_DEFAULT 1 /* 海鸥派 OS08A20 在 sensor1/J4 */
 
+/* SDK 驱动已适配的两种传感器模式（《Sensor support list》：Function/PQ 均 done）。
+ * WDR 已知限制：短曝光变化受 vblanking 约束，切帧率时收敛变慢；过曝防线
+ * 是否用 WDR 以板端实测为准（架构 §6 点 6）。 */
+typedef enum {
+    CAPTURE_MODE_LINEAR = 0,  /* 12bit 3840x2160, 1.06–30 fps */
+    CAPTURE_MODE_WDR_2TO1,    /* 10bit 3840x2160, 5–30 fps, 交错 HDR(60fps 读出→30fps 融合) */
+} capture_mode_t;
+
+typedef struct {
+    int sensor_index;    /* 0 / 1（默认 1） */
+    capture_mode_t mode; /* 线性 / WDR 2to1 */
+} capture_cfg_t;
+
 /* 查询传感器输出尺寸（如 3840x2160），可在 capture_init 之前调用，
  * 供上层计算 VB 公共池块大小。成功返回 0。 */
 int capture_query_in_size(unsigned *width, unsigned *height);
 
 /* 起整条采集链：sensor 时钟 → VI/VPSS 工作模式 → MIPI/sensor/VI/ISP。
  * 启动前清理残留 ISP0 状态（防 already inited / 0xa01c800c）。成功返回 0。 */
-int capture_init(int sensor_index);
+int capture_init(const capture_cfg_t *cfg);
+
+/* 运行时帧率（linear 1.06–30 / WDR 5–30；超范围被驱动拒绝）。 */
+int capture_set_fps(float fps);
+
+/* VI 通道镜像/翻转（按相机装配方向）。 */
+int capture_set_mirror_flip(int mirror_en, int flip_en);
 
 /* 把 VI pipe0/chn0 绑定到 VPSS 组（VI ONLINE 下数据走硬件直通）。 */
 int capture_bind_vpss(int vpss_grp);

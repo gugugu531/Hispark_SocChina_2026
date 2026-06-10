@@ -8,8 +8,8 @@
 board/
 ├── CMakeLists.txt
 ├── cmake/toolchain-aarch64-mix210-linux.cmake   # 交叉编译 toolchain file
-├── include/     # 头文件: log.h / version.h / control.h / display.h / capture.h / vpss.h
-├── src/         # 源码, 按功能分文件: main.c / control.c / display.c / capture.c / vpss.c (+ isp.c infer.c ... 后续)
+├── include/     # 头文件: log.h / version.h / control.h / display.h / capture.h / vpss.h / isp.h
+├── src/         # 源码, 按功能分文件: main.c / control.c / display.c / capture.c / vpss.c / isp.c (+ infer.c ... 后续)
 └── tests/       # 单元/驱动测试: test_<名字>.c, 各编一个可执行 + ctest
 ```
 
@@ -71,10 +71,13 @@ ssh root@192.168.1.168 '/root/socchina-2026/test_display 10'   # 10 秒, 彩条/
 
 ### capture — 相机采集驱动（数据通路第 1–4 级）
 
-接口见 `include/capture.h`：`capture_query_in_size` / `capture_init` / `capture_bind_vpss` /
+接口见 `include/capture.h`：`capture_query_in_size` / `capture_init`（配置结构体：传感器位 +
+线性/WDR 模式）/ `capture_set_fps` / `capture_set_mirror_flip` / `capture_bind_vpss` /
 `capture_unbind_vpss` / `capture_deinit`。
 
-- 传感器 **OS08A20 8M(3840x2160) 30fps 12bit 线性模式**（WDR 留待架构 §6 点 6 验证）。
+- 传感器 **OS08A20 8M(3840x2160)**，SDK 已适配两种模式（均板端实测通过）：
+  **linear 12bit**（1.06–30fps）与 **WDR 2to1 10bit**（5–30fps，交错 HDR，传感器 60fps
+  读出→30fps 融合）。WDR 文档限制：短曝光变化受 vblanking 约束，切帧率收敛变慢。
   板上接在 **sensor1/J4**：I2C bus7、时钟/复位源 1、VI dev2，即 `sensor_index=1`（默认）。
 - 起链序：sensor 时钟（`bspmm 0x11018460 0x4001`，不配会导致 VPSS 取帧超时）→
   VI/VPSS 模式 `OT_VI_ONLINE_VPSS_OFFLINE` → `ss_mpi_isp_exit(0)` 清残留（防
@@ -85,6 +88,16 @@ ssh root@192.168.1.168 '/root/socchina-2026/test_display 10'   # 10 秒, 彩条/
   的 sys/isp/vi/vpss 四个源文件编为 `vendor_comm` 静态库（宏与传感器型号沿用已验证
   配方），并链接 ISP/3A/sensor 静态库组。
 
+### isp — ISP 运行时参数面与统计（数据通路第 2–4 级 + 第 11 级控制接口）
+
+接口见 `include/isp.h`：抗闪烁（50/60Hz）、AE 曝光补偿、手动曝光（时间+模拟增益）、
+**`isp_get_luma_stats`**（AE 1024-bin 直方图 → `luma_stats_t`，直接喂 `control_decide`，
+即架构 §6 点 4 的统计通路）、dehaze / DRC / LDCI 增强块（关/自动/手动三态）。
+
+- ISP 本体（3A 注册与 run 线程）由 capture 起链拉起；本模块只做运行时控制，
+  要求 `capture_init` 已成功。
+- 3D-LUT（CLUT）需配合标定 LUT 表加载，待色调映射方案确定后接入。
+
 ### vpss — 多路硬件缩放分发（数据通路第 5 级）
 
 接口见 `include/vpss.h`：`vpss_init` / `vpss_get_frame` / `vpss_release_frame` / `vpss_deinit`。
@@ -92,12 +105,15 @@ ssh root@192.168.1.168 '/root/socchina-2026/test_display 10'   # 10 秒, 彩条/
 NV21 无压缩输出；`depth>0` 的通道可 CPU 取帧,帧结构与 `display_send_frame` 直接兼容。
 当前实现一次支持一个组（管线仅用 grp0）。
 
-板端冒烟测试 `test_capture`（相机 → VI → ISP → VPSS chn0 → 可选 display 上屏）：
+板端冒烟测试 `test_capture`（相机 → VI → ISP → VPSS chn0 → 可选 display 上屏；
+完整选项见文件头注释：`--wdr/--fps/--mirror/--flip/--flicker/--aecomp/--dehaze/--drc/--ldci`）：
 
 ```sh
 scp build/test_capture root@192.168.1.168:/root/socchina-2026/
 ssh root@192.168.1.168 '/root/socchina-2026/test_capture 6 --dump /root/socchina-2026/cap.nv21'
-ssh root@192.168.1.168 '/root/socchina-2026/test_capture 15 --display'   # 实时相机画面上屏
+ssh root@192.168.1.168 '/root/socchina-2026/test_capture 15 --display'           # 实时相机画面上屏
+ssh root@192.168.1.168 '/root/socchina-2026/test_capture 10 --display --wdr'     # WDR 2to1 模式
+# 运行中每 2s 打印 avg_fps 与 AE luma 统计(mean/clip%/judged mode)
 ```
 
 capture/vpss 板端实测（2026-06-10，板卡刚重启、接 OS08A20）：
@@ -106,6 +122,19 @@ capture/vpss 板端实测（2026-06-10，板卡刚重启、接 OS08A20）：
   确认为正常曝光的真实场景（传感器/ISP/AWB/VPSS 缩放全部正确）。
 - 带显示 15s：453 帧、**30.2 fps** 稳定（get_max 35ms），相机 → VPSS → display 整链
   （阶段 A 最小直通链）跑通；退出后 HDMI `CLOSE`、无残留进程。
+
+capture 扩展功能与 isp 模块板端实测（2026-06-11，同场景=暗房间+亮台灯）：
+
+- **AE 统计→控制闭环**（§6 点 4 ✅）：`isp_get_luma_stats` 低频读取正常，linear 模式下
+  mean=53.5、低裁剪 36.5%、高裁剪 5.7%，`control_decide`=双向校正，与场景相符。
+- **运行时控制项**：`--fps 15` 实测 15.3fps 生效；`--aecomp 40`（默认 0x38=56 调低）使
+  mean luma 53→28，AE 补偿旋钮方向正确；mirror/flip、抗闪烁 50Hz、dehaze/DRC/LDCI
+  自动模式均无错误。
+- **WDR 2to1**（§6 点 6 初步 ✅）：`10bit vc-wdr init success`，**30.3 fps 满帧稳定**；
+  同场景统计 low 36.5%→5.3%、high 5.7%→1.6%（暗部与高光同时找回）；落盘帧对比：
+  linear 下灯管为过曝白斑，WDR 下灯管轮廓清晰可辨。已知限制（切帧率收敛变慢）与
+  WDR 画质细调待后续针对性测试。
+- 注意：`--dump` 在开跑 2s（AE 收敛）后落盘；首帧曝光不可作画质对比。
 
 ## 测试
 

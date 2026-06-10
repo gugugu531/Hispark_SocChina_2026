@@ -89,7 +89,8 @@
 1. OM 结构验证：`/4 AvgPool→backbone→ConvTranspose→全分辨率施加` 全落 AICore，实测总耗时（决定 Config-R 是否成立）。
 2. AIPP 在 1024x576 全分辨率的 CSC/归一开销。
 3. 后处理放 Q6 DSP 还是 IVE 更省。
-4. ISP 统计读取：`ss_mpi_isp_get_ae_stats` 可低频取 AE/luma 统计。
+4. ~~ISP 统计读取~~ ✅ 已验证（2026-06-11）：`ss_mpi_isp_get_ae_stats` 低频读取正常，
+   `isp_get_luma_stats` 归约为 mean/clip% 直接供 `control_decide`（见 `board/README.md`）。
 5. VGS 合成替代 GFBG，确认显示无 flicker。
 
 ## 7. 已核实的 SDK 接口与关键约束
@@ -112,6 +113,10 @@
 
 关键约束：
 
-- **OS08A20 的 WDR 模式有文档记载的限制**（SDK《Sensor support list》：短曝光精度/亮度受影响）。因此"3F-WDR 作为过曝主防线"在当前 OS08A20 上**需先实测验证**；若 WDR 不达预期，过曝防线退化为 **AE 曝光控制 + DRC/CLUT 色调压缩**为主。这是 §2 数据通路第 1–2 级的已知风险。
+- **OS08A20 的 WDR 模式有文档记载的限制**（SDK《Sensor support list》原文：short exposure
+  change < vblanking，切帧率时收敛变慢）。SDK 仅适配 **2to1 WDR**（10bit 4K，5–30fps），无 3to1。
+  **2026-06-11 板端初测正面**：30fps 满帧稳定，同场景高光/暗部裁剪大幅下降（数据见
+  `board/README.md`）；切帧率收敛与画质细调待测。若后续不达预期，过曝防线退化为
+  **AE 曝光控制 + DRC/CLUT 色调压缩**为主。
 - Resize/插值在 NNN 上实测异常，上采样统一用 ConvTranspose（见 `development-guide.md` §6）。
 
