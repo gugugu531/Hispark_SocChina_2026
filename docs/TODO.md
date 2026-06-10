@@ -9,6 +9,7 @@
 - 统一构建闭环：CMake + `aarch64-mix210-linux` toolchain file，`scripts/build_board.sh`（SDK-free 与 `ENABLE_SDK` 两态）、`scripts/test_host.sh` 主机单测。
 - `control` 模块：场景曝光模式判决（纯逻辑初版 + 主机单测）。
 - `display` 模块：VO→HDMI 1024x600 DVI 驱动（数据通路第 10a 级），板端冒烟 `test_display` 三轮 PASS（2026-06-10），无 MPI 错误、退出干净。启动序含**黑场预帧**（先稳定黑场再使能 PHY），消除了实测发现的面板锁定瞬间杂线；实现细节与实测数据见 `board/README.md`。
+- `capture` + `vpss` 模块：OS08A20(8M30 线性, sensor1/J4) → VI(online) → ISP → VPSS 多路缩放（数据通路第 1–5 级），封装厂商 sample_comm 层（CMake `vendor_comm` 静态库）。板端冒烟 `test_capture`（2026-06-10）：取帧 29.3 fps、落盘帧画面正常；`--display` 整链相机→VPSS→display 上屏 **30.2 fps 稳定**（阶段 A 最小直通链已在测试驱动中跑通）。
 
 ## 2. 未完成部分
 
@@ -16,9 +17,9 @@
 
 | 通路级 | 模块文件 | 状态 | 说明 |
 | --- | --- | --- | --- |
-| 1 采集 | `capture.c` | ❌ 未开始 | VI + MIPI，OS08A20 RAW12；WDR/DOL 模式受 §7 限制需实测 |
-| 2–4 ISP | `isp.c` | ❌ 未开始 | 3A / 3DNR+HNR / dehaze / DRC / 3D-LUT 配置与运行 |
-| 5 分发缩放 | `vpss.c` | ❌ 未开始 | chn0 显示底图 / chn1 模型输入 / chn2 缩略图 |
+| 1 采集 | `capture.c` | ✅ 已完成 | 线性模式板端 30fps 实测；WDR/DOL 模式受 §7 限制需实测 |
+| 2–4 ISP | `isp.c` | 🟡 部分 | 3A 已随 capture 起链运行；dehaze/DRC/3D-LUT 增强参数配置待做 |
+| 5 分发缩放 | `vpss.c` | ✅ 已完成 | chn0 1024x600 已实测；chn1/chn2 配置项已留好待启用 |
 | 6 预处理 | （融入 OM 的 AIPP） | ❌ 未开始 | 属模型侧工作，板端只需对齐 chn1 输出格式 |
 | 7 推理 | `infer.c` | ❌ 未开始 | ACL 初始化、OM 加载、零拷贝输入输出 |
 | 8 后处理 | `postproc.c` | ❌ 未开始 | FP16→NV21/ARGB1555；Q6 DSP 还是 IVE 待比选（§6 点 3） |
@@ -61,11 +62,12 @@
 
 目标：`OS08A20 → VI → ISP(默认参数) → VPSS chn0 → display` 实时上屏。
 
-1. `pipeline.h` 定帧结构与 VB 约定；`main.c` 接管 SYS/VB 初始化（display 模块已假定上层负责）。
-2. `capture.c` + `isp.c`：先线性模式点亮 OS08A20（WDR 留待 §6 点 6 验证）。
-3. `vpss.c`：三通道配置，chn0 直送 display。
-4. 冒烟：实时相机画面上屏 + 顺手目视确认 §6 点 5 的 flicker。
-5. 收尾：补 `deploy_board.sh` / `run_board.sh`。
+1. ❌ `pipeline.h` 定帧结构与 VB 约定；`main.c` 接管 SYS/VB 初始化与整链编排
+   （当前最小直通链在 `test_capture` 测试驱动中，需迁入主程序）。
+2. ✅ `capture.c`：线性模式点亮 OS08A20，板端 30fps（WDR 留待 §6 点 6 验证）。
+3. ✅ `vpss.c`：chn0 直送 display 已实测；chn1/chn2 待整链启用。
+4. ✅ 冒烟：实时相机画面上屏 30.2 fps（`test_capture --display`）；§6 点 5 flicker 观感待目视。
+5. ❌ 收尾：补 `deploy_board.sh` / `run_board.sh`。
 
 ### 阶段 B — 模型最小可用 + 推理上板（与 A 可并行）
 

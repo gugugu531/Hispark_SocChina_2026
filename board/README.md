@@ -8,8 +8,8 @@
 board/
 ├── CMakeLists.txt
 ├── cmake/toolchain-aarch64-mix210-linux.cmake   # 交叉编译 toolchain file
-├── include/     # 头文件: log.h / version.h / control.h / display.h / pipeline.h(后续共享帧结构)
-├── src/         # 源码, 按功能分文件: main.c / control.c / display.c (+ capture.c isp.c infer.c ... 后续)
+├── include/     # 头文件: log.h / version.h / control.h / display.h / capture.h / vpss.h
+├── src/         # 源码, 按功能分文件: main.c / control.c / display.c / capture.c / vpss.c (+ isp.c infer.c ... 后续)
 └── tests/       # 单元/驱动测试: test_<名字>.c, 各编一个可执行 + ctest
 ```
 
@@ -68,6 +68,44 @@ ssh root@192.168.1.168 '/root/socchina-2026/test_display 10'   # 10 秒, 彩条/
 - 注意：`hdmi_start` 后约 4s 内 `/proc/umap/hdmi0` 时序计数器可能短暂显示驱动默认 1080p
   （瞬态，未刷新），以稳态读数为准。
 - 待人工确认：面板画面内容（彩条/渐变交替）与 flicker 观感（架构 §6 待验证点 5）需现场目视。
+
+### capture — 相机采集驱动（数据通路第 1–4 级）
+
+接口见 `include/capture.h`：`capture_query_in_size` / `capture_init` / `capture_bind_vpss` /
+`capture_unbind_vpss` / `capture_deinit`。
+
+- 传感器 **OS08A20 8M(3840x2160) 30fps 12bit 线性模式**（WDR 留待架构 §6 点 6 验证）。
+  板上接在 **sensor1/J4**：I2C bus7、时钟/复位源 1、VI dev2，即 `sensor_index=1`（默认）。
+- 起链序：sensor 时钟（`bspmm 0x11018460 0x4001`，不配会导致 VPSS 取帧超时）→
+  VI/VPSS 模式 `OT_VI_ONLINE_VPSS_OFFLINE` → `ss_mpi_isp_exit(0)` 清残留（防
+  `already inited`/`0xa01c800c`）→ 厂商 `sample_comm_vi_start_vi`（内含 MIPI 配置、
+  sensor 驱动注册、ISP 3A 注册与 ISP run 线程）。
+- **VI online 模式下 CPU 取帧必须经 VPSS**；capture 只管 VI/ISP 起停与绑定。
+- 构建依赖厂商 sample_comm 层：CMake `ENABLE_SDK` 分支将 `${SS928_SDK_ROOT}/src/common`
+  的 sys/isp/vi/vpss 四个源文件编为 `vendor_comm` 静态库（宏与传感器型号沿用已验证
+  配方），并链接 ISP/3A/sensor 静态库组。
+
+### vpss — 多路硬件缩放分发（数据通路第 5 级）
+
+接口见 `include/vpss.h`：`vpss_init` / `vpss_get_frame` / `vpss_release_frame` / `vpss_deinit`。
+按架构约定 chn0=1024x600 显示底图 / chn1=1024x576 模型输入 / chn2=320x180 缩略图,
+NV21 无压缩输出；`depth>0` 的通道可 CPU 取帧,帧结构与 `display_send_frame` 直接兼容。
+当前实现一次支持一个组（管线仅用 grp0）。
+
+板端冒烟测试 `test_capture`（相机 → VI → ISP → VPSS chn0 → 可选 display 上屏）：
+
+```sh
+scp build/test_capture root@192.168.1.168:/root/socchina-2026/
+ssh root@192.168.1.168 '/root/socchina-2026/test_capture 6 --dump /root/socchina-2026/cap.nv21'
+ssh root@192.168.1.168 '/root/socchina-2026/test_capture 15 --display'   # 实时相机画面上屏
+```
+
+capture/vpss 板端实测（2026-06-10，板卡刚重启、接 OS08A20）：
+
+- 不带显示 6s：176 帧、**29.3 fps**（首帧 AE 收敛 get_max 188ms），落盘帧经 ffmpeg 转 PNG
+  确认为正常曝光的真实场景（传感器/ISP/AWB/VPSS 缩放全部正确）。
+- 带显示 15s：453 帧、**30.2 fps** 稳定（get_max 35ms），相机 → VPSS → display 整链
+  （阶段 A 最小直通链）跑通；退出后 HDMI `CLOSE`、无残留进程。
 
 ## 测试
 
