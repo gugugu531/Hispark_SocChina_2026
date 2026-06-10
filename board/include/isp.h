@@ -30,6 +30,14 @@ int isp_set_ae_compensation(unsigned char comp);
  * 两参均为 0 时恢复全自动 AE。 */
 int isp_set_exposure_manual(unsigned exp_time_us, unsigned again_x1024);
 
+/* AE 曝光策略：高光优先（压高光，过曝防线之一）或暗部优先。
+ * highlight_prior 非 0 = 高光优先；0 = 暗部优先（SDK 默认行为按 PQ 表）。 */
+int isp_set_ae_strategy(int highlight_prior);
+
+/* WDR 长短曝光比（仅 WDR 模式有效；staggered HDR 的主画质旋钮）。
+ * ratio_x64：长曝光/短曝光 ×64（0x40=1 倍，范围 0x40–0x4000）；0 = 回固件自动。 */
+int isp_set_wdr_exposure_ratio(unsigned ratio_x64);
+
 /* 读 AE 1024-bin 直方图统计并归约为 luma_stats_t（mean 0..255 与黑/白场裁剪比例），
  * 直接供 control_decide 使用。低频调用（控制环周期），不必逐帧。 */
 int isp_get_luma_stats(luma_stats_t *stats);

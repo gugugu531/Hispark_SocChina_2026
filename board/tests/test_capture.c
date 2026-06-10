@@ -12,6 +12,9 @@
  *   --mirror / --flip      VI 镜像 / 翻转
  *   --flicker <50|60>      抗闪烁频率
  *   --aecomp <0-255>       AE 曝光补偿（默认约 0x38；小→压高光）
+ *   --hlprior <0|1>        AE 曝光策略：1 高光优先（压高光）/ 0 暗部优先
+ *   --wdrratio <64-16384>  WDR 长短曝光比 ×64（0x40=1 倍；0 回自动；仅 --wdr 时有意义）
+ *   --exptime <us> [--again <x1024>]  手动曝光（时间 µs + 模拟增益，1024=1x）
  *   --dehaze <0|1|2> [强度] / --drc <0|1|2> [强度] / --ldci <0|1>
  *                          增强块：0 关 / 1 自动 / 2 手动(带强度)
  *   运行中每 2s 打印 fps 与 AE luma 统计（mean/clip%，§6 点 4 验证）。
@@ -94,6 +97,9 @@ int main(int argc, char **argv)
     capture_cfg_t cap_cfg = {CAPTURE_SENSOR_INDEX_DEFAULT, CAPTURE_MODE_LINEAR};
     float fps = 0.0f;
     int mirror = 0, flip = 0, flicker_hz = 0, ae_comp = -1;
+    int hl_prior = -1;
+    long wdr_ratio = -1;
+    unsigned exp_time_us = 0, again_x1024 = 0;
     int dehaze_mode = -1, drc_mode = -1, ldci_mode = -1;
     unsigned dehaze_strength = 0, drc_strength = 0;
     const char *dump_path = NULL;
@@ -132,6 +138,14 @@ int main(int argc, char **argv)
             flicker_hz = atoi(argv[++i]);
         } else if (strcmp(argv[i], "--aecomp") == 0 && i + 1 < argc) {
             ae_comp = atoi(argv[++i]);
+        } else if (strcmp(argv[i], "--hlprior") == 0 && i + 1 < argc) {
+            hl_prior = atoi(argv[++i]);
+        } else if (strcmp(argv[i], "--wdrratio") == 0 && i + 1 < argc) {
+            wdr_ratio = atol(argv[++i]);
+        } else if (strcmp(argv[i], "--exptime") == 0 && i + 1 < argc) {
+            exp_time_us = (unsigned)atoi(argv[++i]);
+        } else if (strcmp(argv[i], "--again") == 0 && i + 1 < argc) {
+            again_x1024 = (unsigned)atoi(argv[++i]);
         } else if (strcmp(argv[i], "--dehaze") == 0 && i + 1 < argc) {
             dehaze_mode = atoi(argv[++i]);
             if (dehaze_mode == 2 && i + 1 < argc) {
@@ -188,6 +202,15 @@ int main(int argc, char **argv)
     }
     if (ae_comp >= 0) {
         (void)isp_set_ae_compensation((unsigned char)ae_comp);
+    }
+    if (hl_prior >= 0) {
+        (void)isp_set_ae_strategy(hl_prior);
+    }
+    if (wdr_ratio >= 0) {
+        (void)isp_set_wdr_exposure_ratio((unsigned)wdr_ratio);
+    }
+    if (exp_time_us != 0 || again_x1024 != 0) {
+        (void)isp_set_exposure_manual(exp_time_us, again_x1024);
     }
     if (dehaze_mode >= 0) {
         (void)isp_set_dehaze((isp_block_mode_t)dehaze_mode, (unsigned char)dehaze_strength);

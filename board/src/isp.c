@@ -62,16 +62,54 @@ int isp_set_exposure_manual(unsigned exp_time_us, unsigned again_x1024)
     CHECK_RET_GOTO(ss_mpi_isp_get_exposure_attr(ISP_PIPE, &exp_attr), fail);
     exp_attr.op_type = manual ? OT_OP_MODE_MANUAL : OT_OP_MODE_AUTO;
     if (manual) {
+        /* 四个分量全手动；数字增益固定 1x，否则 AE 会用 AUTO 的数字增益
+         * 把亮度补回目标值，手动曝光形同虚设（板端实测踩坑）。 */
         exp_attr.manual_attr.exp_time_op_type = OT_OP_MODE_MANUAL;
         exp_attr.manual_attr.a_gain_op_type = OT_OP_MODE_MANUAL;
-        exp_attr.manual_attr.d_gain_op_type = OT_OP_MODE_AUTO;
-        exp_attr.manual_attr.ispd_gain_op_type = OT_OP_MODE_AUTO;
+        exp_attr.manual_attr.d_gain_op_type = OT_OP_MODE_MANUAL;
+        exp_attr.manual_attr.ispd_gain_op_type = OT_OP_MODE_MANUAL;
         exp_attr.manual_attr.exp_time = exp_time_us;
         exp_attr.manual_attr.a_gain = (again_x1024 != 0) ? again_x1024 : 1024;
+        exp_attr.manual_attr.d_gain = 1024;
+        exp_attr.manual_attr.isp_d_gain = 1024;
     }
     CHECK_RET_GOTO(ss_mpi_isp_set_exposure_attr(ISP_PIPE, &exp_attr), fail);
     LOG_INFO("isp exposure -> %s (time=%uus again=%u/1024)", manual ? "manual" : "auto",
              exp_time_us, again_x1024);
+    return 0;
+fail:
+    return -1;
+}
+
+int isp_set_ae_strategy(int highlight_prior)
+{
+    ot_isp_exposure_attr exp_attr;
+
+    memset(&exp_attr, 0, sizeof(exp_attr));
+    CHECK_RET_GOTO(ss_mpi_isp_get_exposure_attr(ISP_PIPE, &exp_attr), fail);
+    exp_attr.auto_attr.ae_strategy_mode =
+        highlight_prior ? OT_ISP_AE_EXP_HIGHLIGHT_PRIOR : OT_ISP_AE_EXP_LOWLIGHT_PRIOR;
+    CHECK_RET_GOTO(ss_mpi_isp_set_exposure_attr(ISP_PIPE, &exp_attr), fail);
+    LOG_INFO("isp ae strategy -> %s", highlight_prior ? "highlight prior" : "lowlight prior");
+    return 0;
+fail:
+    return -1;
+}
+
+int isp_set_wdr_exposure_ratio(unsigned ratio_x64)
+{
+    ot_isp_wdr_exposure_attr wdr_attr;
+
+    memset(&wdr_attr, 0, sizeof(wdr_attr));
+    CHECK_RET_GOTO(ss_mpi_isp_get_wdr_exposure_attr(ISP_PIPE, &wdr_attr), fail);
+    if (ratio_x64 == 0) {
+        wdr_attr.exp_ratio_type = OT_OP_MODE_AUTO;
+    } else {
+        wdr_attr.exp_ratio_type = OT_OP_MODE_MANUAL;
+        wdr_attr.exp_ratio[0] = ratio_x64; /* 2to1 WDR 只用第 0 组长短比 */
+    }
+    CHECK_RET_GOTO(ss_mpi_isp_set_wdr_exposure_attr(ISP_PIPE, &wdr_attr), fail);
+    LOG_INFO("isp wdr exp ratio -> %s (%u/64x)", (ratio_x64 == 0) ? "auto" : "manual", ratio_x64);
     return 0;
 fail:
     return -1;
@@ -182,6 +220,18 @@ int isp_set_exposure_manual(unsigned exp_time_us, unsigned again_x1024)
 {
     (void)exp_time_us;
     (void)again_x1024;
+    return -1;
+}
+
+int isp_set_ae_strategy(int highlight_prior)
+{
+    (void)highlight_prior;
+    return -1;
+}
+
+int isp_set_wdr_exposure_ratio(unsigned ratio_x64)
+{
+    (void)ratio_x64;
     return -1;
 }
 

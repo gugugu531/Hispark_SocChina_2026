@@ -90,13 +90,17 @@ ssh root@192.168.1.168 '/root/socchina-2026/test_display 10'   # 10 秒, 彩条/
 
 ### isp — ISP 运行时参数面与统计（数据通路第 2–4 级 + 第 11 级控制接口）
 
-接口见 `include/isp.h`：抗闪烁（50/60Hz）、AE 曝光补偿、手动曝光（时间+模拟增益）、
-**`isp_get_luma_stats`**（AE 1024-bin 直方图 → `luma_stats_t`，直接喂 `control_decide`，
-即架构 §6 点 4 的统计通路）、dehaze / DRC / LDCI 增强块（关/自动/手动三态）。
+接口见 `include/isp.h`：抗闪烁（50/60Hz）、AE 曝光补偿、AE 策略（高光/暗部优先）、
+手动曝光（时间+模拟增益）、WDR 长短曝光比、**`isp_get_luma_stats`**（AE 1024-bin
+直方图 → `luma_stats_t`，直接喂 `control_decide`，即架构 §6 点 4 的统计通路）、
+dehaze / DRC / LDCI 增强块（关/自动/手动三态）。
 
 - ISP 本体（3A 注册与 run 线程）由 capture 起链拉起；本模块只做运行时控制，
   要求 `capture_init` 已成功。
-- 3D-LUT（CLUT）需配合标定 LUT 表加载，待色调映射方案确定后接入。
+- **手动曝光坑**：四个增益分量必须全 MANUAL（数字增益固定 1x）——若 d_gain/isp_d_gain
+  留 AUTO，AE 会用数字增益把亮度补回目标值，手动曝光形同虚设（板端实测踩坑）。
+- 3D-LUT（CLUT）需配合标定 LUT 表加载，待色调映射方案确定后接入；HNR/锐化/AWB 等
+  纯 ISP 图像处理项留待 ISP 专项开发。
 
 ### vpss — 多路硬件缩放分发（数据通路第 5 级）
 
@@ -135,6 +139,20 @@ capture 扩展功能与 isp 模块板端实测（2026-06-11，同场景=暗房�
   linear 下灯管为过曝白斑，WDR 下灯管轮廓清晰可辨。已知限制（切帧率收敛变慢）与
   WDR 画质细调待后续针对性测试。
 - 注意：`--dump` 在开跑 2s（AE 收敛）后落盘；首帧曝光不可作画质对比。
+
+曝光类功能板端实测（2026-06-11，同场景=暗房间+亮台灯，基线 linear mean≈54/low 34%/high 5.6%）：
+
+- **手动曝光**（`--exptime --again`）：2ms@1x → mean 4.9（近全黑，判决"提亮"）；
+  33ms@8x → mean 135、高光裁剪 30.7%（判决"压高光"）——两方向确定性生效，
+  顺带覆盖 `control_decide` 全部分支。
+- **WDR 长短曝光比**（`--wdr --wdrratio`，×64）：auto → mean 40.3/low 3.2%/high 1.4%；
+  4x(256) → mean 75.7/high 3.7%（更亮但高光开始裁剪）；32x(2048) → mean 28.8/high 0.8%
+  （高光保护最强、暗部变暗）。旋钮方向正确，auto 固件值居中可用。
+- **WDR 运行时切帧率**：切 10fps 生效（瞬时 ~10.5fps），全程 luma 稳定无振荡；
+  切 5fps 收敛偏慢（8s 末瞬时 ~7fps），与《Sensor support list》"切换变慢"警示一致，
+  无画质副作用。
+- **AE 策略**（`--hlprior`）：接口生效无错误，但当前场景统计无可测差异
+  （高光占比未触发策略权衡），待强逆光场景再验证效果。
 
 ## 测试
 
