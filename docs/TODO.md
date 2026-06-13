@@ -60,6 +60,15 @@
    生效且 luma 稳定，仅向低帧率收敛偏慢（与文档警示一致，无画质副作用）。
    余项：强逆光场景画质细调、运动鬼影、长时稳定性。
 
+### 2.5 辅助外设（非图像数据通路）
+
+- ✅ **触摸输入开箱即用**（板端实测 2026-06-14，`feat/touch-usb`）：Waveshare 7 寸面板 USB 触摸
+  经内核 `usbhid → hid-generic → evdev` 已识别为标准绝对触摸屏 `/dev/input/event0`
+  （`0eef:0005`，`ABS_X 0..1024 / ABS_Y 0..600` = 面板像素 1:1，带 `BTN_TOUCH`）。
+  **无需自定义驱动 / 标定 / 缩放**，应用读 `event0` 即可。本板无 `/dev/hidraw`、`/dev/uinput`
+  存在。细节与核对命令见 [board-operations.md](board-operations.md) §6。
+  （曾评估用户态 HID→uinput 驱动，因内核已正确处理且无 hidraw，结论为不需要。）
+
 ## 3. 开发规划
 
 原则：**先打通最小闭环、再补画质与控制**；每个模块按"实现 → 板端冒烟 → README 记录"推进（开发规范 §10）。
