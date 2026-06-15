@@ -24,7 +24,7 @@
 
 ```sh
 # 1) 网络 + 导出 ONNX（FP32 供核对 + FP16 供 ATC）—— 步骤 1+2，不需硬件
-python models/export_expo_curve_onnx.py --niter 8 --filters 16 \
+python -m models.exporters.expo_curve_onnx --niter 8 --filters 16 \
     --width 1024 --height 576 --opset 13 --in-name input --out-name output
 #   → models/weights/expo_curve_1024x576.onnx        (FP32, 清理 + checker + 打印算子直方图)
 #   → models/weights/expo_curve_1024x576_fp16.onnx   (FP16 整图直转, 无 Cast)
@@ -39,7 +39,7 @@ ATC_SETENV=<CANN>/bin/setenv.bash \
 #   → models/weights/expo_curve_1024x576_fp16.om  (+ .fusion_result.json)
 
 # 2b) 可选挂 AIPP（NV21→RGB→/255 融入 OM 前端）—— §6 点 2 开销实测
-AIPP_CFG=models/aipp_nv21_1024x576.cfg ATC_SETENV=<CANN>/bin/setenv.bash \
+AIPP_CFG=models/configs/aipp_nv21_1024x576.cfg ATC_SETENV=<CANN>/bin/setenv.bash \
   models/build_expo_curve_fp16_om.sh \
     models/weights/expo_curve_1024x576_fp16.onnx models/weights expo_curve_1024x576_fp16_aipp 1024 576
 #   → 追加 --insert_op_conf=...；OM 输入变 NV21(YUV420SP_U8, NHWC, uint8)
@@ -140,7 +140,7 @@ ATC 转换成功（`ATC run success`）。`om.json` 解析（48 OM 节点）+ `f
 
 #### 对照：SCI（Self-Calibrated Illumination, CVPR 2022）—— 全分辨率超轻量基线
 
-工作区文档原**未**收录 SCI（roadmap §6.2 候选表只列了 MSEC/CoTF/FECNet/IAT）；这里按其推理结构
+此前候选路线未包含 SCI；这里按其推理结构
 （IEM 5 层 conv + Retinex 除法 `x/illu`，全分辨率、无降采样）实现并实测。算子探测干净：
 `RealDiv` 落 AICore，**无 AICPU/Cast**（但全分辨率带来 **TransData x12**，比本网络还多）。
 
@@ -166,7 +166,8 @@ ATC 转换成功（`ATC run success`）。`om.json` 解析（48 OM 节点）+ `f
 #### 对照：MSEC（多尺度 U-Net, CVPR 2021）与 CoTF（3D-LUT, CVPR 2024）
 
 两者都是**双向**曝光校正（满足任务），但代表两条相反的工程结局。均为结构/速率代理实现（随机权重，
-NNN 适配：ConvTranspose 替 bilinear），见 [msec_net.py](msec_net.py) / [cotf_net.py](cotf_net.py)。
+NNN 适配：ConvTranspose 替 bilinear），见 [networks/msec.py](networks/msec.py) /
+[networks/cotf.py](networks/cotf.py)。
 
 | 模型 | 1024x576 | 768x432 | 640x360 | 512x288 | 384x216 | 算子探测 |
 | --- | ---: | ---: | ---: | ---: | ---: | --- |
@@ -178,8 +179,8 @@ NNN 适配：ConvTranspose 替 bilinear），见 [msec_net.py](msec_net.py) / [c
 - **CoTF = 唯一突破访存地板的结构**：它的 NN 只在低分辨率"出 3D-LUT 系数"，1024x576 仅 **4.68ms**
   （比任何全分辨率输出模型快 ~20×）。**但全分辨率 3D-LUT 施加（三线性插值）连 ONNX 都导不出**——
   `torch.onnx.export` 直接报 `Unsupported: GridSample with 5D volumetric input`。即 **3D-LUT 施加无法走
-  ONNX→OM→NPU，必须交给 ISP 硬件 CLUT（`ss_mpi_isp_set_clut`）或自定义算子**。这正是 roadmap §9 点 8
-  "3D-LUT 算子待评估"的确定答案，也实证了 roadmap §8 的主线：**NN 出参数（4.7ms）+ ISP 硬件施加（零 NPU）**。
+  ONNX→OM→NPU，必须交给 ISP 硬件 CLUT（`ss_mpi_isp_set_clut`）或自定义算子**。这给出了
+  architecture.md §4.1/§6 的确定答案：**当前 NPU 导出路径不可行，NN 出参数 + ISP 硬件施加可行**。
 
 ## 解读
 
@@ -205,9 +206,9 @@ NNN 适配：ConvTranspose 替 bilinear），见 [msec_net.py](msec_net.py) / [c
 
 5. **给后续的判决（据此决定是否投入训练）：**
    - **不要**在 `1024x576` 上投入认真训练——无任何变体进 33ms（§6 点 1 的预设结论触发）。
-   - **Config-R 实时档建议 `768x432 + 共享曲线 niter=8`（27.2ms）**——这是进预算的最高分辨率且 niter 不打折；
-     若要更大裕量给后处理/合成则退到 `640x360 shared_n8`（19.5ms）。AIPP 零开销，预处理直接融入 OM。
-     1024x576 归 Config-Q 高画质/低帧路径。
+   - **整图增强备选建议 `768x432 + 共享曲线 niter=8`（27.2ms）**——这是进预算的最高分辨率且
+     niter 不打折；若要更大裕量给后处理/合成则退到 `640x360 shared_n8`（19.5ms）。
+     Config-R 主线已转为 CoTF + ISP CLUT，1024x576 整图输出归 Config-Q 高画质/低帧路径。
    - **像素线性规律**给了快速估算法：`实时分辨率像素 ≈ 33ms / 每像素系数`（shared_n8 ≈ 0.083µs/px →
      ~400k px；distinct_n8 ≈ 0.16µs/px → ~200k px）。换分辨率不必每次都板测。
    - 模型侧 §6 **点 1 + 点 2 均已出数**；余下待验证回到板端工程侧（点 3 后处理 DSP/IVE 比选、点 5 VGS 合成）。
@@ -219,12 +220,13 @@ NNN 适配：ConvTranspose 替 bilinear），见 [msec_net.py](msec_net.py) / [c
 
 ## 交付物与产物（大件不入库，仅此指针；见 .gitignore）
 
-- 代码：[expo_curve_net.py](expo_curve_net.py)（参数化网络）、[export_expo_curve_onnx.py](export_expo_curve_onnx.py)
-  （导出+清理+FP16+校验+算子打印）、[build_expo_curve_fp16_om.sh](build_expo_curve_fp16_om.sh)
-  （ATC，NCHW，可选 `AIPP_CFG` 挂 AIPP）、[aipp_nv21_1024x576.cfg](aipp_nv21_1024x576.cfg)（NV21→RGB→/255 静态 AIPP）、
+- 代码：[networks/expo_curve.py](networks/expo_curve.py)（参数化网络）、
+  [exporters/expo_curve_onnx.py](exporters/expo_curve_onnx.py)（导出+清理+FP16+校验+算子打印）、
+  [build_expo_curve_fp16_om.sh](build_expo_curve_fp16_om.sh)（ATC，NCHW，可选 `AIPP_CFG` 挂 AIPP）、
+  [configs/aipp_nv21_1024x576.cfg](configs/aipp_nv21_1024x576.cfg)（NV21→RGB→/255 静态 AIPP）、
   [tests/test_expo_curve_net.py](tests/test_expo_curve_net.py)（pytest，11 passed）。
-- 速率对照模型：[sci_net.py](sci_net.py) / [msec_net.py](msec_net.py) / [cotf_net.py](cotf_net.py)
-  及各自 `export_*_onnx.py`（复用 ExpoCurveNet 的导出/清理逻辑）。
+- 速率对照模型：[networks/sci.py](networks/sci.py) / [networks/msec.py](networks/msec.py) /
+  [networks/cotf.py](networks/cotf.py)，导出入口位于 `exporters/`。
 - 速率矩阵原始数据：`artifacts/expo_curve_speed_matrix.csv`
   （ExpoCurveNet 变体 + ZeroDCE_Lite_ref + SCI + MSEC + CoTF param-net）。
 - 板端 benchmark 复用 `experiments/zero-dce-npu-om/src/acl_om_benchmark.cpp`（原样，未改）。

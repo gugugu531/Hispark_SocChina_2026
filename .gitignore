@@ -18,6 +18,7 @@ artifacts/*
 models/weights/*
 !models/weights/.gitkeep
 !models/weights/*.md
+models/kernel_meta/
 *.om
 *.onnx
 *.pt
@@ -33,6 +34,7 @@ board/third_party/include/
 
 # ===== Python =====
 __pycache__/
+.pytest_cache/
 *.py[cod]
 .venv/
 venv/

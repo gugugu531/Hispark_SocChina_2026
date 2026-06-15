@@ -1,4 +1,4 @@
-"""把 NN 预测的 3D-LUT 打包成 SS928 ISP 硬件 CLUT 的 u32 格式（CoTF 路线的 NN→硬件桥）。
+"""将 NN 预测的 3D-LUT 打包为 SS928 ISP CLUT 的 u32 格式。
 
 硬件格式（核对自 SDK 头 `ot_common_isp.h` / `ot_isp_define.h`）：
   * `ot_isp_clut_lut.lut[OT_ISP_CLUT_LUT_LENGTH]`，`OT_ISP_CLUT_LUT_LENGTH = 5508` 个节点。

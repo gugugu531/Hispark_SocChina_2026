@@ -20,18 +20,19 @@ from __future__ import annotations
 
 import argparse
 import os
-import sys
 from collections import Counter
+from pathlib import Path
 
 import numpy as np
 import onnx
 import torch
 from onnx import TensorProto, numpy_helper
 
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from expo_curve_net import build_model  # noqa: E402
+from models.networks.expo_curve import build_model
 
-# NNN 红名单（会回退 AICPU/报错），导出态绝不允许出现，见 roadmap §2 / development-guide.md §6
+MODELS_DIR = Path(__file__).resolve().parents[1]
+
+# NNN 红名单（会回退 AICPU/报错），导出态绝不允许出现，见 development-guide.md §6
 RED_LIST = {
     "Resize",
     "Upsample",
@@ -131,7 +132,7 @@ def main() -> int:
     ap.add_argument("--opset", type=int, default=13)
     ap.add_argument("--in-name", default="input")
     ap.add_argument("--out-name", default="output")
-    ap.add_argument("--out-dir", default=os.path.join(os.path.dirname(__file__), "weights"))
+    ap.add_argument("--out-dir", default=str(MODELS_DIR / "weights"))
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--tag", default="", help="附加到文件名的标签（用于砍参数 sweep，不覆盖正式产物）")
     ap.add_argument("--shared", action="store_true", help="共享曲线变体（单套 3 通道复用 niter 次）")

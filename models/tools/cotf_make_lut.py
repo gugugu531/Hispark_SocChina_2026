@@ -8,14 +8,20 @@ from __future__ import annotations
 
 import argparse
 import os
-import sys
+from pathlib import Path
 
 import numpy as np
 import torch
 
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from cotf_net import build_param_net  # noqa: E402
-from cotf_lut_pack import HW_LUT_LENGTH, decode_paramnet_output, pack_cubic_to_hw, write_lut_bin  # noqa: E402
+from models.networks.cotf import build_param_net
+from models.tools.cotf_lut_pack import (
+    HW_LUT_LENGTH,
+    decode_paramnet_output,
+    pack_cubic_to_hw,
+    write_lut_bin,
+)
+
+MODELS_DIR = Path(__file__).resolve().parents[1]
 
 
 def main() -> int:
@@ -23,7 +29,7 @@ def main() -> int:
     ap.add_argument("--lut-dim", type=int, default=17)
     ap.add_argument("--thumb-h", type=int, default=144, help="param-net 输入缩略图高（NN 只需缩略图）")
     ap.add_argument("--thumb-w", type=int, default=256)
-    ap.add_argument("--out", default=os.path.join(os.path.dirname(__file__), "weights", "cotf_clut.bin"))
+    ap.add_argument("--out", default=str(MODELS_DIR / "weights" / "cotf_clut.bin"))
     ap.add_argument("--seed", type=int, default=0)
     args = ap.parse_args()
 

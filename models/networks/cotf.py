@@ -1,12 +1,12 @@
-"""CoTF（Real-Time Exposure Correction, CVPR 2024, HUST-IAL/CoTF）速率/可行性探针。
+"""CoTF（Real-Time Exposure Correction, CVPR 2024）速率/可行性探针。
 
-CoTF 思路：低分辨率编码器预测**全局变换 + 3D-LUT**，全分辨率用 3D-LUT 施加（roadmap §8 首选方向，
-可对接 ISP 硬件 3D-LUT）。**双向**曝光校正、实时、有开源码。
+CoTF 思路：低分辨率编码器预测**全局变换 + 3D-LUT**，全分辨率用 ISP CLUT 施加。
+该路线支持双向曝光校正，并把模型移出每帧关键路径。
 
 本文件把 CoTF 拆成两块，分别回答两个问题：
   1. `CoTFParamNet`：低分辨率"出参数"的 NN —— 它在 NPU 上要多久？（预期很快，因为只在低分辨率跑）
   2. `lut_apply_graph`：全分辨率 3D-LUT 施加（三线性插值）—— 这个算子能否落 NNN AICore？
-     （这是 roadmap §9 点 8 标注"待评估"的关键风险：3D-LUT 三线性插值≈grid_sample，可能红名单。）
+     （这是 architecture.md §4.1 已验证的关键风险：3D-LUT 三线性插值≈grid_sample。）
 
 相对官方 / 说明
 --------------

@@ -4,20 +4,15 @@
 为提速，前向/导出用小分辨率（64x96，仍可被 down=4 整除）。
 """
 
-import os
-import sys
-
 import numpy as np
 import onnx
 import pytest
 import torch
 
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from models.exporters import expo_curve_onnx as exp
+from models.networks.expo_curve import ExpoCurveNet, bilinear_kernel, build_model
 
-from expo_curve_net import ExpoCurveNet, bilinear_kernel, build_model  # noqa: E402
-import export_expo_curve_onnx as exp  # noqa: E402
-
-# 绿名单（roadmap §2）+ ONNX 图结构辅助算子（Constant / 图 IO 节点）
+# NNN 绿名单 + ONNX 图结构辅助算子（Constant / 图 IO 节点）
 GREEN = {
     "Conv", "ConvTranspose", "AveragePool", "MaxPool", "Clip", "Tanh", "Sigmoid",
     "HardSigmoid", "Mul", "Add", "Sub", "Div", "Pow", "Exp", "Concat", "Split",
@@ -80,7 +75,7 @@ def test_upsample_preserves_dc_in_interior():
 
 def test_curve_apply_is_bidirectional():
     # 双向性: x = x + r*(x²-x)，中间调 x=0.5 时 (x²-x)=-0.25
-    #   r>0 → 变暗; r<0 → 变亮。验证符号决定方向（roadmap §6 / architecture §1）。
+    #   r>0 → 变暗; r<0 → 变亮。验证符号决定方向（architecture.md §1）。
     x = torch.full((1, 3, 4, 4), 0.5)
     bright = x + (-0.8) * (x * x - x)
     dark = x + (0.8) * (x * x - x)

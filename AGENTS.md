@@ -8,23 +8,25 @@
 
 > SS928 / Hi3403V100 / SD3403 / 海鸥派 / EulerPi 均指同一块板卡。
 
-核心数据通路（详见 `docs/architecture.md`）：
+Config-R 核心数据通路（详见 `docs/architecture.md`）：
 
 ```text
-OS08A20 -> VI -> ISP(WDR/3DNR/LTM/去雾) -> VPSS 多路缩放
-  ├─ chn0 -> 显示底图
-  └─ chn1 -> AIPP -> NNN/ACL OM(曲线预测+施加) -> 后处理(DSP/IVE)
-                          ▼
-        VGS 合成 -> VO -> HDMI 1024x600 本地显示
-                  └─> VENC -> RTSP 远程串流
-  场景自适应控制(读 ISP AE 统计 -> 调 ISP/模型参数)贯穿全链
+主路径:
+OS08A20 -> VI -> ISP(WDR/3DNR/DRC/CLUT) -> VPSS -> VO/HDMI
+                                             -> VENC/RTSP
+
+低频控制旁路:
+VPSS chn2 缩略图 -> AIPP -> CoTF param-net -> LUT 打包 -> ISP CLUT
+ISP AE 统计 -------------------------------------> 场景判决/刷新控制
 ```
 
 设计要点：
 
-- 降噪交给 ISP 硬件（3DNR/HNR），NN 只做**单输入"低分辨率预测曲线 + 全分辨率施加曲线"**。
-- 除推理与 AIPP 在 NNN 上，其余环节全部由 ISP/VPSS/IVE/VGS/VENC/DSP 硬件块承担，目标**零 CPU 逐像素搬运**。
-- 两套运行配置：Config-R（实时 30fps，模型输入 `1024x576`，预算 ≤33ms/帧）与 Config-Q（拍照/低帧，高画质）。
+- 降噪交给 ISP 硬件（3DNR/HNR）；NN 只从低分辨率缩略图预测 LUT，ISP CLUT 负责全分辨率施加。
+- 当前主线已经由整图曲线网络修正为 **CoTF 参数网络预测 LUT + ISP CLUT 全分辨率施加**。
+- NPU 与 CPU LUT 打包位于低频控制旁路；主路径目标是零 CPU/NPU 全分辨率逐像素搬运。
+- Config-R 目标为 1024x600 显示 30fps；整图 `768x432 shared niter8` 仅保留为备选。
+- Config-Q 用于拍照或低帧率高画质整图增强。
 
 ## 先读这些
 
@@ -48,6 +50,8 @@ OS08A20 -> VI -> ISP(WDR/3DNR/LTM/去雾) -> VPSS 多路缩放
 | `docs/` | 规范 / 架构 / 操作文档。 |
 
 板端代码采用拍平的常规嵌入式 Linux 结构：`board/{CMakeLists.txt, cmake/, include/, src/, tests/}`。
+模型代码按职责组织为 `models/{networks,exporters,tools,configs,tests,weights}`，Python 入口统一从仓库根目录
+使用 `python -m models.<子包>.<模块>`。
 
 - `src/` 平铺，每个数据通路阶段一个 `.c`（`capture/isp/vpss/preproc/infer/postproc/compose/display/stream/control`），`main.c` 为主程序入口。
 - `src/*.c`（除 `main.c`）编成静态库 `socchina`，主程序与测试共用。
@@ -120,14 +124,16 @@ scripts/test_host.sh                     # 主机单元测试（SDK-free 纯逻�
 来自先前板端实验的稳定结论（编码与决策时直接采信，不必重新求证；推翻需附新实测）：
 
 - Zero-DCE Lite FP16 OM 可在 SVP_NNN 上运行；离线模型执行约 `29.9 ms @ 640x320`、`96 ms @ 1024x640`。这些是**离线基准**，不是已验证的实时数字。
-- AIPP 路径已在小分辨率（160x160）验证可用，约 `1 ms`；全分辨率 `1024x576` 的 AIPP 开销待实测。
+- AIPP 已在 `1024x576` 和 `640x360` 实测；挂载前后 OM 耗时差异在噪声内，附加开销约 `0 ms`。
 - 历史实时路径的瓶颈是 CPU YUV/RGB/FP16 打包与 framebuffer 合成，而非模型本身——这正是本架构用 AIPP/VGS/DSP 替代的动机。
 - HDMI 面板为类 DVI 的 1024x600 面板：原生时序、DVI 模式、音频禁用、RGB full 路径稳定；GFBG 图层路径有轻微 flicker（VGS 合成替代方案待验证）。
 - 相机是 **OS08A20**（早期曾被误认为 OS04A10，已纠正）。
 - `/proc/umap/svp_nnn` 的 `hw_utilization` 是目前最佳的 NPU 百分比式利用率指标；ACL profiling 会扭曲 CPU/内存计时，资源监控与 profiling 要分开跑。
 - **OS08A20 的 WDR 模式有 SDK 文档记载的限制**（短曝光精度/亮度受影响）。"WDR 作为过曝主防线"需先实测；不达预期则退化为 AE 曝光控制 + DRC/CLUT 色调压缩为主。
 
-架构级待验证点清单维护在 `docs/architecture.md` §6，其中**第 1 条（新 OM 结构全落 AICore 且耗时达标）是 Config-R 成立与否的 go/no-go 门槛**，优先级最高。
+架构级待验证点清单维护在 `docs/architecture.md` §6。整图 OM 的 go/no-go 已完成：算子可干净落
+AICore，但 `1024x576` 超过 33ms。当前 Config-R 主线已转为 CoTF 参数网络 + ISP CLUT；最高优先级是
+CLUT mesh 核对和相机链联机点亮。
 
 ## Git 规范
 

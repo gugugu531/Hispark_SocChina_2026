@@ -1,4 +1,4 @@
-"""SCI (Self-Calibrated Illumination) 推理结构 —— 速率对照基线。
+"""SCI (Self-Calibrated Illumination) 推理网络，作为速率对照基线。
 
 论文：Toward Fast, Flexible, and Robust Low-Light Image Enhancement, CVPR 2022（Ma et al.）。
 官方实现：vis-opt-group/SCI（`model.py` 的 `EnhanceNetwork`）。

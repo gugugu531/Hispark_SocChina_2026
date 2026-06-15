@@ -8,14 +8,15 @@ from __future__ import annotations
 
 import argparse
 import os
-import sys
+from pathlib import Path
 
 import onnx
 import torch
 
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from cotf_net import build_param_net  # noqa: E402
-from export_expo_curve_onnx import clean_graph, convert_to_fp16, op_histogram  # noqa: E402
+from models.exporters.expo_curve_onnx import clean_graph, convert_to_fp16, op_histogram
+from models.networks.cotf import build_param_net
+
+MODELS_DIR = Path(__file__).resolve().parents[1]
 
 
 def main() -> int:
@@ -26,7 +27,7 @@ def main() -> int:
     ap.add_argument("--height", type=int, default=576, help="param-net 输入高（喂缩略图更省，与显示分辨率无关）")
     ap.add_argument("--width", type=int, default=1024)
     ap.add_argument("--opset", type=int, default=13)
-    ap.add_argument("--out-dir", default=os.path.join(os.path.dirname(__file__), "weights"))
+    ap.add_argument("--out-dir", default=str(MODELS_DIR / "weights"))
     ap.add_argument("--tag", default="")
     args = ap.parse_args()
 

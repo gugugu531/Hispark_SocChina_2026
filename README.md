@@ -2,20 +2,21 @@
 
 面向海思 SS928 / SD3403（Hi3403V100，海鸥派）平台的**实时图像增强系统**参赛软件仓库。
 
-系统在板端构建一条以 ISP 硬件为底座、NPU 曲线/3D-LUT 网络为主体的**双向曝光校正**链路：既能拉亮暗部，也能抑制高光过曝，并通过 HDMI 本地显示与 RTSP 远程串流输出。
+系统在板端构建一条以 ISP 硬件为底座、低频 NPU 参数网络为控制旁路的**双向曝光校正**链路：
+既能拉亮暗部，也能抑制高光过曝，并通过 HDMI 本地显示与 RTSP 远程串流输出。
 
 > 说明：SS928 / Hi3403V100 / SD3403 / 海鸥派 / EulerPi 均指同一块板卡。
 
 ## 系统总览
 
-```
-OS08A20 ─► VI ─► ISP(WDR/降噪/LTM/去雾) ─► VPSS(多路缩放)
-   ├─ chn0 ─► 显示底图 ─────────────────────────────┐
-   └─ chn1 ─► AIPP ─► NNN/ACL OM(曝光校正) ─► 后处理 ─┤
-                                                      ▼
-                                  VGS 合成 ─► VO ─► HDMI 本地显示
-                                            └─► VENC ─► RTSP 远程
-   场景自适应大脑（读 ISP AE 统计 → 调 ISP/模型参数）贯穿全链
+```text
+主路径：
+OS08A20 -> VI -> ISP(WDR/降噪/DRC/CLUT) -> VPSS -> VO/HDMI
+                                              -> VENC/RTSP
+
+低频控制旁路：
+VPSS 缩略图 -> AIPP -> CoTF 参数网络 -> LUT 打包 -> ISP CLUT 热刷新
+ISP AE 统计 ---------------------------> 场景判决与刷新控制
 ```
 
 完整数据通路与设计依据见 [docs/architecture.md](docs/architecture.md)。
@@ -27,9 +28,12 @@ OS08A20 ─► VI ─► ISP(WDR/降噪/LTM/去雾) ─► VPSS(多路缩放)
 | 路径 | 用途 |
 | --- | --- |
 | `board/` | 板端应用（C/C++，交叉编译，CMake 构建）。 |
-| `models/` | 模型训练 / ONNX 导出 / ATC→OM 转换，环境依赖清单。 |
+| `models/` | 模型网络、ONNX 导出器、LUT 工具、AIPP 配置与测试。 |
 | `scripts/` | 环境、构建、部署、板端运行脚本。 |
 | `docs/` | 开发规范、系统架构、板端操作手册。 |
+
+模型侧分层为 `models/{networks,exporters,tools,configs,tests,weights}`；可执行 Python 入口使用
+`python -m models.<子包>.<模块>`。
 
 ## 快速开始
 
@@ -69,6 +73,7 @@ scripts/test_host.sh              # 本机 cc 编译并运行 SDK-free 单元测
 - [AGENTS.md](AGENTS.md) — AI 代理/协作者开发指南（阅读顺序、约定汇总、板端习惯、已知坑点）
 - [docs/development-guide.md](docs/development-guide.md) — 开发规范（环境/构建/编码/模型/板端/Git/文档）
 - [docs/architecture.md](docs/architecture.md) — 系统架构与完整数据通路
+- [docs/model-route-summary.md](docs/model-route-summary.md) — 模型路线稳定结论与当前主线
 - [docs/TODO.md](docs/TODO.md) — 未完成清单与阶段化开发规划
 - [docs/board-operations.md](docs/board-operations.md) — 板端部署/运行/恢复手册
 

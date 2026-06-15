@@ -1,7 +1,8 @@
 # CoTF 路线可行性验证 + 代码实现 —— NN 出 LUT + ISP 硬件施加
 
-> 状态：2026-06-15。**路线已验证 + 代码已完成**（host 桥 + 板端 CLUT API + 控制策略，端到端可跑；
-> 剩 mesh 标定与板端联机点亮）。回答 roadmap §8 主线 / §9 点 8（CoTF 3D-LUT 能否落地）：
+> 状态：2026-06-15。**分环验证与接口代码已完成**（host 桥 + 板端 CLUT API + 控制策略）；
+> 尚未完成相机链端到端联机。回答 [architecture.md](../docs/architecture.md) §4.1 / §6
+> 中 CoTF 3D-LUT 能否落地的问题：
 > **NN 低分辨率出 3D-LUT（NPU）+ ISP 硬件全分辨率施加（零 NPU）** 这条路能不能成立。
 > 这是 [expo-curve-network.md](expo-curve-network.md) 横评后唯一能突破"全分辨率访存地板"的架构。
 > 四段式：目标 / 命令路径 / 结果 / 解读。
@@ -17,8 +18,8 @@
 ```sh
 # === 验证用命令 ===
 # A. NN 端（出 LUT 参数）—— 实测 NPU 耗时
-python models/cotf_net.py                                   # 结构自检（param-net + LUT-apply）
-python models/export_cotf_onnx.py --height 144 --width 256  # param-net 导出 ONNX(opset13,NCHW)
+python -m models.networks.cotf                              # 结构自检（param-net + LUT-apply）
+python -m models.exporters.cotf_onnx --height 144 --width 256
 #   → ATC → OM → 板端 acl_om_benchmark（耗时见结果）
 # B. NPU 能否做全分辨率 3D-LUT 施加？
 #    torch.onnx.export(LUTApply via F.grid_sample 3D) → 直接报错（见结果）
@@ -31,7 +32,7 @@ scripts/build_board.sh Release                              # 默认(SDK-free)�
 scripts/test_host.sh                                        # control 主机单测（含 LUT 刷新策略）
 
 # === 跑通整条 NN→硬件 LUT 桥（host 端，已可端到端运行）===
-python models/cotf_make_lut.py                              # param-net(缩略图)→立方LUT→5508节点u32→.bin
+python -m models.tools.cotf_make_lut                        # param-net→立方LUT→5508节点u32→.bin
 #   → models/weights/cotf_clut.bin（22032B = 5508×u32），板端 fread → isp_load_clut_lut(lut,5508)
 python -m pytest models/tests/test_cotf_lut_pack.py -q      # 打包桥单测（9 passed）
 ```
@@ -48,11 +49,13 @@ python -m pytest models/tests/test_cotf_lut_pack.py -q      # 打包桥单测（
 | 4 | **硬件 CLUT 存在且格式可对接** | ✅ `ss_mpi_isp_set_clut_coeff`，**5508 节点**，每节点 u32=3×10bit RGB，+全局增益；三线性插值在硬件内做 | SDK 头 `ot_common_isp.h`/`ot_isp_define.h` |
 | 5 | CLUT API 在**本板**真实可链 | ✅ 板端 `/root/display-test/lib/libss_isp.so` 导出全部 4 个 clut 函数 | `nm -D` 显示 `T ss_mpi_isp_{set,get}_clut_{attr,coeff}` |
 | 6 | **板端集成编译+链接** | ✅ `isp_set_clut`/`isp_load_clut_lut` 加进 isp.c，`-DWITH_SS928_SDK` 编译 OK；链接 libss_isp.so 出 ARM 可执行，clut 符号解析；SDK-free 整包构建 OK | 见命令路径 E |
-| — | NN→硬件 LUT 打包 | ✅ `cotf_lut_pack.py` 立方 LUT→u32，10bit 量化往返到 `2^30-1` 吻合硬件 range | `cotf_lut_pack.py` 自检 |
+| — | NN→硬件 LUT 打包 | ✅ `tools/cotf_lut_pack.py` 立方 LUT→u32，10bit 量化往返到 `2^30-1` 吻合硬件 range | LUT 打包单测 |
 
 新增代码（CoTF 路线完整代码集）：
-- NN：[cotf_net.py](cotf_net.py)（param-net + LUT-apply 探针）、[export_cotf_onnx.py](export_cotf_onnx.py)（可复现导出）。
-- NN→硬件桥：[cotf_lut_pack.py](cotf_lut_pack.py)（resample→pack→write_bin）、[cotf_make_lut.py](cotf_make_lut.py)
+- NN：[networks/cotf.py](networks/cotf.py)（param-net + LUT-apply 探针）、
+  [exporters/cotf_onnx.py](exporters/cotf_onnx.py)（可复现导出）。
+- NN→硬件桥：[tools/cotf_lut_pack.py](tools/cotf_lut_pack.py)（resample→pack→write_bin）、
+  [tools/cotf_make_lut.py](tools/cotf_make_lut.py)
   （端到端 param-net→`cotf_clut.bin`）、[tests/test_cotf_lut_pack.py](tests/test_cotf_lut_pack.py)（9 单测）。
 - 板端 CLUT API：`isp_set_clut`/`isp_load_clut_lut`（[isp.c](../board/src/isp.c)/[isp.h](../board/include/isp.h)）。
 - 控制策略：`control_should_refresh_lut`（[control.c](../board/src/control.c)/[control.h](../board/include/control.h)，主机单测）。
@@ -77,22 +80,23 @@ NN 只预测**全局 LUT**，输入不必全分辨率——喂缩略图即可，
 
 1. **CoTF 路线在 SS928 上成立，且是唯一突破访存地板的架构**：NN 端只要 **~5ms**（比任何全分辨率输出
    模型快 ~20×，因为只在低分辨率出参数），全分辨率的重活（3D-LUT 三线性施加）交给 ISP **专用硬件**做，
-   **零 NPU、零全分辨率访存**。这正是 roadmap §8 主线，现已逐环坐实。
+   **零 NPU、零 NPU 侧全分辨率访存**。这与 architecture.md §4.1 的主线一致，现已完成分环验证。
 
 2. **"NPU 做 LUT 施加"被彻底排除**：3D-LUT 三线性 = grid_sample，**连 ONNX 都导不出**，更别说落 AICore。
-   所以施加**必须**走 ISP CLUT 硬件——而硬件恰好提供了这块缺失算子（内部三线性插值）。这把 roadmap
-   §9 点 8"3D-LUT 算子待评估"从"待评估"变成确定结论：**NPU 不行、ISP 硬件行**。
+   所以施加**必须**走 ISP CLUT 硬件——而硬件恰好提供了这块缺失算子（内部三线性插值）。
+   对 architecture.md §6 的结论是：**当前 NPU 导出路径不可行，ISP 硬件接口可用**。
 
-3. **代码已完成（host 桥 + 板端 API + 控制策略）**，整条链可端到端跑通（板端联机点亮除外）：
+3. **分环代码已完成（host 桥 + 板端 API + 控制策略）**，但尚不能称为端到端跑通：
 
    | 层 | 文件 | 状态 |
    | --- | --- | --- |
-   | NN（出 LUT） | `cotf_net.py` / `export_cotf_onnx.py` | ✅ 导出干净、板端 ~1–5ms |
-   | NN→硬件桥 | `cotf_lut_pack.py`（resample+pack+write_bin）/ `cotf_make_lut.py`（端到端→.bin） | ✅ 可跑、9 单测过 |
+   | NN（出 LUT） | `networks/cotf.py` / `exporters/cotf_onnx.py` | ✅ 导出干净、板端 ~1–5ms |
+   | NN→硬件桥 | `tools/cotf_lut_pack.py` / `tools/cotf_make_lut.py` | ✅ 可跑、9 单测过 |
    | 板端 CLUT API | `isp.c`/`isp.h`：`isp_set_clut` / `isp_load_clut_lut` | ✅ 编译+链接验证 |
    | 控制策略 | `control.c`/`control.h`：`control_should_refresh_lut`（限流/迟滞，把 NN 移出每帧路径） | ✅ 纯逻辑、主机单测过 |
 
-   `cotf_make_lut.py` 已能 `param-net(缩略图)→立方 LUT→5508 节点 u32→cotf_clut.bin`；板端 `fread(.bin)`
+   `python -m models.tools.cotf_make_lut` 已能
+   `param-net(缩略图)→立方 LUT→5508 节点 u32→cotf_clut.bin`；板端 `fread(.bin)`
    即可喂 `isp_load_clut_lut`。控制环用 `control_should_refresh_lut` 决定何时重跑 NN 刷 LUT。
 
 4. **剩两步（板端联机，属阶段 C/D 整链）**：

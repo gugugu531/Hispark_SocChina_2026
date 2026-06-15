@@ -1,20 +1,21 @@
 """导出 SCI 推理网络为干净静态 ONNX（FP32+FP16）——复用 ExpoCurveNet 导出的清理/校验逻辑。
 
-仅作速率对照基线（SCI 单向提亮，见 sci_net.py 方向性提醒）。用法同 export_expo_curve_onnx.py。
+仅作速率对照基线（SCI 单向提亮，见 networks/sci.py）。用法同 exporters/expo_curve_onnx.py。
 """
 
 from __future__ import annotations
 
 import argparse
 import os
-import sys
+from pathlib import Path
 
 import onnx
 import torch
 
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from sci_net import build_model  # noqa: E402
-from export_expo_curve_onnx import clean_graph, convert_to_fp16, export_fp32, save_clean  # noqa: E402
+from models.exporters.expo_curve_onnx import clean_graph, convert_to_fp16, export_fp32, save_clean
+from models.networks.sci import build_model
+
+MODELS_DIR = Path(__file__).resolve().parents[1]
 
 
 def main() -> int:
@@ -26,7 +27,7 @@ def main() -> int:
     ap.add_argument("--opset", type=int, default=13)
     ap.add_argument("--in-name", default="input")
     ap.add_argument("--out-name", default="output")
-    ap.add_argument("--out-dir", default=os.path.join(os.path.dirname(__file__), "weights"))
+    ap.add_argument("--out-dir", default=str(MODELS_DIR / "weights"))
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--tag", default="")
     args = ap.parse_args()

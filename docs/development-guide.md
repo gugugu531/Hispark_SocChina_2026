@@ -16,6 +16,18 @@
 
 约定：构建产物、生成物、模型权重、采集数据不入库（见根 `.gitignore`）。
 
+模型侧按职责分层：
+
+```text
+models/ ── networks/ · exporters/ · tools/ · configs/ · tests/ · weights/
+```
+
+- `networks/` 只放网络结构和构建函数；
+- `exporters/` 放 ONNX 导出入口，共用导出逻辑通过包内导入复用；
+- `tools/` 放 LUT 打包等主机侧工具；
+- `configs/` 放 AIPP/ATC 配置；
+- Python 入口从仓库根目录以 `python -m models.<子包>.<模块>` 运行，不修改 `sys.path`。
+
 板端采用**常规嵌入式 Linux 工程结构**（拍平，不做框架）：
 
 ```
@@ -110,6 +122,8 @@ scripts/build_board.sh [Debug|Release]                    # 默认 Release
 - 算子探测先行：任何新模型上板前，先转 OM 并检查图中无 `AICPU`/`Cast` 残留、profiling 确认全部落 AICore。
 - OM 与 ONNX 同源：记录权重来源、导出命令、opset、输入输出名与 shape；OM 文件大小不代表参数量。
 - 版本化：模型按 §2 命名，权重大件不入库，仅在 `models/` 下留 `.md` 指针（来源/精度/指标）。
+- Python 模块按 `models/networks`、`models/exporters`、`models/tools` 分层；跨层使用
+  `models.*` 绝对导入，不依赖当前工作目录。
 
 ## 7. 板端运行规范
 

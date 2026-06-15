@@ -1,4 +1,4 @@
-"""双向曝光校正曲线预测网络 (ExpoCurveNet) —— architecture.md §2 第 7 级实现。
+"""双向曝光校正曲线预测网络 (ExpoCurveNet)。
 
 任务：实时**双向曝光校正**（既拉亮暗部、也压制高光过曝），单输入、单帧。
 本文件只负责"结构正确 + 算子干净上板"，权重随机即可（去风险任务，不做认真训练）。
@@ -7,7 +7,7 @@
 -----------------------
 * Zero-DCE 上游骨架：``Zero-DCE/Zero-DCE_code/model.py`` 的 ``enhance_net_nopool``
   —— 7 层 3x3 卷积 + concat 跳连 + 末层 Tanh 出曲线参数 + 迭代施加 ``x = x + r*(x²-x)``。
-* EnhanceNet / 16008_LightEnhancer（同芯片族竞赛实测改进版 Zero-DCE，见 roadmap §5）
+* EnhanceNet / 16008_LightEnhancer（同芯片族竞赛实测改进版 Zero-DCE）
   —— "先 AvgPool 降分辨率跑 backbone、再上采样曲线图"的低算力布局；
      以及"训练态用插值 / 部署态用 ConvTranspose 模拟双线性"的双态约定。
 * Zero-DCE-Lite（``tools/local/Zero-DCE-Lite/ZeroDCE/zero_dce_lite.py``）
@@ -16,13 +16,13 @@
 相对参考做了什么 / What we changed and why
 -----------------------------------------
 1. **单帧、单输入**：本项目降噪交给 ISP 硬件（3DNR/HNR），不照搬 EnhanceNet 的 5 帧时域
-   融合（避免运动鬼影 + ACL 多输入未验证 + 模型过重，见 architecture.md §1、roadmap §7）。
-2. **NCHW + 仅绿名单算子**（roadmap §2 硬约束）：Conv / ConvTranspose(DepthwiseConv) /
+   融合（避免运动鬼影 + ACL 多输入未验证 + 模型过重，见 architecture.md §1）。
+2. **NCHW + 仅绿名单算子**（见 development-guide.md §6）：Conv / ConvTranspose(DepthwiseConv) /
    AveragePool / Clip / Tanh / Mul,Sub,Add / Concat / Split。隐层激活用 **Clip(0,6)=ReLU6**
    而非 ReLU —— 绿名单含 Clip 不含 Relu，用 Clip 严格落在硬约束内（语义近似、上板更稳）。
 3. **双向曝光**：曲线参数 ``r`` 经 Tanh ∈ [-1,1]，逐像素可正可负；``x = x + r*(x²-x)`` 中 ``r``
    的符号决定提亮/压暗 —— 原版 Zero-DCE 偏单向提亮，本网络**结构不变即获双向能力**
-   （见 roadmap §6 / architecture.md §1）。
+   （见 architecture.md §1）。
 4. **上采样恒用 ConvTranspose**（固定 bilinear 权重、深度可分组）模拟双线性，导出态绝不出现
    Resize/F.interpolate（NNN 实测 Resize 异常，见 development-guide.md §6）。
 5. **niter 与 filters 全参数化**：超预算时可快速砍小重测（去风险任务的核心诉求）。

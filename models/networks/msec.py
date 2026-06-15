@@ -1,8 +1,8 @@
-"""MSEC（Learning Multi-Scale Photo Exposure Correction, CVPR 2021, Afifi）速率对照。
+"""MSEC（Learning Multi-Scale Photo Exposure Correction）速率对照。
 
 官方：mahmoudnafifi/Exposure_Correction。本质是**多尺度（拉普拉斯金字塔）coarse-to-fine
 U-Net**：在最粗尺度用主 U-Net 子网处理，逐级上采样细化。**双向**（过曝+欠曝同框架），
-且自带过+欠曝配对数据集（roadmap §6.2 称"数据集价值最大"）。
+且自带过+欠曝配对数据集；本项目主要参考其数据价值，不采用其部署结构。
 
 借用来源 / Borrowed from
 -----------------------

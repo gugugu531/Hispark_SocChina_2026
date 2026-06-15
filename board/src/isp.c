@@ -219,7 +219,7 @@ fail:
 }
 
 /* 加载 5508 节点 3D-LUT 系数（每节点 u32 打包 3×10bit RGB）。
- * lut 由 models/cotf_lut_pack.py 从 NN 立方 LUT 打包得到；len 必须 == OT_ISP_CLUT_LUT_LENGTH。 */
+ * lut 由 models/tools/cotf_lut_pack.py 从 NN 立方 LUT 打包得到；len 必须 == OT_ISP_CLUT_LUT_LENGTH。 */
 int isp_load_clut_lut(const unsigned int *lut, unsigned len)
 {
     ot_isp_clut_lut clut_lut;

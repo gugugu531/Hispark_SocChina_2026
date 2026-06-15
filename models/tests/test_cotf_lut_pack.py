@@ -1,13 +1,11 @@
 """CoTF NN→硬件 LUT 打包桥的单元测试。"""
 
 import os
-import sys
 
 import numpy as np
 import pytest
 
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from cotf_lut_pack import (  # noqa: E402
+from models.tools.cotf_lut_pack import (
     HW_LUT_LENGTH,
     decode_paramnet_output,
     identity_cubic_lut,
