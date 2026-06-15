@@ -3,6 +3,7 @@
 > 状态快照日期：2026-06-16。阶段 A 硬件直通链和阶段 B 模型去风险已完成，Config-R 主线已转为
 > CoTF 参数网络 + ISP CLUT。
 > 数据通路与模块定义见 [architecture.md](architecture.md)；规范见 [development-guide.md](development-guide.md)。
+> 阶段 C 的接口与协作契约见 [data-path-interface-design.md](data-path-interface-design.md)。
 
 ## 1. 当前已完成（基线）
 
@@ -22,15 +23,15 @@
 | --- | --- | --- | --- |
 | 1 采集 | `capture.c` | ✅ 已完成 | linear 与 WDR 2to1 均板端 30fps 实测；运行时帧率/镜像/翻转可调 |
 | 2–4 ISP | `isp.c` | ✅ 基本完成 | 抗闪烁/AE 补偿/手动曝光/AE 统计/dehaze/DRC/LDCI 已实测；**CLUT 代码已就绪**（`isp_set_clut`/`isp_load_clut_lut`，CoTF 路线硬件施加端，编译+链接验证过），待 mesh 表+联机点亮（见 `models/cotf-route-verification.md`） |
-| 5 分发缩放 | `vpss.c` | ✅ 已完成 | chn0 1024x600 已实测；CoTF 需要启用 chn2 256x144 缩略图 |
+| 5 分发缩放 | `vpss.c` | ✅ 已完成 | chn0 1024x600 已实测；接口已固定 chn1 1024x576、chn2 256x144，待整链启用 |
 | 6 预处理 | （融入 OM 的 AIPP） | 🟡 模型侧已验证 | 配置和开销已验证；待 `infer.c` 对接 chn2 NV21 |
-| 7 推理 | `infer.c` | ❌ 未开始 | ACL 初始化、CoTF param-net 加载、缩略图输入和 LUT 输出 |
-| 8 LUT 桥 | `infer.c` 或 `lut_bridge.c` | ❌ 未开始 | 将 NN 输出重采样/打包为 ISP 5508 节点 u32 LUT |
+| 7 推理 | `infer.c` | 🟡 接口已固定 | `infer.h` 已定义同步单实例、输入帧不接管、调用者输出缓冲契约；待 ACL 实现 |
+| 8 LUT 桥 | `lut_bridge.c` | 🟡 接口已固定 | `lut_bridge.h` 已隔离 mesh/轴序/位序；待实现并完成诊断 LUT 标定 |
 | 9 后处理/合成 | `postproc.c` / `compose.c` | ⏸ 备选路线 | 仅整图 ExpoCurveNet 分屏演示需要，非 CoTF 主路径依赖 |
 | 10a 显示 | `display.c` | ✅ 已完成 | 板端冒烟 PASS，启动杂线已修（黑场预帧）；flicker 观感需现场目视确认 |
-| 10b 串流 | `stream.c` | ❌ 未开始 | VENC H.264 + RTSP 推流（RTSP server 选型待定） |
+| 10b 串流 | `stream.c` | 🟡 接口已固定 | 独占 chn1 的契约已定义；待 VENC H.264 + RTSP 实现（server 选型待定） |
 | 11 控制 | `control.c` | 🟡 初版 | 判决逻辑和 LUT 刷新策略已有主机单测；ISP 统计读取已在测试驱动验证，缺正式主程序接线和 LUT 写回 |
-| — 共享 | `pipeline.h` | ❌ 未开始 | 跨模块帧结构 / 枚举 / VB 约定 |
+| — 共享 | `pipeline.h` | ✅ 契约完成 | 通道、尺寸、状态、错误码、输入模式和指标已固定；实现仍由 main/pipeline 接管 |
 | — 入口 | `main.c` | 🟡 骨架 | 仅演示构建闭环；缺整链编排、SYS/VB 初始化、优雅退出 |
 
 ### 2.2 模型侧（`models/`）
@@ -111,7 +112,7 @@ ISP 硬件 CLUT 全分辨率施加（零 NPU）」**。完整验证与代码见 
 
 目标：`OS08A20 → VI → ISP(默认参数) → VPSS chn0 → display` 实时上屏。
 
-1. ❌ `pipeline.h` 定帧结构与 VB 约定；`main.c` 接管 SYS/VB 初始化与整链编排
+1. 🟡 `pipeline.h` 接口契约已完成；`main.c` 待接管 SYS/VB 初始化与整链编排
    （当前最小直通链在 `test_capture` 测试驱动中，需迁入主程序）。
 2. ✅ `capture.c`：线性模式和 WDR 2to1 均已点亮，板端 30fps。
 3. ✅ `vpss.c`：chn0 直送 display 已实测；chn1/chn2 待整链启用。
@@ -130,13 +131,16 @@ ISP 硬件 CLUT 全分辨率施加（零 NPU）」**。完整验证与代码见 
 
 ### 阶段 C — 全链路打通（A+B 汇合）
 
-目标：相机 → 增强 → 分屏显示的实时演示雏形。
+目标：相机 → ISP CLUT 增强 → 全屏显示的实时演示雏形；严格同帧原图/增强分屏不属于 M3。
+
+接口、所有权和验收条件统一按 [data-path-interface-design.md](data-path-interface-design.md) 执行。
 
 1. 先用 identity/诊断 LUT 完成 CLUT mesh 核对和相机链联机点亮。
-2. `infer.c`：VPSS chn2 NV21 接 AIPP/ACL，运行 CoTF param-net 输出 LUT。
-3. 实现板端 LUT 重采样/打包，并通过 `isp_load_clut_lut` 写回。
-4. 把 AE 统计、`control_should_refresh_lut` 和 LUT 热刷新接入低频控制线程。
-5. 测量 30fps 主链、LUT 刷新耗时和热刷新稳定性。整图后处理/VGS 分屏作为备选演示另行评估。
+2. `infer.c`：VPSS chn2 256x144 NV21 接 AIPP/ACL，运行 CoTF param-net 输出 LUT。
+3. `lut_bridge.c`：实现板端 LUT 重采样/打包，并通过 ISP 接口写回。
+4. 把 AE 统计、`control_should_refresh_lut` 和 LUT 热刷新接入低频 control worker。
+5. `main.c` 建立 display/control/可选 stream 三线程并实现逆序回滚和优雅退出。
+6. 测量 30fps 主链、LUT 刷新耗时和热刷新稳定性。整图后处理/VGS 分屏作为备选演示另行评估。
 
 ### 阶段 D — 控制大脑与画质
 

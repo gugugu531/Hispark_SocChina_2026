@@ -19,4 +19,12 @@ for u in "${HOST_UNITS[@]}"; do
     echo "== running test_${u} =="
     "${bin}" || fail=1
 done
+
+# 纯头文件契约测试，无对应 src 文件。
+bin="${OUT}/test_pipeline_contract"
+cc -std=c11 -Wall -Wextra -I"${BOARD}/include" \
+    "${BOARD}/tests/test_pipeline_contract.c" -o "${bin}"
+echo "== running test_pipeline_contract =="
+"${bin}" || fail=1
+
 exit "${fail}"

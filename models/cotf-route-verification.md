@@ -115,7 +115,7 @@ CoTF 路线**天然适合流水线**，因为它把两件事放在**两个不同
 ```
 主路径(每帧, 30fps, 全分辨率, 0 NPU):
   VI ─► ISP(+CLUT 三线性施加, 硬件内联) ─► VPSS ─► VO/VENC ─► 显示/串流
-            ▲ 当前 LUT                  │ chn2 缩略图(320x180)
+            ▲ 当前 LUT                  │ chn2 缩略图(256x144)
             │                           ▼
 旁路(低频, 异步, 不在关键路径):
   control 线程: 缩略图 ─► NN(NPU, ~1ms) ─► cotf_lut_pack ─► isp_load_clut_lut(刷新 LUT)

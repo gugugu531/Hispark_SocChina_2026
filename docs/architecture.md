@@ -16,7 +16,7 @@
 OS08A20 -> VI -> ISP
   ISP: WDR/3A/3DNR/DRC/dehaze -> CLUT(当前 LUT) -> YVU420SP
        -> VPSS chn0 1024x600 -> VO -> HDMI
-       -> VENC -> RTSP
+       -> VPSS chn1 1024x576 -> VENC -> RTSP
 
 控制旁路（低频或场景变化时）：
 
@@ -41,7 +41,7 @@ CoTF 主路径中的 CLUT 位于 ISP 内，因此同一 ISP 输出天然是“�
 | 2 | 宽动态融合 | ISP | 多帧RAW | 1帧宽DR RAW | WDR融合（源头保高光，受 §7 限制）| 0 |
 | 3 | 降噪 | ISP 3DNR+HNR | RAW/YUV | 去噪YUV | 时域+空域硬件降噪（替代NN融合）| 0 |
 | 4 | 色调与 LUT 施加 | ISP dehaze/LTM/DRC/CLUT | RAW/RGB/YUV | YVU420SP | 每帧施加当前 LUT | 0 |
-| 5 | 分发缩放 | VPSS | NV21 全幅 | chn0/chn2 | 1024x600 显示 + 256x144 控制缩略图 | 0 |
+| 5 | 分发缩放 | VPSS | NV21 全幅 | chn0/chn1/chn2 | 1024x600 显示 + 1024x576 串流 + 256x144 控制缩略图 | 0 |
 | 6 | 参数网预处理 | AIPP（融入 OM） | chn2 NV21 | NCHW FP16 RGB /255 | CSC+归一+布局 | NNN，低频 |
 | 7 | LUT 预测 | NNN/ACL OM | 256x144 FP16 | 立方 LUT 参数 | CoTF param-net | NNN，约 0.8ms/次 |
 | 8 | LUT 桥 | CPU 轻量 | 立方 LUT | 5508 个 u32 | mesh 重采样、10bit 打包 | 0 |
@@ -72,10 +72,13 @@ CoTF 路线已逐环验证 + 代码就绪（`isp_set_clut`/`isp_load_clut_lut` +
 
 ## 5. 模块与代码映射
 
-板端代码平铺在 `board/src/`。CoTF 主线需要 `capture/isp/vpss/infer/control/display/stream`；
-LUT 重采样和打包可放在 `infer.c` 的输出适配层，若逻辑增长再独立为 `lut_bridge.c`。`postproc/compose`
-主要服务整图增强备选。头文件位于 `board/include/`，跨模块帧结构与 VB 约定放 `pipeline.h`；
-`main.c` 负责生命周期和线程编排（详见 `development-guide.md` §1）。
+板端代码平铺在 `board/src/`。CoTF 主线需要 `capture/isp/vpss/infer/lut_bridge/control/display/stream`；
+`postproc/compose` 主要服务整图增强备选。头文件位于 `board/include/`，跨模块通道、状态和指标约定放
+`pipeline.h`；`main.c` 负责生命周期和线程编排。
+
+Config-R 固定 `chn0=1024x600` 显示、`chn1=1024x576` 串流/整图备选互斥复用、
+`chn2=256x144` CoTF 控制缩略图。模块接口、帧所有权、刷新事务和并行开发完成定义见
+[data-path-interface-design.md](data-path-interface-design.md)。
 
 ## 6. 与数据通路绑定的待验证点
 

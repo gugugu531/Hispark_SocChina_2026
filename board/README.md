@@ -8,7 +8,7 @@
 board/
 ├── CMakeLists.txt
 ├── cmake/toolchain-aarch64-mix210-linux.cmake   # 交叉编译 toolchain file
-├── include/     # 头文件: log.h / version.h / control.h / display.h / capture.h / vpss.h / isp.h
+├── include/     # 头文件: pipeline / capture / vpss / isp / infer / lut_bridge / control / display / stream
 ├── src/         # 源码, 按功能分文件: main.c / control.c / display.c / capture.c / vpss.c / isp.c (+ infer.c ... 后续)
 └── tests/       # 单元/驱动测试: test_<名字>.c, 各编一个可执行 + ctest
 ```
@@ -105,9 +105,16 @@ dehaze / DRC / LDCI 增强块（关/自动/手动三态）。
 ### vpss — 多路硬件缩放分发（数据通路第 5 级）
 
 接口见 `include/vpss.h`：`vpss_init` / `vpss_get_frame` / `vpss_release_frame` / `vpss_deinit`。
-按架构约定 chn0=1024x600 显示底图 / chn1=1024x576 模型输入 / chn2=320x180 缩略图,
-NV21 无压缩输出；`depth>0` 的通道可 CPU 取帧,帧结构与 `display_send_frame` 直接兼容。
+按 Config-R 约定 chn0=1024x600 显示 / chn1=1024x576 串流（与整图模型备选互斥）/
+chn2=256x144 CoTF 控制缩略图，NV21 无压缩输出；`depth>0` 的通道可 CPU 取帧，帧结构与
+`display_send_frame` 直接兼容。取帧方必须在同一线程向同一 grp/chn 恰好归还一次。
 当前实现一次支持一个组（管线仅用 grp0）。
+
+### Config-R 接口契约（阶段 C）
+
+`include/pipeline.h`、`infer.h`、`lut_bridge.h`、`stream.h` 已固定通道、同步调用、帧所有权和输出布局。
+完整线程模型、LUT 刷新事务、错误降级与并行开发验收见
+[`docs/data-path-interface-design.md`](../docs/data-path-interface-design.md)。
 
 板端冒烟测试 `test_capture`（相机 → VI → ISP → VPSS chn0 → 可选 display 上屏；
 完整选项见文件头注释：`--wdr/--fps/--mirror/--flip/--flicker/--aecomp/--dehaze/--drc/--ldci`）：

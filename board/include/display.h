@@ -1,6 +1,8 @@
 #ifndef SOCCHINA_DISPLAY_H
 #define SOCCHINA_DISPLAY_H
 
+#include "pipeline.h"
+
 /* display — VO→HDMI 本地显示驱动（数据通路第 10a 级）。
  *
  * 目标面板：Waveshare 7 寸 1024x600@60 类 DVI 面板（海鸥派 HDMI0）。
@@ -15,8 +17,8 @@
  * 一块 ≥1024x600 NV21 的空闲块，取不到时退化为直接启动（仅告警）。
  */
 
-#define DISPLAY_WIDTH      1024u
-#define DISPLAY_HEIGHT     600u
+#define DISPLAY_WIDTH      PIPELINE_DISPLAY_WIDTH
+#define DISPLAY_HEIGHT     PIPELINE_DISPLAY_HEIGHT
 #define DISPLAY_FRAME_RATE 60u
 
 /* 启动 VO dev0/layer0/chn0 + HDMI0（DVI 1024x600@60）。成功返回 0。 */
