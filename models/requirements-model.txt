@@ -14,6 +14,8 @@ onnxsim>=0.4.1
 PyYAML>=5.3.1
 # 训练辅助
 matplotlib>=3.2.2
+# 测试（development-guide.md §10：模型组测试用 pytest，放 models/tests/）
+pytest>=7.0
 #
 # 注：若需复用 TensorFlow/Keras 权重（如 Zero-DCE Lite）转 ONNX，
 #     需额外 tensorflow + tf2onnx（官方转换文档未覆盖，使用时自行锁定版本，opset=13）。

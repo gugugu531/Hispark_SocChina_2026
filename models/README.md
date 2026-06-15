@@ -39,3 +39,24 @@ source ${INSTALL_DIR}/bin/setenv.bash
 - **禁用 Resize/插值上采样**（NNN 实测异常），上采样用 **ConvTranspose**（固定 bilinear 权重）。
 - 上板前做算子探测：确认无 `AICPU`/`Cast` 残留、全部落 AICore。
 - 详见 `../docs/development-guide.md` §6。
+
+## 本目录内容（阶段 B 去风险 + CoTF 路线）
+
+- **曲线网络（双向曝光，§6 点1/点2 去风险）**：`expo_curve_net.py` + `export_expo_curve_onnx.py` +
+  `build_expo_curve_fp16_om.sh` + `aipp_nv21_1024x576.cfg`；结论与全部板端耗时见
+  [expo-curve-network.md](expo-curve-network.md)（含 5 架构速率矩阵）。
+- **速率对照模型**：`sci_net.py` / `msec_net.py` / `cotf_net.py` 及各自 `export_*_onnx.py`。
+- **CoTF 路线（NN 出 LUT + ISP 硬件施加，唯一突破访存地板）**：`cotf_net.py`（param-net）、
+  `cotf_lut_pack.py`（NN→硬件 5508 节点 u32 桥）、`cotf_make_lut.py`（端到端 → `cotf_clut.bin`）；
+  板端 `isp_set_clut`/`isp_load_clut_lut` + `control_should_refresh_lut`。完整验证与跑法见
+  [cotf-route-verification.md](cotf-route-verification.md)。
+- 测试：`tests/`（pytest，20 passed：曲线网络 11 + CoTF 打包 9）。
+
+## 已实现模型
+
+- **双向曝光校正曲线预测网络**（architecture.md §2 第 7 级 / §6 点 1 去风险）：
+  `expo_curve_net.py` + `export_expo_curve_onnx.py` + `build_expo_curve_fp16_om.sh` +
+  `tests/test_expo_curve_net.py`。结构、导出命令、算子探测与板端实测耗时（含 33ms 预算判决）见
+  [expo-curve-network.md](expo-curve-network.md)。
+  结论速览：OM 干净落 AICore（无 AICPU/Cast）；**1024x576 全分辨率超 33ms 预算**，瓶颈在全分辨率
+  访存而非 backbone；实时档建议降到 640x360/768x432 + 共享曲线。

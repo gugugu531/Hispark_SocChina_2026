@@ -78,7 +78,20 @@
 ## 4. 两套运行配置
 
 - **Config-R（实时 30fps，主线）**：/4 backbone + 全分辨率曲线施加，ISP 3DNR 降噪。预算目标 ≤33ms/帧（AIPP ~1ms 实测于 160；OM、后处理、合成需板端实测确认）。
+  - **板端实测修正（2026-06-15，`models/expo-curve-network.md`）**：曲线网络在 1024x576 全分辨率超预算（niter8=94.9ms，瓶颈为全分辨率访存），实时档实测可达上限为 **768x432 + 共享曲线（27ms）** 或 640x360。AIPP 开销实测 ≈0ms。
 - **Config-Q（拍照/低帧，高画质）**：更大输入（如 1024x640）、更多迭代、可叠加多帧堆栈；约 100ms 量级，用于按键抓拍增强。
+
+### 4.1 两条已验证的模型路线（曲线网络 vs CoTF）
+
+横评 5 个架构后确认，「输出整图」的模型在 1024x576 都撞**全分辨率访存的像素线性地板**（与参数量无关）。两条路线：
+
+| 路线 | NN 做什么 | 全分辨率施加 | NPU 占用 | 1024x576 实时 | 适用 |
+| --- | --- | --- | --- | --- | --- |
+| **曲线网络（本仓库 ExpoCurveNet）** | /4 backbone 出曲线 + **全分辨率逐像素施加** | 在 NPU | ~100%（每帧 gating） | ❌（768x432 可，27ms） | 快速上线、实现简单 |
+| **CoTF（NN 出 LUT + ISP 施加）** | 低分辨率出 3D-LUT（~1–5ms） | **ISP 硬件 CLUT**（零 NPU） | ~3–15%（低频刷 LUT） | ✅（NN 移出每帧路径） | 全分辨率真实时、释放 NPU |
+
+CoTF 路线已逐环验证 + 代码就绪（`isp_set_clut`/`isp_load_clut_lut` + `control_should_refresh_lut` + host 打包桥），
+剩 CLUT mesh 标定 + 联机点亮两步板端工作。完整记录见 [../models/cotf-route-verification.md](../models/cotf-route-verification.md)。
 
 ## 5. 模块与代码映射
 
@@ -86,8 +99,12 @@
 
 ## 6. 与数据通路绑定的待验证点
 
-1. OM 结构验证：`/4 AvgPool→backbone→ConvTranspose→全分辨率施加` 全落 AICore，实测总耗时（决定 Config-R 是否成立）。
-2. AIPP 在 1024x576 全分辨率的 CSC/归一开销。
+1. ✅ 已验证（2026-06-14，`models/expo-curve-network.md`）：`/4 AvgPool→backbone→ConvTranspose→全分辨率施加`
+   **干净落 AICore（无 AICPU/Cast）**；但 **1024x576 超 33ms 预算**（niter=8=94.9ms，niter=1 仍 38.9ms），
+   瓶颈为全分辨率访存而非 backbone。**Config-R 实时档需降到 `640x360`/`768x432` + 共享曲线**
+   （`640x360 niter8 共享=19.5ms`）；1024x576 归 Config-Q。
+2. ✅ 已验证（2026-06-14）：AIPP 全分辨率 CSC/归一开销 **≈0ms**（挂/不挂同速，差值噪声内），
+   预处理可零开销融入 OM 前端。
 3. 后处理放 Q6 DSP 还是 IVE 更省。
 4. ~~ISP 统计读取~~ ✅ 已验证（2026-06-11）：`ss_mpi_isp_get_ae_stats` 低频读取正常，
    `isp_get_luma_stats` 归约为 mean/clip% 直接供 `control_decide`（见 `board/README.md`）。

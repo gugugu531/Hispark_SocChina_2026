@@ -199,6 +199,45 @@ fail:
     return -1;
 }
 
+/* CLUT（3D-LUT）开关 + 全局 RGB 增益。CoTF 路线的硬件施加端：NN 在低分辨率出 LUT，
+ * 由 ISP 硬件做全分辨率三线性施加（零 NPU）—— NPU 无法跑 3D-LUT 三线性(grid_sample)。 */
+int isp_set_clut(isp_block_mode_t mode, unsigned gain_r, unsigned gain_g, unsigned gain_b)
+{
+    ot_isp_clut_attr attr;
+
+    memset(&attr, 0, sizeof(attr));
+    CHECK_RET_GOTO(ss_mpi_isp_get_clut_attr(ISP_PIPE, &attr), fail);
+    attr.en = (mode != ISP_BLOCK_OFF) ? TD_TRUE : TD_FALSE;
+    attr.gain_r = (gain_r > OT_ISP_CLUT_GAIN_MAX) ? OT_ISP_CLUT_GAIN_MAX : gain_r;
+    attr.gain_g = (gain_g > OT_ISP_CLUT_GAIN_MAX) ? OT_ISP_CLUT_GAIN_MAX : gain_g;
+    attr.gain_b = (gain_b > OT_ISP_CLUT_GAIN_MAX) ? OT_ISP_CLUT_GAIN_MAX : gain_b;
+    CHECK_RET_GOTO(ss_mpi_isp_set_clut_attr(ISP_PIPE, &attr), fail);
+    LOG_INFO("isp clut -> mode=%d gain=(%u,%u,%u)", mode, attr.gain_r, attr.gain_g, attr.gain_b);
+    return 0;
+fail:
+    return -1;
+}
+
+/* 加载 5508 节点 3D-LUT 系数（每节点 u32 打包 3×10bit RGB）。
+ * lut 由 models/cotf_lut_pack.py 从 NN 立方 LUT 打包得到；len 必须 == OT_ISP_CLUT_LUT_LENGTH。 */
+int isp_load_clut_lut(const unsigned int *lut, unsigned len)
+{
+    ot_isp_clut_lut clut_lut;
+
+    if (lut == TD_NULL || len != OT_ISP_CLUT_LUT_LENGTH) {
+        LOG_ERR("isp_load_clut_lut: lut=%p len=%u (need %d)", (const void *)lut, len,
+                OT_ISP_CLUT_LUT_LENGTH);
+        return -1;
+    }
+    memset(&clut_lut, 0, sizeof(clut_lut));
+    memcpy(clut_lut.lut, lut, sizeof(clut_lut.lut));
+    CHECK_RET_GOTO(ss_mpi_isp_set_clut_coeff(ISP_PIPE, &clut_lut), fail);
+    LOG_INFO("isp clut lut loaded (%u nodes)", len);
+    return 0;
+fail:
+    return -1;
+}
+
 #else /* !WITH_SS928_SDK */
 
 /* SDK-free 构建桩。 */
@@ -258,6 +297,22 @@ int isp_set_drc(isp_block_mode_t mode, unsigned strength)
 int isp_set_ldci(isp_block_mode_t mode)
 {
     (void)mode;
+    return -1;
+}
+
+int isp_set_clut(isp_block_mode_t mode, unsigned gain_r, unsigned gain_g, unsigned gain_b)
+{
+    (void)mode;
+    (void)gain_r;
+    (void)gain_g;
+    (void)gain_b;
+    return -1;
+}
+
+int isp_load_clut_lut(const unsigned int *lut, unsigned len)
+{
+    (void)lut;
+    (void)len;
     return -1;
 }
 

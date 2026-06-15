@@ -10,7 +10,9 @@
  * 输入，架构 §6 点 4）、dehaze/DRC/LDCI 增强块（双向曝光校正的 ISP 底座）。
  * 所有接口要求 capture_init 已成功（ISP pipe0 在跑）。
  *
- * 3D-LUT（CLUT）需配合标定的 LUT 表加载，待色调映射方案确定后再接入。
+ * 3D-LUT（CLUT）：CoTF 路线的硬件施加端——NN 在低分辨率出 LUT（实测 ~5ms），由 ISP 硬件
+ * 做全分辨率三线性施加（零 NPU；NPU 无法跑 3D-LUT 三线性算子）。LUT 由
+ * models/cotf_lut_pack.py 从 NN 立方 LUT 打包成 5508 节点 u32 格式。
  */
 
 /* 三态开关：增强块统一用法。 */
@@ -47,5 +49,10 @@ int isp_get_luma_stats(luma_stats_t *stats);
 int isp_set_dehaze(isp_block_mode_t mode, unsigned char strength);
 int isp_set_drc(isp_block_mode_t mode, unsigned strength);
 int isp_set_ldci(isp_block_mode_t mode);
+
+/* CLUT（3D-LUT）开关 + 全局 RGB 增益（gain 0–4095，1024≈1x）。CoTF 路线硬件施加端。 */
+int isp_set_clut(isp_block_mode_t mode, unsigned gain_r, unsigned gain_g, unsigned gain_b);
+/* 加载 3D-LUT 系数：lut 为 5508 个 u32（每节点 3×10bit RGB），由 cotf_lut_pack.py 生成。 */
+int isp_load_clut_lut(const unsigned int *lut, unsigned len);
 
 #endif /* SOCCHINA_ISP_H */

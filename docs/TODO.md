@@ -10,7 +10,8 @@
 - `control` 模块：场景曝光模式判决（纯逻辑初版 + 主机单测）。
 - `display` 模块：VO→HDMI 1024x600 DVI 驱动（数据通路第 10a 级），板端冒烟 `test_display` 三轮 PASS（2026-06-10），无 MPI 错误、退出干净。启动序含**黑场预帧**（先稳定黑场再使能 PHY），消除了实测发现的面板锁定瞬间杂线；实现细节与实测数据见 `board/README.md`。
 - `capture` + `vpss` 模块：OS08A20(8M30 线性, sensor1/J4) → VI(online) → ISP → VPSS 多路缩放（数据通路第 1–5 级），封装厂商 sample_comm 层（CMake `vendor_comm` 静态库）。板端冒烟 `test_capture`（2026-06-10）：取帧 29.3 fps、落盘帧画面正常；`--display` 整链相机→VPSS→display 上屏 **30.2 fps 稳定**（阶段 A 最小直通链已在测试驱动中跑通）。
-- capture 扩展 + `isp` 模块（2026-06-11，SDK 已支持功能全量封装）：WDR 2to1 模式（30fps 满帧，同场景高光/暗部裁剪大幅下降，§6 点 6 初步正面）、运行时帧率/镜像/翻转、抗闪烁、AE 补偿/手动曝光、**AE 统计→`control_decide` 闭环**（§6 点 4 ✅）、dehaze/DRC/LDCI 三态控制。CLUT 待 LUT 表方案。
+- capture 扩展 + `isp` 模块（2026-06-11，SDK 已支持功能全量封装）：WDR 2to1 模式（30fps 满帧，同场景高光/暗部裁剪大幅下降，§6 点 6 初步正面）、运行时帧率/镜像/翻转、抗闪烁、AE 补偿/手动曝光、**AE 统计→`control_decide` 闭环**（§6 点 4 ✅）、dehaze/DRC/LDCI 三态控制；**CLUT 代码就绪**（`isp_set_clut`/`isp_load_clut_lut`，CoTF 路线，编译链接验证）。
+- **阶段 B 模型去风险（2026-06-15，`models/`）**：曲线网络（参数化、仅绿名单算子）实现 + ONNX/FP16 OM 导出 + 算子探测（干净落 AICore）+ **板端实测耗时**；横评本网络/Zero-DCE Lite/SCI/MSEC/CoTF 五架构速率矩阵；AIPP 开销实测 ≈0ms；**CoTF 路线验证 + 代码就绪**（NN 出 LUT + ISP 硬件施加，唯一突破访存地板）。详见 `models/expo-curve-network.md`、`models/cotf-route-verification.md`。**M2 里程碑达成**（OM 板端出数，Config-R 可行性有结论）。
 
 ## 2. 未完成部分
 
@@ -19,7 +20,7 @@
 | 通路级 | 模块文件 | 状态 | 说明 |
 | --- | --- | --- | --- |
 | 1 采集 | `capture.c` | ✅ 已完成 | linear 与 WDR 2to1 均板端 30fps 实测；运行时帧率/镜像/翻转可调 |
-| 2–4 ISP | `isp.c` | ✅ 基本完成 | 抗闪烁/AE 补偿/手动曝光/AE 统计/dehaze/DRC/LDCI 已实测；CLUT 待 LUT 表 |
+| 2–4 ISP | `isp.c` | ✅ 基本完成 | 抗闪烁/AE 补偿/手动曝光/AE 统计/dehaze/DRC/LDCI 已实测；**CLUT 代码已就绪**（`isp_set_clut`/`isp_load_clut_lut`，CoTF 路线硬件施加端，编译+链接验证过），待 mesh 表+联机点亮（见 `models/cotf-route-verification.md`） |
 | 5 分发缩放 | `vpss.c` | ✅ 已完成 | chn0 1024x600 已实测；chn1/chn2 配置项已留好待启用 |
 | 6 预处理 | （融入 OM 的 AIPP） | ❌ 未开始 | 属模型侧工作，板端只需对齐 chn1 输出格式 |
 | 7 推理 | `infer.c` | ❌ 未开始 | ACL 初始化、OM 加载、零拷贝输入输出 |
@@ -27,17 +28,20 @@
 | 9 合成 | `compose.c` | ❌ 未开始 | VGS 原图/增强图分屏或叠加 |
 | 10a 显示 | `display.c` | ✅ 已完成 | 板端冒烟 PASS，启动杂线已修（黑场预帧）；flicker 观感需现场目视确认 |
 | 10b 串流 | `stream.c` | ❌ 未开始 | VENC H.264 + RTSP 推流（RTSP server 选型待定） |
-| 11 控制 | `control.c` | 🟡 初版 | 判决逻辑有；缺迟滞防抖、ISP 统计读取（`ss_mpi_isp_get_ae_stats`）、参数写回 |
+| 11 控制 | `control.c` | 🟡 初版 | 判决逻辑 + **CoTF LUT 刷新策略**（`control_should_refresh_lut`，限流/迟滞，主机单测）有；缺 ISP 统计读取接线、参数/LUT 写回（需 infer.c ACL 就位） |
 | — 共享 | `pipeline.h` | ❌ 未开始 | 跨模块帧结构 / 枚举 / VB 约定 |
 | — 入口 | `main.c` | 🟡 骨架 | 仅演示构建闭环；缺整链编排、SYS/VB 初始化、优雅退出 |
 
 ### 2.2 模型侧（`models/`）
 
-- ❌ 曲线预测网络实现：`AvgPool /4 → backbone @144x256 → 曲线参数 → ConvTranspose 上采样 → 全分辨率施加 x+r(x²-x)`（架构 §2 第 7 级）。当前仅有环境与约定文档，无任何代码/权重。
-- ❌ 训练（或基于 Zero-DCE 系迁移）与导出 ONNX（NCHW、单 opset、单输出、无 Resize 算子）。
-- ❌ AIPP 配置（NV21/YUV420SP_U8、rbuv_swap、/255 归一）+ ATC 转 FP16 OM（`soc_version=OPTG`、静态 1x3x576x1024）。
-- ❌ 上板算子探测：确认无 AICPU/Cast 残留、全部落 AICore。
-- ❌ 两套配置产出：Config-R（实时 1024x576）与 Config-Q（高画质 1024x640 级）。
+- ✅ 曲线预测网络实现（2026-06-14，`models/expo_curve_net.py`，参数化 niter/filters/down/shared_curve，
+  仅绿名单算子，pytest 11 过）+ 导出 ONNX（NCHW、opset13、单输出、无 Resize）+ ATC FP16 OM + 算子探测
+  （干净落 AICore，无 AICPU/Cast）+ **板端实测耗时**（见 `models/expo-curve-network.md`）。
+- ✅ AIPP 配置（`models/aipp_nv21_1024x576.cfg`，NV21/rbuv_swap//255）+ ATC 转 FP16 OM；AIPP 开销实测 ≈0ms。
+- 🟡 **结论**：1024x576 全分辨率超 33ms（niter8=94.9ms，瓶颈是全分辨率访存）；实时档应取 `768x432+共享曲线`
+  （27ms）或 `640x360`。横评 Zero-DCE Lite/SCI/MSEC/CoTF 后，**唯一能在 1024x576 真实时的是 CoTF 路线**
+  （NN 出 LUT ~5ms + ISP 硬件施加，见 `models/cotf-route-verification.md`）。
+- ❌ 认真训练（结构与耗时已解耦验证完，可投训练）；Config-Q（高画质 1024x640 级）产出。
 
 ### 2.3 脚本与工程
 
@@ -48,8 +52,12 @@
 
 ### 2.4 架构 §6 待验证点（决定方案成立与否的实测）
 
-1. ❌ OM 结构验证：`/4 backbone + ConvTranspose + 全分辨率施加` 全落 AICore 的实测总耗时——**决定 Config-R（30fps）是否成立，最高优先级风险项**。
-2. ❌ AIPP 在 1024x576 全分辨率的 CSC/归一开销。
+1. ✅ OM 结构验证（2026-06-14，`models/expo-curve-network.md`）：曲线网络干净落 AICore（无 AICPU/Cast）。
+   但 **1024x576 全分辨率超 33ms 预算**（niter=8 实测 94.9ms，即便 niter=1 仍 38.9ms）；瓶颈是全分辨率
+   访存（曲线施加 + ConvTranspose + TransData），非 backbone（砍 filters 反而变慢）。实时档建议降到
+   `640x360`/`768x432` + 共享曲线（`640x360 niter8 共享 = 19.5ms`）。**Config-R 需按此重定，1024x576 留 Config-Q。**
+2. ✅ AIPP 全分辨率 CSC/归一开销（2026-06-14）：实测 **≈0ms**（1024x576 挂/不挂 AIPP 同速，差值噪声内），
+   预处理可零开销融入 OM 前端，直接吃 VPSS chn1 的 NV21。
 3. ❌ 后处理 Q6 DSP vs IVE 比选。
 4. ✅ `ss_mpi_isp_get_ae_stats` 低频读取验证（2026-06-11）：`isp_get_luma_stats` 归约
    1024-bin 直方图为 mean/clip%，直接喂 `control_decide`，判决与实际场景相符。
@@ -69,6 +77,29 @@
   存在。细节与核对命令见 [board-operations.md](board-operations.md) §6。
   （曾评估用户态 HID→uinput 驱动，因内核已正确处理且无 hidraw，结论为不需要。）
 
+### 2.6 CoTF 路线（已验证的全分辨率实时技术路线）
+
+横评 5 个架构（本曲线网络 / Zero-DCE Lite / SCI / MSEC / CoTF）后确认：**凡"输出整图"的模型在 1024x576
+都撞全分辨率访存的像素线性地板**（与参数量无关），唯一突破口是 **CoTF 式「NN 低分辨率出 3D-LUT（NPU）+
+ISP 硬件 CLUT 全分辨率施加（零 NPU）」**。完整验证与代码见 [../models/cotf-route-verification.md](../models/cotf-route-verification.md)。
+
+已完成（2026-06-15）：
+
+- ✅ NN 端实测：param-net 出 LUT，板端 ~1ms（缩略图）/ ~5ms（全分辨率），干净落 AICore。
+- ✅ "NPU 做 LUT 施加"排除：3D-LUT 三线性 = grid_sample，连 ONNX 都导不出 → 必须走 ISP CLUT 硬件。
+- ✅ 硬件 CLUT 实证：`ss_mpi_isp_set_clut_coeff`，5508 节点（u32=3×10bit），板端 libss_isp.so 真实导出。
+- ✅ 代码集成：host 桥（`cotf_lut_pack.py`/`cotf_make_lut.py`，9 单测）+ 板端 API（`isp_set_clut`/
+  `isp_load_clut_lut`，编译链接验证）+ 控制策略（`control_should_refresh_lut`，主机单测）。
+- ✅ 流水线优势：NN 与施加在不同硬件块，LUT 低频刷新，**模型移出每帧关键路径**，NPU 占用 ~3–15%。
+
+待办（板端联机，属阶段 C/D）：
+
+- ❌ **CLUT mesh 标定**：`cotf_lut_pack.HW_MESH_DIMS`（默认 17×18×18）与节点坐标/遍历顺序需对照 SDK
+  《ISP CLUT 调优说明》最终确认——**只改常量，不动主流程**（10bit 位打包格式已坐实）。
+- ❌ **CLUT 联机点亮**：相机链（capture_init→ISP pipe0）上 `isp_load_clut_lut(.bin,5508)`，目视确认出图随
+  LUT 改变、热刷无 flicker、零 NPU；需 `infer.c`（板端 ACL 跑 param-net）就位后并入整链。
+- ❌ **LUT 刷新率标定**：`control_should_refresh_lut` 的间隔/阈值（初版经验值）按实测场景适应延迟标定。
+
 ## 3. 开发规划
 
 原则：**先打通最小闭环、再补画质与控制**；每个模块按"实现 → 板端冒烟 → README 记录"推进（开发规范 §10）。
@@ -84,23 +115,25 @@
 4. ✅ 冒烟：实时相机画面上屏 30.2 fps（`test_capture --display`）；§6 点 5 flicker 观感待目视。
 5. ❌ 收尾：补 `deploy_board.sh` / `run_board.sh`。
 
-### 阶段 B — 模型最小可用 + 推理上板（与 A 可并行）
+### 阶段 B — 模型最小可用 + 推理上板（与 A 可并行）✅ 已完成（2026-06-15）
 
 目标：拿到一个能跑的 FP16 OM 并测出真实耗时,尽早回答 §6 点 1。
 
-1. 实现曲线预测网络（可先用随机/预训练近似权重,结构正确优先）。
-2. 导出 ONNX → AIPP+ATC → OM,算子探测确认全落 AICore。
-3. 板端独立 benchmark（文件输入即可,不接相机）实测 1024x576 耗时——**若超预算,立即降分辨率或砍 backbone,再继续训练投入**。
-4. 同时测 §6 点 2（AIPP 开销）。
+1. ✅ 实现曲线预测网络（参数化、随机权重，结构正确优先）。
+2. ✅ 导出 ONNX → ATC → OM,算子探测确认全落 AICore（AIPP 开销另测 ≈0ms）。
+3. ✅ 板端独立 benchmark 实测耗时——**结论：1024x576 超预算，实时档取 768x432+共享曲线（27ms）；不投 1024x576 训练**。
+4. ✅ §6 点 2（AIPP 开销）实测 ≈0ms。
+5. ✅ 额外：五架构速率横评 + **CoTF 路线验证与代码就绪**（§2.6，唯一突破访存地板的全分辨率实时路线）。
 
 ### 阶段 C — 全链路打通（A+B 汇合）
 
 目标：相机 → 增强 → 分屏显示的实时演示雏形。
 
-1. `infer.c`：chn1 NV21 零拷贝接 ACL。
+1. `infer.c`：chn1 NV21 零拷贝接 ACL（曲线网络路线：跑增强 OM；CoTF 路线：跑 param-net 出 LUT）。
 2. `postproc.c`：先选实现成本低的一条路（IVE 优先,Q6 DSP 留作优化）,完成 §6 点 3 比选。
 3. `compose.c`：VGS 原图/增强分屏。
-4. 整链帧率/时延测量,对照 Config-R ≤33ms 预算分解各级耗时。
+4. **CoTF 路线联机点亮**（若选此路线）：CLUT mesh 标定 + `isp_load_clut_lut` 联机施加 + 控制环刷 LUT（见 §2.6）。
+5. 整链帧率/时延测量,对照 Config-R ≤33ms 预算分解各级耗时。
 
 ### 阶段 D — 控制大脑与画质
 
