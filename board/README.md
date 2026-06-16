@@ -102,6 +102,37 @@ dehaze / DRC / LDCI 增强块（关/自动/手动三态）。
 - 3D-LUT（CLUT）需配合标定 LUT 表加载，待色调映射方案确定后接入；HNR/锐化/AWB 等
   纯 ISP 图像处理项留待 ISP 专项开发。
 
+#### CoTF CLUT 实时演示 `test_cotf_live`（2026-06-16，板端联机点亮）
+
+CoTF 路线硬件施加端的端侧实时演示：相机 → ISP(+CLUT 3D-LUT 全分辨率施加) → VPSS chn0 → VO/HDMI，
+**触摸屏点击切换 CLUT 开/关**（OFF=原始相机图，ON=CoTF 校正）。复用现成 `capture`/`isp`/`display` 模块，
+`isp_load_clut_lut`/`isp_set_clut` 在**运行中的** ISP pipe0 即时生效（架构控制面设计：ISP 参数独立写入、与采集/显示解耦）。
+
+```sh
+scp build/test_cotf_live root@192.168.1.168:/root/socchina-2026/
+# 实时演示：点屏 toggle（gamma 0.45 暗部提亮，几何无关绕过法）
+ssh root@192.168.1.168 '/root/socchina-2026/test_cotf_live 1800 --tone 0.45'
+# 取证：每 3s 自动翻转并落盘 on/off 帧（NV21，1024x600）
+ssh root@192.168.1.168 '/root/socchina-2026/test_cotf_live 9 --auto 3 --tone 0.5 --dumpdir /root/socchina-2026/dumps'
+# 诊断：回读硬件默认 CLUT 表
+ssh root@192.168.1.168 '/root/socchina-2026/test_cotf_live 4 --probe'
+```
+
+选项：`--lut <bin>`（主机打包 LUT，⚠ 见下 mesh 标定）、`--tone <gamma>`（几何无关提亮，γ<1 越亮）、
+`--probe`（回读默认表）、`--lockexp <us> <again>`（锁手动曝光排除 AE）、`--auto <秒>`、`--dumpdir <目录>`、
+`--touch <dev>`（默认 `/dev/input/event0`）、`--sensor <0|1>`。
+
+板端实测（2026-06-16，接 OS08A20 + Waveshare 7" 触摸屏）：
+
+- **相机→ISP+CLUT→HDMI 实时整链 30.2fps 稳定**，CLUT 开关全程不掉帧、零 NPU；触摸点屏 toggle 连续 15+ 次稳定生效。
+- **AE 在 CLUT 之前测光**：开关 CLUT 时 AE 直方图 luma 不变（恒 ~53），故 CLUT 提亮不被 AE 抵消，toggle 一眼可辨。
+- ⚠ **CLUT mesh 几何待标定**：主机 `models/tools/cotf_lut_pack.py` 按 17×18×18 打包的 LUT（含恒等立方 LUT）
+  直接灌 `isp_load_clut_lut` → **出彩色乱码 / 不透传**（轴序/遍历顺序与硬件不符，等效转置；10bit 位打包格式可信）。
+  当前演示用**几何无关绕过法**：`ss_mpi_isp_get_clut_coeff` 回读硬件默认表（格式/几何天然正确），在每个节点
+  **输出值**上叠 gamma 提亮 → 干净可见的全局曝光校正。真正的「NN 出任意 3D-LUT 精确落地」仍需 mesh 标定
+  （对照 SDK《ISP CLUT 调优说明》，只改 `HW_MESH_DIMS` 与遍历常量）。详见
+  [`../models/cotf-route-verification.md`](../models/cotf-route-verification.md)「板端联机点亮（2026-06-16）」。
+
 ### vpss — 多路硬件缩放分发（数据通路第 5 级）
 
 接口见 `include/vpss.h`：`vpss_init` / `vpss_get_frame` / `vpss_release_frame` / `vpss_deinit`。

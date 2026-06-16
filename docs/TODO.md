@@ -1,7 +1,10 @@
 # TODO — 未完成部分与开发规划
 
 > 状态快照日期：2026-06-16。阶段 A 硬件直通链和阶段 B 模型去风险已完成，Config-R 主线已转为
-> CoTF 参数网络 + ISP CLUT。
+> CoTF 参数网络 + ISP CLUT。**CoTF 硬件施加端已板端联机点亮**：相机→ISP+CLUT→HDMI 实时整链 30fps、
+> 触摸点屏 toggle CLUT 开/关、零 NPU 跑通（`board/tests/test_cotf_live.c`）；唯一仍开放的是 **CLUT mesh
+> 几何标定**（主机打包/恒等 LUT 均不透传出伪色，当前用几何无关的 gamma 绕过法拿到可见校正）。
+> 详见 [../models/cotf-route-verification.md](../models/cotf-route-verification.md)「板端联机点亮（2026-06-16）」。
 > 数据通路与模块定义见 [architecture.md](architecture.md)；规范见 [development-guide.md](development-guide.md)。
 > 阶段 C 的接口与协作契约见 [data-path-interface-design.md](data-path-interface-design.md)。
 
@@ -22,7 +25,7 @@
 | 通路级 | 模块文件 | 状态 | 说明 |
 | --- | --- | --- | --- |
 | 1 采集 | `capture.c` | ✅ 已完成 | linear 与 WDR 2to1 均板端 30fps 实测；运行时帧率/镜像/翻转可调 |
-| 2–4 ISP | `isp.c` | ✅ 基本完成 | 抗闪烁/AE 补偿/手动曝光/AE 统计/dehaze/DRC/LDCI 已实测；**CLUT 代码已就绪**（`isp_set_clut`/`isp_load_clut_lut`，CoTF 路线硬件施加端，编译+链接验证过），待 mesh 表+联机点亮（见 `models/cotf-route-verification.md`） |
+| 2–4 ISP | `isp.c` | ✅ 基本完成 | 抗闪烁/AE 补偿/手动曝光/AE 统计/dehaze/DRC/LDCI 已实测；**CLUT 已板端联机点亮**（`isp_set_clut`/`isp_load_clut_lut` 在运行中 ISP pipe0 即时生效，相机→ISP+CLUT→HDMI 30fps、触摸 toggle，见 `test_cotf_live`）；**仅剩 mesh 几何标定**（任意 NN-LUT 精确落地，见 `models/cotf-route-verification.md`） |
 | 5 分发缩放 | `vpss.c` | ✅ 已完成 | chn0 1024x600 已实测；接口已固定 chn1 1024x576、chn2 256x144，待整链启用 |
 | 6 预处理 | （融入 OM 的 AIPP） | 🟡 模型侧已验证 | 配置和开销已验证；待 `infer.c` 对接 chn2 NV21 |
 | 7 推理 | `infer.c` | 🟡 接口已固定 | `infer.h` 已定义同步单实例、输入帧不接管、调用者输出缓冲契约；待 ACL 实现 |
@@ -61,7 +64,11 @@
    Config-R 主线改为 CoTF + ISP CLUT；1024x576 整图输出留 Config-Q。
 2. ✅ AIPP 全分辨率 CSC/归一开销（2026-06-14）：实测 **≈0ms**（1024x576 挂/不挂 AIPP 同速，差值噪声内），
    预处理可零开销融入 OM 前端，直接吃 VPSS chn1 的 NV21。
-3. ❌ CoTF CLUT mesh 核对、相机链加载和热刷新稳定性验证。
+3. 🟡 CoTF CLUT 相机链加载和热刷新（2026-06-16）：**相机→ISP+CLUT→HDMI 实时整链 30fps 联机点亮、
+   触摸点屏 toggle CLUT 开/关、零 NPU、运行中即时生效**（`board/tests/test_cotf_live.c`）。
+   AE 在 CLUT 之前测光，故 CLUT 效果不被 AE 抵消。**仍开放**：mesh 几何标定（主机打包/恒等 LUT 均不透传、
+   出伪色——轴序/遍历待对照 SDK《ISP CLUT 调优说明》；当前用几何无关 gamma 绕过法做出可见校正）；
+   flicker 观感现场目视终判；LUT 刷新率标定。详见 `models/cotf-route-verification.md`「板端联机点亮」。
 4. ✅ `ss_mpi_isp_get_ae_stats` 低频读取验证（2026-06-11）：`isp_get_luma_stats` 归约
    1024-bin 直方图为 mean/clip%，直接喂 `control_decide`，判决与实际场景相符。
 5. 🟡 VGS+VO 替代 GFBG 是否无 flicker：链路侧冒烟 PASS，**面板观感需现场目视确认**。
@@ -96,13 +103,17 @@ ISP 硬件 CLUT 全分辨率施加（零 NPU）」**。完整验证与代码见 
   `isp_load_clut_lut`，编译链接验证）+ 控制策略（`control_should_refresh_lut`，主机单测）。
 - ✅ 流水线优势：NN 与施加在不同硬件块，LUT 低频刷新，**模型移出每帧关键路径**，NPU 占用 ~3–15%。
 
-待办（板端联机，属阶段 C/D）：
+板端联机（2026-06-16）：
 
-- ❌ **CLUT mesh 标定**：`cotf_lut_pack.HW_MESH_DIMS`（默认 17×18×18）与节点坐标/遍历顺序需对照 SDK
-  《ISP CLUT 调优说明》最终确认——**只改常量，不动主流程**（10bit 位打包格式已坐实）。
-- ❌ **CLUT 联机点亮**：相机链（capture_init→ISP pipe0）上 `isp_load_clut_lut(.bin,5508)`，目视确认出图随
-  LUT 改变、热刷无 flicker、零 NPU；需 `infer.c`（板端 ACL 跑 param-net）就位后并入整链。
+- ✅ **CLUT 联机点亮**：相机链（capture_init→ISP pipe0）上 `isp_load_clut_lut(5508)` + `isp_set_clut(en)`
+  在运行中 ISP 即时生效，**相机→ISP+CLUT→HDMI 30fps、触摸点屏 toggle 开/关、零 NPU、零掉帧**
+  （`board/tests/test_cotf_live.c`，交叉编译复用 capture/isp/display）。AE 在 CLUT 之前测光，效果不被 AE 抵消。
+- ❌ **CLUT mesh 标定（唯一卡点）**：`cotf_lut_pack.HW_MESH_DIMS`（默认 17×18×18）的节点坐标/遍历顺序
+  与硬件实际不符——主机打包 LUT 灌进去出**彩色乱码**，恒等立方 LUT 也**不透传**（高光伪色环），等效转置。
+  10bit 位打包格式经默认表回读核对**可信**，错的是 linear-index↔(r,g,b) 几何映射；需对照 SDK《ISP CLUT
+  调优说明》标定——**只改常量，不动主流程**。当前演示用几何无关绕过法（读硬件默认表→输出值叠 gamma）拿到干净校正。
 - ❌ **LUT 刷新率标定**：`control_should_refresh_lut` 的间隔/阈值（初版经验值）按实测场景适应延迟标定。
+- 🟡 **flicker 观感**：整链稳定无 MPI 错，热刷 LUT 的 flicker 观感需现场目视终判。
 - ❌ **画质补偿（ISP 局部块）**：用 LDCI/DRC/SHARPEN/Dither 补全局 LUT 的局部对比/细节损失（**不**加全分辨率细节 NN，会撞访存地板）。
 - ❌ **余量 NPU 感知→控制**：主 NNN ~85%+ 闲 + SVP_NNN 整颗闲，跑场景分类/人脸测光等喂 `control.c`（复用 ModelZoo OM，非像素任务）。
 
@@ -140,7 +151,8 @@ ISP 硬件 CLUT 全分辨率施加（零 NPU）」**。完整验证与代码见 
 
 接口、所有权和验收条件统一按 [data-path-interface-design.md](data-path-interface-design.md) 执行。
 
-1. 先用 identity/诊断 LUT 完成 CLUT mesh 核对和相机链联机点亮。
+1. 🟡 相机链联机点亮**已完成**（`test_cotf_live`：相机→ISP+CLUT→HDMI 30fps + 触摸 toggle，2026-06-16）；
+   仍需用 identity/诊断 LUT 完成 **CLUT mesh 几何标定**（当前主机打包/恒等 LUT 不透传出伪色，用 gamma 绕过）。
 2. `infer.c`：VPSS chn2 256x144 NV21 接 AIPP/ACL，运行 CoTF param-net 输出 LUT。
 3. `lut_bridge.c`：实现板端 LUT 重采样/打包，并通过 ISP 接口写回。
 4. 把 AE 统计、`control_should_refresh_lut` 和 LUT 热刷新接入低频 control worker。
@@ -166,12 +178,14 @@ ISP 硬件 CLUT 全分辨率施加（零 NPU）」**。完整验证与代码见 
 | --- | --- |
 | M1（阶段 A） | 相机实时画面上屏,链路可一键部署/启动 |
 | M2（阶段 B） | OM 板端实测耗时出数,Config-R 可行性有结论 |
-| M3（阶段 C） | CoTF LUT 相机链联机生效，30fps 主链和刷新耗时分解完成 |
+| M3（阶段 C） | CoTF LUT 相机链联机生效（🟡 30fps 整链 + 触摸 toggle 已点亮 2026-06-16；余 mesh 标定 + 刷新耗时分解） |
 | M4（阶段 D） | 场景自适应生效,画质验证通过 |
 | M5（阶段 E） | RTSP 远程可看,拍照路径可用,可交付演示 |
 
 ## 4. 风险与依赖提示
 
-- 当前最大技术风险是 ISP CLUT mesh/遍历顺序和运行中热刷新效果；整图 OM 的性能风险已经在阶段 B 定量关闭。
+- 运行中热刷新已板端跑通（30fps 不掉帧、点屏 toggle 即时生效，2026-06-16）；**当前最大技术风险收窄为 ISP CLUT
+  mesh 几何标定**（轴序/遍历顺序——主机打包/恒等 LUT 均不透传出伪色，未标定前任意 NN-LUT 无法精确落地，
+  当前用几何无关 gamma 绕过法演示）。整图 OM 的性能风险已在阶段 B 定量关闭。
 - 板端媒体状态易残留：所有新模块冒烟前确认无其他媒体进程,失败后优先干净重启（见 [board-operations.md](board-operations.md)）。
 - WDR 限制（§7）可能改变第 1–2 级通路形态,阶段 A 先用线性模式规避阻塞。

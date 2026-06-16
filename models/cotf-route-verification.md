@@ -1,11 +1,17 @@
 # CoTF 路线可行性验证 + 代码实现 —— NN 出 LUT + ISP 硬件施加
 
-> 状态：2026-06-15。**分环验证与接口代码已完成**（host 桥 + 板端 CLUT API + 控制策略）；
-> 尚未完成相机链端到端联机。回答 [architecture.md](../docs/architecture.md) §4.1 / §6
+> 状态：2026-06-16。**分环验证与接口代码已完成**（host 桥 + 板端 CLUT API + 控制策略）；
+> **板端相机链联机点亮已完成**——相机→ISP+CLUT→HDMI 实时整链 **30fps 跑通、点屏 toggle CLUT 开/关、
+> 零 NPU**（见下「板端联机点亮（2026-06-16）」）。回答 [architecture.md](../docs/architecture.md) §4.1 / §6
 > 中 CoTF 3D-LUT 能否落地的问题：
 > **NN 低分辨率出 3D-LUT（NPU）+ ISP 硬件全分辨率施加（零 NPU）** 这条路能不能成立。
 > 这是 [expo-curve-network.md](expo-curve-network.md) 横评后唯一能突破"全分辨率访存地板"的架构。
-> 四段式：目标 / 命令路径 / 结果 / 解读。
+> 四段式：目标 / 命令路径 / 结果 / 解读 / 板端联机点亮。
+>
+> **一句话进展**：CoTF 硬件施加端已在真板上以 30fps 实时点亮（相机→ISP CLUT→HDMI，触摸切换），
+> 唯一仍开放的是 **CLUT mesh 几何标定**——主机 `cotf_lut_pack` 按 17×18×18 打包的 LUT 灌进去出彩色乱码
+> （连恒等表都不透传），证实文档早标注的轴序/遍历待标定问题。当前演示用**几何无关**的绕过法
+> （读硬件默认表→在输出值上叠 gamma 提亮）拿到干净可见的曝光校正。
 
 ## 目标
 
@@ -59,6 +65,10 @@ python -m pytest models/tests/test_cotf_lut_pack.py -q      # 打包桥单测（
   （端到端 param-net→`cotf_clut.bin`）、[tests/test_cotf_lut_pack.py](tests/test_cotf_lut_pack.py)（9 单测）。
 - 板端 CLUT API：`isp_set_clut`/`isp_load_clut_lut`（[isp.c](../board/src/isp.c)/[isp.h](../board/include/isp.h)）。
 - 控制策略：`control_should_refresh_lut`（[control.c](../board/src/control.c)/[control.h](../board/include/control.h)，主机单测）。
+- 板端实时演示：[`board/tests/test_cotf_live.c`](../board/tests/test_cotf_live.c)（相机→ISP+CLUT→HDMI 30fps +
+  触摸 toggle + `--auto`/`--dumpdir`/`--probe`/`--tone`/`--lockexp`，2026-06-16）。
+- 演示用 LUT 与可视化（主机）：[tools/cotf_make_demo_lut.py](tools/cotf_make_demo_lut.py)（tone-curve LUT 打包）、
+  [tools/cotf_demo_apply.py](tools/cotf_demo_apply.py)（经同一桥把 LUT 施加到真实图像，输出 input/校正/gt 对比图与 PSNR）。
 
 ### NN 端耗时 vs 输入分辨率（param-net, lut_dim=17, 板端实测）
 
@@ -99,14 +109,84 @@ NN 只预测**全局 LUT**，输入不必全分辨率——喂缩略图即可，
    `param-net(缩略图)→立方 LUT→5508 节点 u32→cotf_clut.bin`；板端 `fread(.bin)`
    即可喂 `isp_load_clut_lut`。控制环用 `control_should_refresh_lut` 决定何时重跑 NN 刷 LUT。
 
-4. **剩两步（板端联机，属阶段 C/D 整链）**：
-   - **mesh 标定**：`cotf_lut_pack.HW_MESH_DIMS`（默认 17×18×18）与遍历顺序需对照 SDK《ISP CLUT 调优说明》
-     最终确认——**只改常量，不动主流程**。10bit 位打包格式已坐实。
-   - **联机点亮**：相机链（capture_init→ISP pipe0）上 `isp_set_clut(AUTO,..)` + `isp_load_clut_lut(.bin,5508)`，
-     目视确认出图随 LUT 改变、热刷无 flicker、零 NPU。需 `infer.c`（板端 ACL 跑 param-net）就位后并入整链。
+4. **板端联机点亮已完成（2026-06-16，见下专节）**：相机→ISP+CLUT→HDMI 实时整链 30fps 跑通、
+   触摸屏点击 toggle CLUT 开/关、零 NPU、零掉帧。`isp_set_clut`/`isp_load_clut_lut` 在**运行中的** ISP pipe0
+   上即时生效，新增板端测试 [`board/tests/test_cotf_live.c`](../board/tests/test_cotf_live.c)（交叉编译，
+   复用现成 capture/isp/display 模块）。
+
+5. **唯一仍开放：CLUT mesh 几何标定**。把主机 `cotf_lut_pack`（17×18×18、R 外层 row-major）打包的 5508 节点
+   LUT 直接灌 `isp_load_clut_lut` → **出彩色乱码**；进一步用恒等立方 LUT 验证，**连恒等都不透传**
+   （`|off-on|` 远非 0，高光出现伪色环）——坐实文档早标注的"轴序/遍历待标定"问题：等效于把 LUT 转置了。
+   10bit 位打包格式（bits[29:20]=R/[19:10]=G/[9:0]=B）经板端默认表回读核对**可信**；错的是
+   linear-index↔(r,g,b) 的几何映射，需对照 SDK《ISP CLUT 调优说明》最终标定。
+   **当前演示的绕过法（几何无关）**：`ss_mpi_isp_get_clut_coeff` 读回硬件默认表（格式/几何天然正确），
+   在每个节点的**输出值**上叠一层 gamma 提亮（逐节点点变换，与节点↔坐标映射无关）→ 得到干净可见的全局
+   曝光校正。代价：这条演示的 LUT 是 gamma 暗部提升，**不是训练好的 CoTF 网络输出**；要让任意 NN 出的
+   3D-LUT 精确落地，仍需把 mesh 几何标定出来。
 
 > 口径：第 1 环是离线单算 OM 执行耗时（`aclmdlExecute`，warmup 后），不含 ISP CLUT 施加（那是硬件内联、
 > 零 NPU，需联机测但不占 NPU 预算）。OM 文件大小不代表参数量。
+
+## 板端联机点亮（2026-06-16）
+
+把 CoTF 的**硬件施加端**在真板上实时点亮：相机 → ISP(+CLUT 3D-LUT 全分辨率施加) → VPSS → VO/HDMI，
+触摸屏点击切换 CLUT 开/关。这回答了 §6 点 3「CoTF CLUT 相机链加载 + 热刷新」。
+
+### 链路与交互
+
+```
+OS08A20(8M30 linear) → VI(online) → ISP(+CLUT 三线性, 硬件内联) → VPSS chn0 1024x600 NV21 → VO/HDMI(1024x600 DVI)
+                              ▲ 点屏 toggle en                                              30fps
+   触摸屏 /dev/input/event0 ──┘  (BTN_TOUCH 按下 → ss_mpi_isp_set_clut_attr en 翻转)
+```
+
+- 新增 [`board/tests/test_cotf_live.c`](../board/tests/test_cotf_live.c)（交叉编译，复用现成
+  `capture`/`isp`/`display`/`control` 模块与 `isp_set_clut`/`isp_load_clut_lut`）：
+  整链起链 + `isp_load_clut_lut(5508)` + 逐帧轮询触摸事件翻转 CLUT；
+  `--auto <秒>` 自动翻转取证、`--dumpdir` 落盘 NV21、`--probe` 回读默认表、`--tone <gamma>` 几何无关提亮、
+  `--lockexp <us> <again>` 锁曝光排除 AE 干扰。
+- 交叉编译用仓库正规链路：`CROSS_COMPILE_ROOT=tools/local/aarch64-mix210-linux`、
+  `SS928_SDK_ROOT=tools/local/mpp_sample/SS928V100_SDK_V2.0.2.2_MPP_Sample-master`、
+  `ISL_LIB_DIR` 指向含 `libisl.so.19` 的目录（本机 conda env 里有），`scripts/build_board.sh Release`。
+
+### 实测结论
+
+| 项 | 结论 | 证据 |
+| --- | --- | --- |
+| **相机→ISP+CLUT→HDMI 实时整链** | ✅ **30.2fps 稳定**，CLUT 开关全程不掉帧 | `test_cotf_live` 日志 `fps=30.2`、`frames=` 连续累计 |
+| **CLUT 在运行中 ISP 上即时生效** | ✅ 独立逻辑在 pipe0 上 `set_clut_attr/coeff` 立即改变出图 | toggle 后下一帧即变（落盘帧对比） |
+| **点屏 toggle** | ✅ 触摸 `/dev/input/event0` `BTN_TOUCH` → 翻转，实测连续 15+ 次稳定 | 日志 `toggles=` 随点击递增、`CLUT ON/OFF` 交替 |
+| **CLUT 施加零 NPU、不被 AE 抵消** | ✅ AE 在 CLUT **之前**测光：开关 CLUT 时 AE 直方图 luma 不变（恒 ~53） | 日志 `luma mean` 不随 `clut=ON/OFF` 变 |
+| **热刷无 flicker** | 🟡 整链稳定无错，flicker 观感需现场目视最终确认 | 进程长跑稳定、无 MPI 报错 |
+| **任意 NN-LUT 精确落地** | ❌ 受阻于 **mesh 几何标定**（见解读 §5） | 主机打包 LUT/恒等 LUT 均不透传，出伪色 |
+
+### 几何无关绕过法（拿到干净可见效果的关键）
+
+直接灌主机打包的 LUT 出乱码后，改用**不依赖 mesh 几何**的办法做出可见校正：
+
+1. `ss_mpi_isp_get_clut_coeff(pipe0)` 读回硬件**默认 CLUT 表**——它的节点↔坐标映射、位打包都是硬件原生正确的。
+2. 对每个节点解包出 `(R,G,B)`（各 10bit），施加 `out = 1023·(out/1023)^γ`（γ<1 提亮暗部），再打包回去。
+   这是逐节点**输出值**的点变换，与"哪个 index 对应哪个 (r,g,b)"完全无关 → 几何错不影响。
+3. `isp_load_clut_lut` 写回、`set_clut_attr en=1` 启用。
+
+实测（锁曝光排除 AE 后）：默认表本身即一条提亮曲线（开 CLUT 后 luma ~+14）；再叠 γ=0.45 暗部进一步抬亮，
+出图干净、无伪色、暗部细节找回。**局限**：这是 gamma 全局色调，不是训练后的 CoTF LUT；
+真正的「NN 出任意 3D-LUT」必须先解决 mesh 标定。
+
+### 复现命令（板端）
+
+```sh
+# 交叉编译（仓库根，先 source 出三个环境变量）
+scripts/build_board.sh Release
+scp build/test_cotf_live root@<board>:/root/socchina-2026/
+
+# 板端：实时演示，点屏切换（gamma 0.45 暗部提亮，几何无关）
+./test_cotf_live 1800 --tone 0.45                  # 1800s，触摸 toggle
+# 取证：自动每 3s 翻转并落盘 on/off 帧
+./test_cotf_live 9 --auto 3 --tone 0.5 --dumpdir dumps
+# 诊断：回读硬件默认 CLUT 表
+./test_cotf_live 4 --probe
+```
 
 ## 流水线可行性（与 §6 点1 的曲线网络的本质区别）
 
@@ -148,8 +228,9 @@ CoTF 路线**天然适合流水线**，因为它把两件事放在**两个不同
 → **结论：CoTF 不只是"能流水线"，而是把模型整个移出每帧关键路径**，显示吞吐回到纯硬件链（30fps+），
 NPU 近乎空闲。这是曲线网络做不到的——后者 NPU 必须为每帧全分辨率施加买单。
 
-待联机验证的两点（板端）：① `isp_load_clut_lut` 在跑流中热刷 LUT **无 flicker**（类比 VGS 合成的目视确认）；
-② LUT 刷新率 vs 场景适应延迟的取舍标定。
+板端联机已验证（2026-06-16，见「板端联机点亮」专节）：① `isp_load_clut_lut`/`set_clut_attr` 在跑流中
+即时生效、CLUT 开关全程 **30fps 不掉帧、零 NPU**，触摸点屏 toggle 稳定（flicker 观感待现场目视终判）；
+② LUT 刷新率 vs 场景适应延迟的取舍标定仍待实测；③ 任意 NN-LUT 精确落地仍卡在 mesh 几何标定。
 
 ## 一句话判决
 
