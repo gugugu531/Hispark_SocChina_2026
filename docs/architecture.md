@@ -57,8 +57,14 @@ CoTF 主路径中的 CLUT 位于 ISP 内，因此同一 ISP 输出天然是“�
 - **Config-R 备选**：`768x432 + 共享曲线 niter8` 整图 OM，单次执行约 `27.2ms`；适合快速演示，
   但仍需为整链开销留预算，且 NPU 每帧参与。
 - **Config-Q（拍照/低帧，高画质）**：更大输入（如 1024x640）、更多迭代、可叠加多帧堆栈；约 100ms 量级，用于按键抓拍增强。
+- **兜底路线**：若双向方案在画质/工期上均不达预期，退回探索层已板端实测的 **Zero-DCE Lite**（单向提亮，须配强光场景门控）。技术路线分级（主推/备选/兜底）见 [model-route-summary.md](model-route-summary.md)。
 
-### 4.1 两条已验证的模型路线（曲线网络 vs CoTF）
+### 4.1 两条候选模型路线（曲线网络 vs 受 CoTF 启发的 LUT 路线）
+
+> **命名说明**：本仓库所称「CoTF 路线」只移植了官方 CoTF（`CoNet`）中「预测 3D-LUT」这一子组件（该子组件本身借自
+> Image-Adaptive-3DLUT / SepLUT），并把施加卸给 ISP 硬件。官方 CoTF 的命名贡献——协同变换、自适应采样、注意力
+> 融合——因落在 NNN 红名单已**全部丢弃**，故画质 ≈ 全局 3D-LUT 级，**不等于官方 CoTF**。对照详见
+> [../models/cotf-route-verification.md](../models/cotf-route-verification.md) 与 [model-route-summary.md](model-route-summary.md) 待测项1。CoTF 路线为**基础设施验证 + 代码就绪、联机待测**。
 
 横评 5 个架构后确认，「输出整图」的模型在 1024x576 都撞**全分辨率访存的像素线性地板**（与参数量无关）。两条路线：
 

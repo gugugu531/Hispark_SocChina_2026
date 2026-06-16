@@ -1,6 +1,9 @@
 # Config-R 数据通路接口与协作设计
 
 > 状态快照：2026-06-16。本文固定阶段 C 的模块边界和协作契约；具体 SDK 调用仍以实现和板端实测为准。
+> **命名说明**：文中「CoTF」指受官方 CoTF 启发、只保留「预测 3D-LUT + ISP 硬件施加」的子集，**非官方 CoTF**
+> （协同变换/自适应采样/注意力融合等红名单部件已丢弃，画质 ≈ 全局 3D-LUT 级）。详见
+> [architecture.md §4.1](architecture.md) 与 [../models/cotf-route-verification.md](../models/cotf-route-verification.md)。
 
 ## 1. 目标与验收边界
 

@@ -103,6 +103,11 @@ ISP 硬件 CLUT 全分辨率施加（零 NPU）」**。完整验证与代码见 
 - ❌ **CLUT 联机点亮**：相机链（capture_init→ISP pipe0）上 `isp_load_clut_lut(.bin,5508)`，目视确认出图随
   LUT 改变、热刷无 flicker、零 NPU；需 `infer.c`（板端 ACL 跑 param-net）就位后并入整链。
 - ❌ **LUT 刷新率标定**：`control_should_refresh_lut` 的间隔/阈值（初版经验值）按实测场景适应延迟标定。
+- ❌ **画质补偿（ISP 局部块）**：用 LDCI/DRC/SHARPEN/Dither 补全局 LUT 的局部对比/细节损失（**不**加全分辨率细节 NN，会撞访存地板）。
+- ❌ **余量 NPU 感知→控制**：主 NNN ~85%+ 闲 + SVP_NNN 整颗闲，跑场景分类/人脸测光等喂 `control.c`（复用 ModelZoo OM，非像素任务）。
+
+技术路线分级（主推 CoTF-LUT / 备选 曲线网络 768x432 / 兜底 Zero-DCE 单向）与待测项详见
+[model-route-summary.md](model-route-summary.md)。
 
 ## 3. 开发规划
 
