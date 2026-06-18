@@ -28,7 +28,7 @@
 | 2–4 ISP | `isp.c` | ✅ 基本完成 | 抗闪烁/AE 补偿/手动曝光/AE 统计/dehaze/DRC/LDCI 已实测；**CLUT 已板端联机点亮**（`isp_set_clut`/`isp_load_clut_lut` 在运行中 ISP pipe0 即时生效，相机→ISP+CLUT→HDMI 30fps、触摸 toggle，见 `test_cotf_live`）；**仅剩 mesh 几何标定**（任意 NN-LUT 精确落地，见 `models/cotf-route-verification.md`） |
 | 5 分发缩放 | `vpss.c` | ✅ 已完成 | chn0 1024x600 已实测；接口已固定 chn1 1024x576、chn2 256x144，待整链启用 |
 | 6 预处理 | （融入 OM 的 AIPP） | 🟡 模型侧已验证 | 配置和开销已验证；待 `infer.c` 对接 chn2 NV21 |
-| 7 推理 | `infer.c` | 🟡 接口已固定 | `infer.h` 已定义同步单实例、输入帧不接管、调用者输出缓冲契约；待 ACL 实现 |
+| 7 推理 | `infer.c` | ✅ ACL 实现+板端验证 | 全 ACL `aclmdl*` 跑 CoTF param-net OM：模型加载/输入复制(NV21→device)/NPU 执行/输出 fp16→float。**板端 30/30 OK，NPU exec 平均 5.61ms**（lut17_1024x576，`test_infer`，2026-06-19）。注：当前随机权重，输出仅验证通路；接控制环待训练好的色调网络 |
 | 8 LUT 桥 | `lut_bridge.c` | 🟡 接口已固定 | `lut_bridge.h` 已隔离 mesh/轴序/位序；待实现并完成诊断 LUT 标定 |
 | 9 后处理/合成 | `postproc.c` / `compose.c` | ⏸ 备选路线 | 仅整图 ExpoCurveNet 分屏演示需要，非 CoTF 主路径依赖 |
 | 10a 显示 | `display.c` | ✅ 已完成 | 板端冒烟 PASS，启动杂线已修（黑场预帧）；flicker 观感需现场目视确认 |
@@ -50,7 +50,8 @@
 
 ### 2.3 脚本与工程
 
-- ❌ `scripts/deploy_board.sh` / `scripts/run_board.sh`（README 已标注"待实现"）。
+- ✅ `scripts/deploy_board.sh`（build 产物 + OM/LUT scp 到板）/ `scripts/run_board.sh`（板端运行，自动设
+  `LD_LIBRARY_PATH=/opt/lib/npu`），2026-06-19。
 - ❌ 板端测试自动化：目前 `test_display` 靠手工 scp + ssh，部署脚本应统一接管。
 - ❌ `LICENSE` 内容待定（当前占位）。
 - ✅ `feat/display-hdmi` 已合入 `main` 并推送（2026-06-10）。
@@ -134,7 +135,7 @@ ISP 硬件 CLUT 全分辨率施加（零 NPU）」**。完整验证与代码见 
 2. ✅ `capture.c`：线性模式和 WDR 2to1 均已点亮，板端 30fps。
 3. ✅ `vpss.c`：chn0 直送 display 已实测；chn1/chn2 待整链启用。
 4. ✅ 冒烟：实时相机画面上屏 30.5 fps（`socchina_app` / `test_capture --display`）；§6 点 5 flicker 观感待目视。
-5. ❌ 收尾：补 `deploy_board.sh` / `run_board.sh`。
+5. ✅ 收尾：`deploy_board.sh` / `run_board.sh` 已补（2026-06-19）。
 
 ### 阶段 B — 模型最小可用 + 推理上板（与 A 可并行）✅ 已完成（2026-06-15）
 
@@ -154,7 +155,8 @@ ISP 硬件 CLUT 全分辨率施加（零 NPU）」**。完整验证与代码见 
 
 1. 🟡 相机链联机点亮**已完成**（`test_cotf_live`：相机→ISP+CLUT→HDMI 30fps + 触摸 toggle，2026-06-16）；
    仍需用 identity/诊断 LUT 完成 **CLUT mesh 几何标定**（当前主机打包/恒等 LUT 不透传出伪色，用 gamma 绕过）。
-2. `infer.c`：VPSS chn2 256x144 NV21 接 AIPP/ACL，运行 CoTF param-net 输出参数（色调曲线/LUT）。
+2. 🟡 `infer.c`：ACL 推理通路**已实现+板端验证**（NPU 跑 param-net OM，exec ~5.6ms）；余：喂 VPSS chn2
+   256x144 缩略图 + AIPP（NV21→RGB）、训练出"色调曲线"网络并把输出接入控制环（替代规则判决）。
 3. `lut_bridge.c`：板端把 NN 参数转 ISP 块输入（色调→Gamma 表；色彩 3D→CLUT 17³ 打包）。
 4. ✅ AE 统计 + `control_should_refresh_lut` + 色调热刷新已接入低频 control worker（`main.c` 控制线程，2026-06-19）。
 5. ✅ `main.c` 已建立 display + control 双线程、逆序回滚与 SIGINT 优雅退出（可选 stream 线程后续加）。

@@ -67,6 +67,10 @@ python -m pytest models/tests/test_cotf_lut_pack.py -q      # 打包桥单测（
 - 控制策略：`control_should_refresh_lut`（[control.c](../board/src/control.c)/[control.h](../board/include/control.h)，主机单测）。
 - 板端实时演示：[`board/tests/test_cotf_live.c`](../board/tests/test_cotf_live.c)（相机→ISP+CLUT→HDMI 30fps +
   触摸 toggle + `--auto`/`--dumpdir`/`--probe`/`--tone`/`--lockexp`，2026-06-16）。
+- 生产主程序：`board/src/main.c`（`socchina_app`，显示线程 30fps + 低频控制线程→Gamma，SIGINT 优雅退出，2026-06-19）。
+- 板端 NPU 推理：`board/src/infer.c`（全 ACL `aclmdl*` 跑 param-net OM）+ `board/tests/test_infer.c`
+  （相机帧→NPU→LUT，**板端 exec ~5.6ms 实测**，2026-06-19）。注：随机权重，验证通路；接控制环待训练色调网络。
+- 部署/运行脚本：`scripts/deploy_board.sh` / `scripts/run_board.sh`。
 - 演示用 LUT 与可视化（主机）：[tools/cotf_make_demo_lut.py](tools/cotf_make_demo_lut.py)（tone-curve LUT 打包）、
   [tools/cotf_demo_apply.py](tools/cotf_demo_apply.py)（经同一桥把 LUT 施加到真实图像，输出 input/校正/gt 对比图与 PSNR）。
 - mesh 标定辅助（主机）：[tools/cotf_clut_analyze.py](tools/cotf_clut_analyze.py)（分析板端回读的默认 CLUT 表结构，

@@ -27,9 +27,15 @@ if(ENABLE_SDK)
     if(EXISTS "${SS928_SDK_ROOT}/include/hisilicon")
         list(APPEND SDK_INC_DIRS "${SS928_SDK_ROOT}/include/hisilicon")
     endif()
+    if(EXISTS "${SS928_SDK_ROOT}/include/hisilicon/npu")
+        list(APPEND SDK_INC_DIRS "${SS928_SDK_ROOT}/include/hisilicon/npu") # ACL（infer.c）
+    endif()
     set(SDK_LIB_DIRS "${SS928_SDK_ROOT}/lib")
     if(EXISTS "${SS928_SDK_ROOT}/lib/linux/hisilicon")
         list(APPEND SDK_LIB_DIRS "${SS928_SDK_ROOT}/lib/linux/hisilicon")
+    endif()
+    if(EXISTS "${SS928_SDK_ROOT}/lib/linux/hisilicon/npu")
+        list(APPEND SDK_LIB_DIRS "${SS928_SDK_ROOT}/lib/linux/hisilicon/npu") # libascendcl 等
     endif()
     target_include_directories(socchina PUBLIC ${SDK_INC_DIRS})
     target_link_directories(socchina PUBLIC ${SDK_LIB_DIRS})
@@ -77,6 +83,9 @@ if(ENABLE_SDK)
         -l:libss_voice_engine.a -l:libss_upvqe.a -l:libss_dnvqe.a
         -l:libaac_comm.a -l:libaac_enc.a -l:libaac_dec.a -l:libaac_sbr_enc.a -l:libaac_sbr_dec.a
         -Wl,--end-group
+        # NPU ACL（infer.c 跑 CoTF param-net）：动态链 libascendcl，其传递 .so 依赖运行时由
+        # 板端 /opt/lib/npu 解析，链接期放宽未定义符号。
+        -lascendcl -Wl,--allow-shlib-undefined
         pthread m dl)
 endif()
 
