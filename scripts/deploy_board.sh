@@ -1,13 +1,16 @@
 #!/usr/bin/env bash
 # 部署板端产物到目标板。先 build_board.sh 出产物，再 scp 二进制 + 模型/LUT 到板上目录。
-# 用法：[BOARD=root@192.168.1.168] [DEST=/root/socchina-2026] scripts/deploy_board.sh [额外文件...]
+# 用法：[BOARD=hispark-remote] [DEST=/root/socchina-2026] scripts/deploy_board.sh [额外文件...]
 #
 # 默认部署：socchina_app + build/test_*（板端测试）。额外文件（OM/LUT/.bin）作参数追加。
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 BUILD_DIR="${REPO_ROOT}/build"
-BOARD="${BOARD:-root@192.168.1.168}"
+if [[ -z "${BOARD:-}" ]]; then
+    echo "[deploy] 请设置 BOARD=hispark-remote；电脑网线直连时可设 BOARD=root@192.168.1.168" >&2
+    exit 2
+fi
 DEST="${DEST:-/root/socchina-2026}"
 
 if [ ! -x "${BUILD_DIR}/socchina_app" ]; then

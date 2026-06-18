@@ -127,7 +127,9 @@ scripts/build_board.sh [Debug|Release]                    # 默认 Release
 
 ## 7. 板端运行规范
 
-- 板端 SSH 目标：`root@192.168.1.168`。
+- 板端受管网络访问优先使用 `~/.ssh/config` 中的 `hispark-remote` 别名；其 HostName 是
+  当前 DHCPv6 地址。`root@192.168.1.168` 仅用于电脑网线直连回退。
+- 不在仓库脚本中写死动态 DHCP 地址；完整约定见 [network-access.md](network-access.md)。
 - 运行根目录建议：`/root/socchina-2026/`（部署脚本统一使用）。
 - 启动媒体/ACL 任务前，先确认无冲突进程、媒体栈状态干净。
 - **不要**用 `pkill` 停 `sample_hdmi`；用其 FIFO 停止脚本，否则会残留 MPP/VB/HDMI 状态。

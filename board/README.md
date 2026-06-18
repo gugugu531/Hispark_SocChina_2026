@@ -27,6 +27,17 @@ export ISL_LIB_DIR=/path/to/libisl          # 提示缺 libisl.so.19 时设置
 scripts/build_board.sh                      # 产物 build/socchina_app (aarch64)
 ```
 
+板端命令统一通过 `BOARD` 指定目标。受管网络推荐使用 `~/.ssh/config` 别名，电脑网线直连时
+使用旧静态地址：
+
+```sh
+export BOARD=hispark-remote                 # 受管网络动态 IPv6
+# export BOARD=root@192.168.1.168           # 电脑网线直连回退
+```
+
+网络模式、地址稳定性与 Clash TUN 注意事项见
+[`docs/network-access.md`](../docs/network-access.md)。
+
 ## 模块
 
 ### display — VO→HDMI 本地显示驱动（数据通路第 10a 级）
@@ -52,8 +63,8 @@ scripts/build_board.sh                      # 产物 build/socchina_app (aarch64
 
 ```sh
 # 前置: 板上无其他媒体进程争用 SYS/VB/VO(勿与厂商 sample_hdmi 并跑)
-scp build/test_display root@192.168.1.168:/root/socchina-2026/
-ssh root@192.168.1.168 '/root/socchina-2026/test_display 10'   # 10 秒, 彩条/灰阶渐变交替
+scp build/test_display "${BOARD}:/root/socchina-2026/"
+ssh "${BOARD}" '/root/socchina-2026/test_display 10'   # 10 秒, 彩条/灰阶渐变交替
 # 观察面板画面; 健康判据见 docs/board-operations.md §3 (/proc/umap/hdmi0)
 ```
 
@@ -109,13 +120,13 @@ CoTF 路线硬件施加端的端侧实时演示：相机 → ISP(+CLUT 3D-LUT �
 `isp_load_clut_lut`/`isp_set_clut` 在**运行中的** ISP pipe0 即时生效（架构控制面设计：ISP 参数独立写入、与采集/显示解耦）。
 
 ```sh
-scp build/test_cotf_live root@192.168.1.168:/root/socchina-2026/
+scp build/test_cotf_live "${BOARD}:/root/socchina-2026/"
 # 实时演示：点屏 toggle（gamma 0.45 暗部提亮，几何无关绕过法）
-ssh root@192.168.1.168 '/root/socchina-2026/test_cotf_live 1800 --tone 0.45'
+ssh "${BOARD}" '/root/socchina-2026/test_cotf_live 1800 --tone 0.45'
 # 取证：每 3s 自动翻转并落盘 on/off 帧（NV21，1024x600）
-ssh root@192.168.1.168 '/root/socchina-2026/test_cotf_live 9 --auto 3 --tone 0.5 --dumpdir /root/socchina-2026/dumps'
+ssh "${BOARD}" '/root/socchina-2026/test_cotf_live 9 --auto 3 --tone 0.5 --dumpdir /root/socchina-2026/dumps'
 # 诊断：回读硬件默认 CLUT 表
-ssh root@192.168.1.168 '/root/socchina-2026/test_cotf_live 4 --probe'
+ssh "${BOARD}" '/root/socchina-2026/test_cotf_live 4 --probe'
 ```
 
 选项：`--lut <bin>`（主机打包 LUT，⚠ 见下 mesh 标定）、`--tone <gamma>`（几何无关提亮，γ<1 越亮）、
@@ -151,10 +162,10 @@ chn2=256x144 CoTF 控制缩略图，NV21 无压缩输出；`depth>0` 的通道�
 完整选项见文件头注释：`--wdr/--fps/--mirror/--flip/--flicker/--aecomp/--dehaze/--drc/--ldci`）：
 
 ```sh
-scp build/test_capture root@192.168.1.168:/root/socchina-2026/
-ssh root@192.168.1.168 '/root/socchina-2026/test_capture 6 --dump /root/socchina-2026/cap.nv21'
-ssh root@192.168.1.168 '/root/socchina-2026/test_capture 15 --display'           # 实时相机画面上屏
-ssh root@192.168.1.168 '/root/socchina-2026/test_capture 10 --display --wdr'     # WDR 2to1 模式
+scp build/test_capture "${BOARD}:/root/socchina-2026/"
+ssh "${BOARD}" '/root/socchina-2026/test_capture 6 --dump /root/socchina-2026/cap.nv21'
+ssh "${BOARD}" '/root/socchina-2026/test_capture 15 --display'           # 实时相机画面上屏
+ssh "${BOARD}" '/root/socchina-2026/test_capture 10 --display --wdr'     # WDR 2to1 模式
 # 运行中每 2s 打印 avg_fps 与 AE luma 统计(mean/clip%/judged mode)
 ```
 

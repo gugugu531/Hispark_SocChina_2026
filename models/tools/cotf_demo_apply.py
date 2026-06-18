@@ -120,9 +120,8 @@ def _load(path, size=None):
 
 def main() -> int:
     ap = argparse.ArgumentParser()
-    ds = Path("/home/alan/Learning/Hispark/CoTF/datasets/example1")
-    ap.add_argument("--input", default=str(ds / "input" / "a0970-DSC_0036.png"))
-    ap.add_argument("--gt", default=str(ds / "gt" / "a0970-DSC_0036.png"))
+    ap.add_argument("--input", required=True, help="输入图像路径")
+    ap.add_argument("--gt", required=True, help="参考图像路径")
     ap.add_argument("--lut-dim", type=int, default=17)
     ap.add_argument("--bin", default=str(MODELS_DIR / "weights" / "cotf_clut_demo.bin"))
     ap.add_argument("--out", default=str(MODELS_DIR / "weights" / "cotf_demo_compare.png"))

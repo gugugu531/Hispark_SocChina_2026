@@ -1,6 +1,7 @@
 # 板端操作手册
 
-板卡：海思 SS928 / SD3403（海鸥派）。SSH 目标：`root@192.168.1.168`。
+板卡：海思 SS928 / SD3403（海鸥派）。受管网络优先通过动态全局 IPv6/SSH 别名
+`hispark-remote` 访问；`root@192.168.1.168` 是电脑网线直连回退地址。
 运行根目录约定：`/root/socchina-2026/`。
 
 > 本手册沉淀板端部署/运行/恢复的稳定操作。具体命令在各模块实现后补全；下面给出约定与已知注意事项。
@@ -9,6 +10,7 @@
 
 - 主机交叉编译产物 + 模型 OM + 运行脚本，通过 `scripts/deploy_board.sh` 同步到 `/root/socchina-2026/`。
 - 模型 OM 与可执行文件、运行期配置一同部署到运行目录。
+- 网络目标和 SSH 别名见 [network-access.md](network-access.md)。
 
 ## 2. 启动 / 重启
 
@@ -55,7 +57,7 @@ Waveshare 7 寸 HDMI LCD (C) 的电容触摸经面板 **USB 口**上报。**板�
 结论：开箱即用，无需任何自定义驱动 / 标定 / 缩放**——内核自带的 `usbhid → hid-generic →
 evdev` 已把它识别为标准绝对触摸屏，且控制器直接上报面板像素坐标。
 
-实测事实（`192.168.1.168`，面板 USB 触摸线已接）：
+实测事实（板端，面板 USB 触摸线已接；当时使用电脑直连地址 `192.168.1.168`）：
 
 | 项 | 值 |
 | --- | --- |
@@ -88,3 +90,23 @@ timeout 20 cat /dev/input/event0 | hexdump -C   # 触摸时有数据即通
 > 备注：曾评估“用户态 HID→uinput 驱动”方案（读 `/dev/hidrawN` 解析 HID 报告再经
 > `/dev/uinput` 注入）。但本板**无 hidraw**且内核已正确处理，故该方案在此**既不需要也跑不起来**，
 > 不予采用。仅当换到无法自动绑定、却开放了 hidraw 的内核/固件时才需重新考虑用户态方案。
+
+## 7. 受管网络有线接入与 IPv6 SSH
+
+板卡受管网络网线使用 `eth1`。厂商 `search_tool` 仍会按 `/opt/cfg/dev_info.config` 给无链路的
+`eth0` 配置 `192.168.1.168/24` 和默认网关；网络服务启动时会删除该无效默认路由，但保留静态地址，
+避免影响以后恢复电脑直连调试。
+
+认证与网络安装实现不属于本仓库；仓库不记录或链接其外部存放位置。
+
+2026-06-19 实测：
+
+- DHCPv4/DHCPv6 均成功获取动态地址；稳定 Client ID/DUID 在完整重启后续租到同一地址。
+- Web Portal 自动认证成功。
+- 电脑到板端 IPv6 ping 为低毫秒级、`0%` 丢包，TCP/22 可达，SSH 公钥登录成功。
+- 完整重启验收：约 10 秒获得 DHCPv6、约 14 秒获得 DHCPv4，随后
+  `portal-network.service` 自动完成 Portal 认证；无需串口手工命令即可恢复 IPv6 SSH。
+
+Clash Verge TUN 会增加 IPv6 策略路由表。电脑端测试和 SSH 时显式使用
+`-I <Wi-Fi IPv6>` / `-o BindAddress=<Wi-Fi IPv6>`，避免连接被 TUN 默认路由接管。
+完整地址稳定性、SSH 别名和故障恢复见 [network-access.md](network-access.md)。

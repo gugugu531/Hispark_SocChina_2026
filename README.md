@@ -66,7 +66,9 @@ scripts/test_host.sh              # 本机 cc 编译并运行 SDK-free 单元测
 
 - 环境与依赖详解：[docs/development-guide.md](docs/development-guide.md) §3–§4。
 - 模型训练/导出/转换：[models/README.md](models/README.md)（两套独立环境，依据 SDK 文档固化）。
-- 部署/运行脚本（`deploy_board.sh` / `run_board.sh`）：待实现。
+- 板端网络与 SSH：[docs/network-access.md](docs/network-access.md)。
+- 部署/运行：先在 `~/.ssh/config` 配置 `hispark-remote`，再运行
+  `scripts/deploy_board.sh` / `scripts/run_board.sh`。
 
 ## 文档导航
 
@@ -76,6 +78,7 @@ scripts/test_host.sh              # 本机 cc 编译并运行 SDK-free 单元测
 - [docs/model-route-summary.md](docs/model-route-summary.md) — 模型路线稳定结论与当前主线
 - [docs/TODO.md](docs/TODO.md) — 未完成清单与阶段化开发规划
 - [docs/board-operations.md](docs/board-operations.md) — 板端部署/运行/恢复手册
+- [docs/network-access.md](docs/network-access.md) — 受管网络、动态地址、Clash TUN 与 SSH
 
 ## 许可证
 
