@@ -214,6 +214,58 @@ scp build/test_cotf_live root@<board>:/root/socchina-2026/
 ./test_cotf_live 4 --probe
 ```
 
+## 场景自适应曝光校正（2026-06-17，模型无关版整链）
+
+把 CoTF 路线接成真正的闭环：**AE 统计 → `control_decide` 判决 → ISP CLUT tone 施加**，即
+architecture.md §2「场景自适应控制大脑」的实现。暂以"AE 统计→规则判决"替代"NN 出 LUT"（NN 的全局
+色调本就可表达为这套曲线），先验证 控制环→CLUT→显示 的端到端实时校正。
+
+### 几何无关的 tone 施加（绕开未标定 mesh）
+
+新增 ISP 接口（[isp.c](../board/src/isp.c)/[isp.h](../board/include/isp.h)）：
+- `isp_clut_get_coeff`：回读运行中 ISP 的默认 CLUT 表作为**几何正确基线**。
+- `isp_clut_apply_tone(base, len, tone, strength)`：对基线表的**每个节点输出值**叠 tone 曲线
+  （`BRIGHTEN` gamma<1 提暗部 / `COMPRESS` gamma>1 压高光 / `BIDIR` log 曲线压缩动态范围 / `BYPASS` 关），
+  再 `isp_load_clut_lut`+`isp_set_clut(en)`。逐节点点变换 ⇒ **与 mesh 几何无关**，绕开未标定的
+  index↔(r,g,b)（见上「CLUT mesh 几何标定调查」）。`control_decide` 的 4 个模式 1:1 映射到 4 条 tone 曲线。
+
+### 两种部署模型（各有板端验证状态）
+
+| 模型 | 文件 | 数据通路 | 控制面 | 板端状态（2026-06-17） |
+| --- | --- | --- | --- | --- |
+| **集成式** | [test_cotf_auto.c](../board/tests/test_cotf_auto.c) | 自带 capture+VPSS+display | 同进程读 AE 统计→判决→CLUT tone | ✅ **已板端 live 跑通**：相机→ISP+CLUT→HDMI **30.2fps** 稳定，AE 统计→`control_decide`(实测判 BIDIR)→几何无关 CLUT tone，454 帧/15s PASS |
+| **独立控制面** | [test_cotf_ctrl.c](../board/tests/test_cotf_ctrl.c) | 由别的进程提供（厂商 sample_vio） | 独立进程只在运行中 ISP pipe0 上施加 CLUT | ✅ **已板端 live 跑通**：sample_vio 出相机→HDMI，本进程 cross-process 注入 tone，4 模式 `apply rc=0`、sample_vio 存活、HDMI 不掉链 |
+
+### 板端实测结论（独立控制面，2026-06-17）
+
+| 项 | 结论 | 证据 |
+| --- | --- | --- |
+| **cross-process CLUT 注入** | ✅ 独立进程 `isp_clut_get_coeff`/`apply_tone` 在厂商 sample_vio 运行中的 ISP pipe0 上成功生效 | 4 次 `tone -> {BRIGHTEN,COMPRESS,BIDIR,BYPASS} apply rc=0`，sample_vio(pid) 全程存活、HDMI rsen/phy=YES |
+| **几何无关 tone 出干净校正** | ✅ 不再出彩色乱码（绕开 mesh） | tone 施加在默认表输出值上，逐节点点变换 |
+| **零 NPU、不掉链** | ✅ CLUT 硬件内联，控制进程只低频写参数 | HDMI DVI 链路稳定 |
+| **AE 统计 cross-process 读取** | ❌ 被数据通路进程的 3A 独占（`get_ae_stats` 0xa01c8045） | 故独立控制面用触摸**手动循环** tone 模式；场景自适应（AE 驱动）需集成式或与 3A 协商 |
+
+### 已知限制
+
+- **AE 统计单消费者**：cross-process 读 AE 统计（`get_ae_stats`）与占用数据通路进程的 3A 冲突
+  （0xa01c8045）。故**独立控制面**无法读 AE 做场景自适应（改触摸手动循环 tone）；**AE 驱动的场景自适应
+  走集成式**（同进程持有 ISP 3A，已实测 OK，见上表）。
+
+> 排查留痕：开发期曾遇相机不出帧（`ss_mpi_vpss_get_chn_frame` 0xa0078016），一度怀疑是 capture 软件
+> 起链问题；最终用 `VI int_cnt`/`MIPI freq` 实测定位为 **sensor MIPI 数据通道/上电瞬态故障**
+> （I2C+时钟正常、MIPI 数据 lane 无信号），**断电重上电 + 重插排线后恢复**，集成式整链随即 30fps 跑通。
+> 教训：判断相机是否出流看 `VI int_cnt`/`MIPI freq`，不能看时钟寄存器。
+
+### 复现命令（板端）
+
+```sh
+# 集成式（自带整链 + AE 场景自适应，已板端 30fps）
+/root/socchina-2026/test_cotf_auto 600 --strength 0.7                 # 点屏 toggle 自动校正 开/关
+# 独立控制面：先起厂商相机预览，再 cross-process 注入 CoTF tone（AE 被 3A 独占，用手动循环）
+cd /root/os04a10-camera && SENSOR_INDEX=1 ./start_os04a10_preview.sh   # 相机→HDMI
+/root/socchina-2026/test_cotf_ctrl 600 --cycle                        # 点屏循环 4 条 tone
+```
+
 ## 流水线可行性（与 §6 点1 的曲线网络的本质区别）
 
 CoTF 路线**天然适合流水线**，因为它把两件事放在**两个不同硬件块**上：

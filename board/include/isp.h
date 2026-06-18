@@ -55,4 +55,20 @@ int isp_set_clut(isp_block_mode_t mode, unsigned gain_r, unsigned gain_g, unsign
 /* 加载 3D-LUT 系数：lut 为 5508 个 u32（每节点 3×10bit RGB），由 tools/cotf_lut_pack.py 生成。 */
 int isp_load_clut_lut(const unsigned int *lut, unsigned len);
 
+/* 回读当前 CLUT 系数（硬件默认表基线，几何天然正确）。len 须 == OT_ISP_CLUT_LUT_LENGTH(5508)。 */
+int isp_clut_get_coeff(unsigned int *lut, unsigned len);
+
+/* 几何无关的色调校正（CoTF 曝光用例）：把 tone 曲线施加在**节点输出值**上（与 mesh 几何无关，
+ * 绕开未标定的 index↔(r,g,b) 映射），再加载到 ISP CLUT 并启用。tone=BYPASS 时关闭 CLUT。
+ *   - BRIGHTEN  提亮暗部（gamma<1）           - COMPRESS  压制高光（gamma>1）
+ *   - BIDIR     双向：log 曲线压缩动态范围（提暗部+压高光）
+ * base_lut = isp_clut_get_coeff 读回的默认表基线；strength∈[0,1] 校正强度。 */
+typedef enum {
+    ISP_TONE_BYPASS = 0,
+    ISP_TONE_BRIGHTEN,
+    ISP_TONE_COMPRESS,
+    ISP_TONE_BIDIR,
+} isp_tone_t;
+int isp_clut_apply_tone(const unsigned int *base_lut, unsigned len, isp_tone_t tone, float strength);
+
 #endif /* SOCCHINA_ISP_H */

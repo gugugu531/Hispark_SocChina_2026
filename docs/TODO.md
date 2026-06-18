@@ -33,7 +33,7 @@
 | 9 后处理/合成 | `postproc.c` / `compose.c` | ⏸ 备选路线 | 仅整图 ExpoCurveNet 分屏演示需要，非 CoTF 主路径依赖 |
 | 10a 显示 | `display.c` | ✅ 已完成 | 板端冒烟 PASS，启动杂线已修（黑场预帧）；flicker 观感需现场目视确认 |
 | 10b 串流 | `stream.c` | 🟡 接口已固定 | 独占 chn1 的契约已定义；待 VENC H.264 + RTSP 实现（server 选型待定） |
-| 11 控制 | `control.c` | 🟡 初版 | 判决逻辑和 LUT 刷新策略已有主机单测；ISP 统计读取已在测试驱动验证，缺正式主程序接线和 LUT 写回 |
+| 11 控制 | `control.c` | 🟡 初版+接线 | 判决逻辑/LUT 刷新策略主机单测过；**场景自适应闭环已板端跑通**（`control_decide`→几何无关 CLUT tone，2026-06-17）：集成式 `test_cotf_auto` 自带整链 **30.2fps**、AE→判决(实测 BIDIR)→CLUT tone；独立控制面 `test_cotf_ctrl` cross-process 注入 4 tone 模式 OK |
 | — 共享 | `pipeline.h` | ✅ 契约完成 | 通道、尺寸、状态、错误码、输入模式和指标已固定；实现仍由 main/pipeline 接管 |
 | — 入口 | `main.c` | 🟡 骨架 | 仅演示构建闭环；缺整链编排、SYS/VB 初始化、优雅退出 |
 
@@ -189,6 +189,10 @@ ISP 硬件 CLUT 全分辨率施加（零 NPU）」**。完整验证与代码见 
 
 - 运行中热刷新已板端跑通（30fps 不掉帧、点屏 toggle 即时生效，2026-06-16）；**当前最大技术风险收窄为 ISP CLUT
   mesh 几何标定**（轴序/遍历顺序——主机打包/恒等 LUT 均不透传出伪色，未标定前任意 NN-LUT 无法精确落地，
-  当前用几何无关 gamma 绕过法演示）。整图 OM 的性能风险已在阶段 B 定量关闭。
+  当前用几何无关 tone 曲线绕过法演示）。整图 OM 的性能风险已在阶段 B 定量关闭。
+- **AE 统计单消费者（已知限制）**：cross-process `get_ae_stats` 与占用通路进程的 3A 冲突（0xa01c8045）⇒
+  独立控制面无法读 AE 做场景自适应（改手动循环 tone）；AE 驱动的场景自适应走集成式路径（已实测 OK）。
+- 排查留痕：开发期曾遇相机不出帧（VPSS 0xa0078016），实测定位为 **sensor MIPI/上电瞬态故障**
+  （断电重上电+重插排线后恢复，集成式整链随即 30fps 跑通），非软件问题。判断出流看 `VI int_cnt`/`MIPI freq`。
 - 板端媒体状态易残留：所有新模块冒烟前确认无其他媒体进程,失败后优先干净重启（见 [board-operations.md](board-operations.md)）。
 - WDR 限制（§7）可能改变第 1–2 级通路形态,阶段 A 先用线性模式规避阻塞。

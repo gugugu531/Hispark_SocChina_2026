@@ -4,6 +4,7 @@
 
 #ifdef WITH_SS928_SDK
 
+#include <math.h>
 #include <string.h>
 
 #include "ot_common_isp.h"
@@ -238,6 +239,84 @@ fail:
     return -1;
 }
 
+int isp_clut_get_coeff(unsigned int *lut, unsigned len)
+{
+    static ot_isp_clut_lut clut_lut;
+
+    if (lut == TD_NULL || len != OT_ISP_CLUT_LUT_LENGTH) {
+        LOG_ERR("isp_clut_get_coeff: lut=%p len=%u (need %d)", (void *)lut, len,
+                OT_ISP_CLUT_LUT_LENGTH);
+        return -1;
+    }
+    memset(&clut_lut, 0, sizeof(clut_lut));
+    CHECK_RET_GOTO(ss_mpi_isp_get_clut_coeff(ISP_PIPE, &clut_lut), fail);
+    memcpy(lut, clut_lut.lut, sizeof(clut_lut.lut));
+    return 0;
+fail:
+    return -1;
+}
+
+/* 把 tone 曲线 f(x) 离散成 1024-entry 查表（10bit 输入域），施加在节点输出值上（几何无关）。 */
+static void build_tone_lut(td_u16 curve[1024], isp_tone_t tone, float strength)
+{
+    int i;
+    float s = (strength < 0.0f) ? 0.0f : (strength > 1.0f ? 1.0f : strength);
+    for (i = 0; i < 1024; i++) {
+        float x = (float)i / 1023.0f;
+        float y = x;
+        switch (tone) {
+            case ISP_TONE_BRIGHTEN: /* gamma<1 提亮暗部 */
+                y = powf(x, 1.0f / (1.0f + 2.0f * s));
+                break;
+            case ISP_TONE_COMPRESS: /* gamma>1 压制高光 */
+                y = powf(x, 1.0f + 1.5f * s);
+                break;
+            case ISP_TONE_BIDIR: { /* log 曲线：提暗部 + 压高光（动态范围压缩） */
+                float k = 1.0f + 12.0f * s;
+                y = logf(1.0f + k * x) / logf(1.0f + k);
+                break;
+            }
+            case ISP_TONE_BYPASS:
+            default:
+                y = x;
+                break;
+        }
+        if (y < 0.0f) y = 0.0f;
+        if (y > 1.0f) y = 1.0f;
+        curve[i] = (td_u16)(y * 1023.0f + 0.5f);
+    }
+}
+
+int isp_clut_apply_tone(const unsigned int *base_lut, unsigned len, isp_tone_t tone, float strength)
+{
+    static unsigned int out[OT_ISP_CLUT_LUT_LENGTH];
+    td_u16 curve[1024];
+    unsigned i;
+
+    if (base_lut == TD_NULL || len != OT_ISP_CLUT_LUT_LENGTH) {
+        LOG_ERR("isp_clut_apply_tone: bad args len=%u", len);
+        return -1;
+    }
+    if (tone == ISP_TONE_BYPASS) {
+        return isp_set_clut(ISP_BLOCK_OFF, 1024, 1024, 1024); /* 关 CLUT = 原始相机图 */
+    }
+    build_tone_lut(curve, tone, strength);
+    for (i = 0; i < len; i++) {
+        unsigned r = (base_lut[i] >> 20) & 0x3FF;
+        unsigned g = (base_lut[i] >> 10) & 0x3FF;
+        unsigned b = base_lut[i] & 0x3FF;
+        out[i] = ((unsigned)curve[r] << 20) | ((unsigned)curve[g] << 10) | (unsigned)curve[b];
+    }
+    if (isp_load_clut_lut(out, len) != 0) {
+        return -1;
+    }
+    if (isp_set_clut(ISP_BLOCK_AUTO, 1024, 1024, 1024) != 0) { /* unity gain，启用 */
+        return -1;
+    }
+    LOG_INFO("isp clut tone applied: mode=%d strength=%.2f", tone, strength);
+    return 0;
+}
+
 #else /* !WITH_SS928_SDK */
 
 /* SDK-free 构建桩。 */
@@ -313,6 +392,22 @@ int isp_load_clut_lut(const unsigned int *lut, unsigned len)
 {
     (void)lut;
     (void)len;
+    return -1;
+}
+
+int isp_clut_get_coeff(unsigned int *lut, unsigned len)
+{
+    (void)lut;
+    (void)len;
+    return -1;
+}
+
+int isp_clut_apply_tone(const unsigned int *base_lut, unsigned len, isp_tone_t tone, float strength)
+{
+    (void)base_lut;
+    (void)len;
+    (void)tone;
+    (void)strength;
     return -1;
 }
 
