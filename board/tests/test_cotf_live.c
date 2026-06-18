@@ -196,6 +196,7 @@ int main(int argc, char **argv)
     const char *dump_dir = NULL;
     double tone_gamma = 0.0; /* >0 ⇒ 几何无关 tone 模式（读默认表就地重映射） */
     int do_probe = 0;
+    const char *dumplut_path = NULL; /* 非空 ⇒ 回读硬件默认 CLUT 表落盘后退出（mesh 标定用） */
     unsigned lock_exp_us = 0, lock_again = 0; /* >0 ⇒ 锁定手动曝光，排除 AE 干扰 */
     int auto_sec = 0;
     int dump_seq = 0, dump_pending = 0;
@@ -232,6 +233,8 @@ int main(int argc, char **argv)
             tone_gamma = atof(argv[++i]);
         } else if (strcmp(argv[i], "--probe") == 0) {
             do_probe = 1;
+        } else if (strcmp(argv[i], "--dumplut") == 0 && i + 1 < argc) {
+            dumplut_path = argv[++i];
         } else if (strcmp(argv[i], "--lockexp") == 0 && i + 2 < argc) {
             lock_exp_us = (unsigned)atoi(argv[++i]);
             lock_again = (unsigned)atoi(argv[++i]);
@@ -240,8 +243,8 @@ int main(int argc, char **argv)
         }
     }
 
-    /* tone/probe 模式从硬件默认表派生（几何无关），不需要 .bin。 */
-    if (tone_gamma <= 0.0 && !do_probe) {
+    /* tone/probe/dumplut 模式从硬件默认表派生（几何无关），不需要 .bin。 */
+    if (tone_gamma <= 0.0 && !do_probe && dumplut_path == NULL) {
         if (load_clut_bin(lut_path, clut_lut, OT_ISP_CLUT_LUT_LENGTH) != 0) {
             return 1;
         }
@@ -275,6 +278,24 @@ int main(int argc, char **argv)
     if (lock_exp_us != 0 || lock_again != 0) {
         (void)isp_set_exposure_manual(lock_exp_us, lock_again);
         LOG_INFO("[lockexp] manual exposure %uus again=%u/1024 (AE off)", lock_exp_us, lock_again);
+    }
+
+    /* mesh 标定：回读硬件默认 CLUT 表（正确几何）落盘后直接退出，离线分析轴序/维度。 */
+    if (dumplut_path != NULL) {
+        if (clut_read_coeff(clut_lut, OT_ISP_CLUT_LUT_LENGTH) != 0) {
+            goto cleanup;
+        }
+        clut_probe(clut_lut, OT_ISP_CLUT_LUT_LENGTH);
+        FILE *fp = fopen(dumplut_path, "wb");
+        if (fp != NULL) {
+            size_t wn = fwrite(clut_lut, sizeof(unsigned int), OT_ISP_CLUT_LUT_LENGTH, fp);
+            fclose(fp);
+            LOG_INFO("[dumplut] wrote %zu u32 -> %s", wn, dumplut_path);
+            rc = 0;
+        } else {
+            LOG_ERR("[dumplut] cannot open %s", dumplut_path);
+        }
+        goto cleanup;
     }
 
     /* tone/probe：读回硬件默认 CLUT 表作为正确几何基线。 */

@@ -108,10 +108,13 @@ ISP 硬件 CLUT 全分辨率施加（零 NPU）」**。完整验证与代码见 
 - ✅ **CLUT 联机点亮**：相机链（capture_init→ISP pipe0）上 `isp_load_clut_lut(5508)` + `isp_set_clut(en)`
   在运行中 ISP 即时生效，**相机→ISP+CLUT→HDMI 30fps、触摸点屏 toggle 开/关、零 NPU、零掉帧**
   （`board/tests/test_cotf_live.c`，交叉编译复用 capture/isp/display）。AE 在 CLUT 之前测光，效果不被 AE 抵消。
-- ❌ **CLUT mesh 标定（唯一卡点）**：`cotf_lut_pack.HW_MESH_DIMS`（默认 17×18×18）的节点坐标/遍历顺序
-  与硬件实际不符——主机打包 LUT 灌进去出**彩色乱码**，恒等立方 LUT 也**不透传**（高光伪色环），等效转置。
-  10bit 位打包格式经默认表回读核对**可信**，错的是 linear-index↔(r,g,b) 几何映射；需对照 SDK《ISP CLUT
-  调优说明》标定——**只改常量，不动主流程**。当前演示用几何无关绕过法（读硬件默认表→输出值叠 gamma）拿到干净校正。
+- 🟡 **CLUT mesh 几何标定**（2026-06-17 已调查，见 `models/cotf-route-verification.md`「CLUT mesh 几何标定调查」）：
+  新增 `test_cotf_live --dumplut` 回读硬件默认表 + `models/tools/cotf_clut_analyze.py` 离线分析。结论：
+  **外层轴=17（stride 324=18²）已确认**；但内层 18×18 呈嵌套 period-2 交织（去交织仅 TV 1076→814 未收敛），
+  且**灰轴节点 617 个（均匀立方应 ~17）⇒ CLUT 是厂商特定非均匀点阵、非均匀立方 RGB**。三重障碍下
+  **无法从默认表可靠反推** index↔(r,g,b)，需厂商《ISP CLUT 调优说明》或 impulse-probe 标定台。
+  **推论**：曝光/色调类校正（CoTF 核心用例）走**几何无关法**即可（读默认表→输出值叠 tone 曲线，已板端干净跑通）；
+  仅「任意颜色相关 3D LUT」才必须完整几何标定，列为后续专项。
 - ❌ **LUT 刷新率标定**：`control_should_refresh_lut` 的间隔/阈值（初版经验值）按实测场景适应延迟标定。
 - 🟡 **flicker 观感**：整链稳定无 MPI 错，热刷 LUT 的 flicker 观感需现场目视终判。
 - ❌ **画质补偿（ISP 局部块）**：用 LDCI/DRC/SHARPEN/Dither 补全局 LUT 的局部对比/细节损失（**不**加全分辨率细节 NN，会撞访存地板）。

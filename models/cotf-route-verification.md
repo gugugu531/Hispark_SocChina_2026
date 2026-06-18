@@ -69,6 +69,8 @@ python -m pytest models/tests/test_cotf_lut_pack.py -q      # 打包桥单测（
   触摸 toggle + `--auto`/`--dumpdir`/`--probe`/`--tone`/`--lockexp`，2026-06-16）。
 - 演示用 LUT 与可视化（主机）：[tools/cotf_make_demo_lut.py](tools/cotf_make_demo_lut.py)（tone-curve LUT 打包）、
   [tools/cotf_demo_apply.py](tools/cotf_demo_apply.py)（经同一桥把 LUT 施加到真实图像，输出 input/校正/gt 对比图与 PSNR）。
+- mesh 标定辅助（主机）：[tools/cotf_clut_analyze.py](tools/cotf_clut_analyze.py)（分析板端回读的默认 CLUT 表结构，
+  反推外层轴/内层交织/点阵均匀性，见下「CLUT mesh 几何标定调查」）。
 
 ### NN 端耗时 vs 输入分辨率（param-net, lut_dim=17, 板端实测）
 
@@ -172,6 +174,30 @@ OS08A20(8M30 linear) → VI(online) → ISP(+CLUT 三线性, 硬件内联) → V
 实测（锁曝光排除 AE 后）：默认表本身即一条提亮曲线（开 CLUT 后 luma ~+14）；再叠 γ=0.45 暗部进一步抬亮，
 出图干净、无伪色、暗部细节找回。**局限**：这是 gamma 全局色调，不是训练后的 CoTF LUT；
 真正的「NN 出任意 3D-LUT」必须先解决 mesh 标定。
+
+### CLUT mesh 几何标定调查（2026-06-17）
+
+为解出主机 LUT 的 linear-index↔(r,g,b) 映射，新增 `test_cotf_live --dumplut <bin>` 回读硬件**默认 CLUT 表**
+（正确几何，但格式未知），离线用 [tools/cotf_clut_analyze.py](tools/cotf_clut_analyze.py) 分析结构：
+
+| 观察 | 结论 |
+| --- | --- |
+| lag-324(=18²) 的 mean\|diff\| 骤降（~255 vs 其它 ~450） | **外层轴 = 17（stride 324）确认** |
+| 内层 18×18 平面呈嵌套 period-2 交织（`node[4]≈node[6]`…） | 内层非简单 row-major；去交织仅把 TV 1076→814，**未干净收敛** |
+| **灰轴节点 (R==G==B) = 617 个**（均匀 RGB 立方应 ~17） | **CLUT 不是均匀立方 RGB 点阵**，而是厂商特定非均匀/感知点阵 |
+| 默认表 `node[0]=(0,0,0)`、`node[1..3]` 像轴端点、整体是一条已调好的色调表 | 默认表是**非恒等**的 tuned LUT，无法直接读出坐标 |
+
+**判定**：在没有厂商《ISP CLUT 调优说明》的前提下，从默认表结构**无法可靠反推**精确 index↔(r,g,b)
+（点阵非均匀、内层交织、默认表非恒等三重障碍叠加），强行猜测会得到细微错误的标定。
+
+**重要推论（影响落地策略）**：
+- **曝光/色调类校正（CoTF 的核心用例，本质是全局亮度/luma 操作）→ 走「几何无关」法即可**：读默认表→对每节点
+  **输出值**叠 tone 曲线（gamma / 对比 / 逐通道曲线 / 白平衡增益），与点阵几何无关，已板端跑通、出图干净。
+- **仅当需要任意「与颜色相关的 3D LUT」（训练后 CoTF 网络可能输出的那种）才必须做完整几何标定** —— 这一步
+  gated on 厂商文档或大规模 impulse-probe 标定台，列为后续专项。
+
+复现：`./test_cotf_live --dumplut /root/.../clut_default.bin` → 拉回 →
+`python -m models.tools.cotf_clut_analyze clut_default.bin`。
 
 ### 复现命令（板端）
 
