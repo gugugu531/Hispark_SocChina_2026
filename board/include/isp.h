@@ -71,4 +71,10 @@ typedef enum {
 } isp_tone_t;
 int isp_clut_apply_tone(const unsigned int *base_lut, unsigned len, isp_tone_t tone, float strength);
 
+/* 原生 Gamma 块色调校正（CoTF 曝光用例的**首选**施加路径）：把 tone 曲线叠在 ISP Gamma 表
+ * （1D、1025 节点均匀、线性插值；ot_common_isp.h）的输出上，curve_type=USER_DEFINE 写回。
+ * 与 CLUT 的 3D mesh 几何**完全无关**——Gamma 就是为亮度/色调设计的块（见《ISP 图像调优指南》§4.11）。
+ * 首次调用缓存默认 Gamma 作基线；tone=BYPASS 还原默认。R/G/B 共用同一 Gamma 表 ⇒ 等效全局色调。 */
+int isp_gamma_apply_tone(isp_tone_t tone, float strength);
+
 #endif /* SOCCHINA_ISP_H */

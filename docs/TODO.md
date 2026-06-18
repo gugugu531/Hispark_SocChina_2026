@@ -33,7 +33,7 @@
 | 9 后处理/合成 | `postproc.c` / `compose.c` | ⏸ 备选路线 | 仅整图 ExpoCurveNet 分屏演示需要，非 CoTF 主路径依赖 |
 | 10a 显示 | `display.c` | ✅ 已完成 | 板端冒烟 PASS，启动杂线已修（黑场预帧）；flicker 观感需现场目视确认 |
 | 10b 串流 | `stream.c` | 🟡 接口已固定 | 独占 chn1 的契约已定义；待 VENC H.264 + RTSP 实现（server 选型待定） |
-| 11 控制 | `control.c` | 🟡 初版+接线 | 判决逻辑/LUT 刷新策略主机单测过；**场景自适应闭环已板端跑通**（`control_decide`→几何无关 CLUT tone，2026-06-17）：集成式 `test_cotf_auto` 自带整链 **30.2fps**、AE→判决(实测 BIDIR)→CLUT tone；独立控制面 `test_cotf_ctrl` cross-process 注入 4 tone 模式 OK |
+| 11 控制 | `control.c` | 🟡 初版+接线 | 判决逻辑/LUT 刷新策略主机单测过；**场景自适应闭环已板端跑通**（`control_decide`→ISP 色调块）：集成式 `test_cotf_auto` 自带整链 **~31fps**、AE→判决→**Gamma tone**(默认,原生 1D,出图干净无伪色; `--block clut` 为对照),2026-06-19;独立控制面 `test_cotf_ctrl` cross-process 注入 OK |
 | — 共享 | `pipeline.h` | ✅ 契约完成 | 通道、尺寸、状态、错误码、输入模式和指标已固定；实现仍由 main/pipeline 接管 |
 | — 入口 | `main.c` | 🟡 骨架 | 仅演示构建闭环；缺整链编排、SYS/VB 初始化、优雅退出 |
 
@@ -108,13 +108,11 @@ ISP 硬件 CLUT 全分辨率施加（零 NPU）」**。完整验证与代码见 
 - ✅ **CLUT 联机点亮**：相机链（capture_init→ISP pipe0）上 `isp_load_clut_lut(5508)` + `isp_set_clut(en)`
   在运行中 ISP 即时生效，**相机→ISP+CLUT→HDMI 30fps、触摸点屏 toggle 开/关、零 NPU、零掉帧**
   （`board/tests/test_cotf_live.c`，交叉编译复用 capture/isp/display）。AE 在 CLUT 之前测光，效果不被 AE 抵消。
-- 🟡 **CLUT mesh 几何标定**（2026-06-17 已调查，见 `models/cotf-route-verification.md`「CLUT mesh 几何标定调查」）：
-  新增 `test_cotf_live --dumplut` 回读硬件默认表 + `models/tools/cotf_clut_analyze.py` 离线分析。结论：
-  **外层轴=17（stride 324=18²）已确认**；但内层 18×18 呈嵌套 period-2 交织（去交织仅 TV 1076→814 未收敛），
-  且**灰轴节点 617 个（均匀立方应 ~17）⇒ CLUT 是厂商特定非均匀点阵、非均匀立方 RGB**。三重障碍下
-  **无法从默认表可靠反推** index↔(r,g,b)，需厂商《ISP CLUT 调优说明》或 impulse-probe 标定台。
-  **推论**：曝光/色调类校正（CoTF 核心用例）走**几何无关法**即可（读默认表→输出值叠 tone 曲线，已板端干净跑通）；
-  仅「任意颜色相关 3D LUT」才必须完整几何标定，列为后续专项。
+- ✅ **施加端选块已厘清（2026-06-19，厂商文档）**：SDK ReleaseDoc《ISP 图像调优指南》§4.20 确认 **CLUT 是
+  17×17×17 线性 RGB 3D-LUT**（`lut[5508]=17×18×18` 是带填充存储；我方曾误用 (17,18,18) 当格点故不透传，
+  mesh 现可正确打包）。但**曝光/色调的原生块是 Gamma（§4.11，1D 1025 节点）/ DRC（§4.6）,不是 CLUT**。
+  → 施加端按用途分块：**全局色调/曝光走 Gamma**（`isp_gamma_apply_tone`，**已板端 31fps 实测、出图干净无伪色**，
+  OFF luma 89.5→BRIGHTEN 149.0）；双向动态范围走 DRC；颜色相关 3D 才用 CLUT(17³)。
 - ❌ **LUT 刷新率标定**：`control_should_refresh_lut` 的间隔/阈值（初版经验值）按实测场景适应延迟标定。
 - 🟡 **flicker 观感**：整链稳定无 MPI 错，热刷 LUT 的 flicker 观感需现场目视终判。
 - ❌ **画质补偿（ISP 局部块）**：用 LDCI/DRC/SHARPEN/Dither 补全局 LUT 的局部对比/细节损失（**不**加全分辨率细节 NN，会撞访存地板）。

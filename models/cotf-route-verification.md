@@ -116,15 +116,15 @@ NN 只预测**全局 LUT**，输入不必全分辨率——喂缩略图即可，
    上即时生效，新增板端测试 [`board/tests/test_cotf_live.c`](../board/tests/test_cotf_live.c)（交叉编译，
    复用现成 capture/isp/display 模块）。
 
-5. **唯一仍开放：CLUT mesh 几何标定**。把主机 `cotf_lut_pack`（17×18×18、R 外层 row-major）打包的 5508 节点
-   LUT 直接灌 `isp_load_clut_lut` → **出彩色乱码**；进一步用恒等立方 LUT 验证，**连恒等都不透传**
-   （`|off-on|` 远非 0，高光出现伪色环）——坐实文档早标注的"轴序/遍历待标定"问题：等效于把 LUT 转置了。
-   10bit 位打包格式（bits[29:20]=R/[19:10]=G/[9:0]=B）经板端默认表回读核对**可信**；错的是
-   linear-index↔(r,g,b) 的几何映射，需对照 SDK《ISP CLUT 调优说明》最终标定。
-   **当前演示的绕过法（几何无关）**：`ss_mpi_isp_get_clut_coeff` 读回硬件默认表（格式/几何天然正确），
-   在每个节点的**输出值**上叠一层 gamma 提亮（逐节点点变换，与节点↔坐标映射无关）→ 得到干净可见的全局
-   曝光校正。代价：这条演示的 LUT 是 gamma 暗部提升，**不是训练好的 CoTF 网络输出**；要让任意 NN 出的
-   3D-LUT 精确落地，仍需把 mesh 几何标定出来。
+5. **施加端选块（2026-06-19 已厘清）**。最初把主机 `cotf_lut_pack`（误用 `17×18×18`）打包的 LUT 直接灌
+   `isp_load_clut_lut` → **出彩色乱码**（连恒等都不透传）。后查到厂商文档:**CLUT 实为 `17×17×17` 线性 RGB
+   3D-LUT,`lut[5508]=17×18×18` 是带填充存储**——是我方把填充当格点、用错维度,mesh 现可正确打包(见
+   「CLUT mesh 几何标定调查」更新)。但更重要:**曝光/色调的原生块是 Gamma/DRC,不是 CLUT**。故施加端按用途分:
+   - **全局色调/曝光 → ISP `Gamma`**（1D 1025 节点,`isp_gamma_apply_tone`,**已板端 31fps 实测、出图干净无伪色**,
+     见「Gamma 原生色调施加」）——CoTF 曝光用例的首选,零 mesh。
+   - **双向动态范围 → ISP `DRC`**（原生,已接 `isp_set_drc`）。
+   - **颜色相关 3D → CLUT**（17³,现可正确打包,供色彩偏好/肤色等）。
+   说明:`isp_clut_apply_tone` 的几何无关 CLUT-tone 仍保留作对照(`--block clut`),但默认与推荐是 Gamma。
 
 > 口径：第 1 环是离线单算 OM 执行耗时（`aclmdlExecute`，warmup 后），不含 ISP CLUT 施加（那是硬件内联、
 > 零 NPU，需联机测但不占 NPU 预算）。OM 文件大小不代表参数量。
@@ -193,8 +193,18 @@ OS08A20(8M30 linear) → VI(online) → ISP(+CLUT 三线性, 硬件内联) → V
 **重要推论（影响落地策略）**：
 - **曝光/色调类校正（CoTF 的核心用例，本质是全局亮度/luma 操作）→ 走「几何无关」法即可**：读默认表→对每节点
   **输出值**叠 tone 曲线（gamma / 对比 / 逐通道曲线 / 白平衡增益），与点阵几何无关，已板端跑通、出图干净。
-- **仅当需要任意「与颜色相关的 3D LUT」（训练后 CoTF 网络可能输出的那种）才必须做完整几何标定** —— 这一步
-  gated on 厂商文档或大规模 impulse-probe 标定台，列为后续专项。
+- **仅当需要任意「与颜色相关的 3D LUT」才必须做完整几何标定**。
+
+**更新（2026-06-19，厂商文档已找到，结论修正）**：在 SDK ReleaseDoc 找到
+《ISP 图像调优指南》§4.20 与《ISP 颜色调优说明》§4.2：
+- **CLUT 是 `17×17×17` 均匀分格的线性 RGB 3D-LUT**（17³=4913 逻辑节点；`lut[5508]=17×18×18` 是
+  **带填充存储**，外层 17 平面、每平面 17×17 填进 18×18）——与上面 strace-free 测到的"外层 17、stride 324=18²"
+  完全吻合。**mesh 几何不再是无解之谜**：我方 `cotf_lut_pack` 用 `(17,18,18)` 把填充当成了格点，故恒等不透传；
+  修法明确（重采样到 17³ + 按 18 填充写存储 + 恒等验证），**不再需要外部资料**。
+- 但**更关键的认知**：CLUT 在文档里属 **AWB+CCM+CLUT+Gamma+CA 颜色链**，是给**颜色准确性/偏好色**用的，
+  靠 PQ Tools 离线从 RGB 色对生成。CoTF 的**曝光/色调**用例，原生块是 **Gamma**（§4.11，1D、1025 节点均匀、
+  `USER_DEFINE` 可写）与 **DRC**（§4.6，双向动态范围压缩）。→ **施加端应走 Gamma/DRC，而非 CLUT**
+  （见下「Gamma 原生色调施加（首选路径）」），从根上绕开 CLUT mesh。
 
 复现：`./test_cotf_live --dumplut /root/.../clut_default.bin` → 拉回 →
 `python -m models.tools.cotf_clut_analyze clut_default.bin`。
@@ -228,6 +238,26 @@ architecture.md §2「场景自适应控制大脑」的实现。暂以"AE 统计
   （`BRIGHTEN` gamma<1 提暗部 / `COMPRESS` gamma>1 压高光 / `BIDIR` log 曲线压缩动态范围 / `BYPASS` 关），
   再 `isp_load_clut_lut`+`isp_set_clut(en)`。逐节点点变换 ⇒ **与 mesh 几何无关**，绕开未标定的
   index↔(r,g,b)（见上「CLUT mesh 几何标定调查」）。`control_decide` 的 4 个模式 1:1 映射到 4 条 tone 曲线。
+
+### Gamma 原生色调施加（首选路径，2026-06-19 板端实测）
+
+依据厂商文档，曝光/色调的原生块是 **Gamma**（非 CLUT）。新增 [isp.c](../board/src/isp.c)/[isp.h](../board/include/isp.h)：
+- `isp_gamma_apply_tone(tone, strength)`：首次缓存上电默认 Gamma 表作基线，把 tone 曲线叠在其**输出**上，
+  `curve_type=USER_DEFINE` 写回 `ss_mpi_isp_set_gamma_attr`；`BYPASS` 还原默认。R/G/B 共用同一 Gamma 表
+  ⇒ 等效全局色调。**1D、1025 节点，与 3D mesh 几何完全无关**——比 CLUT-tone 更干净、零标定风险。
+- `test_cotf_auto --block gamma`（默认）即走此路；`--block clut` 为对照；`--dumpdir` 落 before/after 帧取证。
+
+板端实测（OS08A20 实时相机，`test_cotf_auto 14 --block gamma --dumpdir`）：
+
+| 项 | 结论 |
+| --- | --- |
+| 整链 30fps | ✅ **31.2fps**，AE→`control_decide`(实测 BRIGHTEN/BIDIR 随场景)→Gamma tone，零 NPU |
+| 基线读取 | ✅ `base=default-table`：成功回读默认 Gamma 表并在其上叠 tone |
+| 效果干净（无伪色） | ✅ 落盘帧:OFF mean luma **89.5** → BRIGHTEN **149.0**，RGB 三通道同比例提亮(98,90,80→158,150,139)，**无 CLUT 那种彩色乱码** |
+
+→ **CoTF 施加端按用途分块**：全局色调/曝光 → **Gamma**（干净、零 mesh，已实测）；双向动态范围 → **DRC**；
+颜色相关 3D → CLUT（17³，已可正确打包）。NN 只需出"全局色调曲线"直接写 Gamma 表,即 CoTF"低分辨率出参数
++ 硬件全分辨率施加、零 NPU"的本意,且彻底绕开 CLUT mesh 复杂度。
 
 ### 两种部署模型（各有板端验证状态）
 

@@ -1,16 +1,19 @@
 /* test_cotf_auto — CoTF 场景自适应曝光校正（端侧实时，触硬件）。
  *
  * 闭环：相机 → ISP → VPSS → HDMI（30fps），低频控制环读 AE 直方图统计 → control_decide
- * 判决曝光模式（提亮/压高光/双向/旁路）→ 经**几何无关**的 ISP CLUT tone 曲线施加（零 NPU、
- * 全分辨率硬件内联）。LUT 仅在场景变化时按 control_should_refresh_lut 的迟滞/限流策略刷新，
- * 把"出参数"移出每帧关键路径——即 architecture.md §2「场景自适应控制大脑」的真实接线。
+ * 判决曝光模式（提亮/压高光/双向/旁路）→ 经 ISP 色调块施加（零 NPU、全分辨率硬件内联）。
+ * 仅在场景变化时按 control_should_refresh_lut 的迟滞/限流策略刷新，把"出参数"移出每帧关键路径
+ * ——即 architecture.md §2「场景自适应控制大脑」的真实接线。
  *
- * 这是 CoTF 路线的**模型无关版整链**：把"NN 出 LUT"暂以"AE 统计→规则判决"替代，验证
- * 控制环→ISP CLUT→显示 的端到端实时校正。tone 走几何无关法（读硬件默认表→输出值叠曲线），
- * 故不受未标定的 CLUT mesh 几何影响（见 models/cotf-route-verification.md）。
+ * 施加块（--block，默认 gamma）：
+ *   gamma：原生 **Gamma** 1D 色调表（《ISP 图像调优指南》§4.11，1025 节点）——曝光/色调用例的首选，
+ *          与 CLUT 3D mesh 几何无关、最干净；
+ *   clut： CLUT 3D-LUT 的几何无关 tone（读默认表→输出值叠曲线），用于对照。
  *
+ * 这是 CoTF 路线的**模型无关版整链**：把"NN 出 LUT"暂以"AE 统计→规则判决"替代,验证整链实时校正。
  * 交互：触摸屏点击 toggle 自动校正 开/关（关 = 原始相机图，便于 A/B 对比）。
- * 用法：./test_cotf_auto [秒数] [--sensor 0|1] [--touch <dev>] [--strength <0..1>] [--poll <帧>]
+ * 用法：./test_cotf_auto [秒数] [--block gamma|clut] [--sensor 0|1] [--touch <dev>]
+ *                        [--strength <0..1>] [--poll <帧>] [--dumpdir <目录>]
  */
 
 #include "capture.h"
@@ -45,8 +48,46 @@ int main(void)
 #include "ot_isp_define.h"
 #include "ot_type.h"
 #include "sample_comm.h"
+#include "ss_mpi_sys.h"
 
 #define CTRL_WARMUP_FRAMES 30 /* AE 收敛前不读统计/不刷 LUT（约 1s @30fps） */
+
+typedef enum { BLOCK_GAMMA = 0, BLOCK_CLUT } tone_block_t;
+
+/* 按所选 ISP 块施加 tone（两块都自带 BYPASS 处理）。 */
+static int apply_tone(tone_block_t block, const unsigned int *base_lut, isp_tone_t tone, float s)
+{
+    return (block == BLOCK_GAMMA) ? isp_gamma_apply_tone(tone, s)
+                                  : isp_clut_apply_tone(base_lut, OT_ISP_CLUT_LUT_LENGTH, tone, s);
+}
+
+/* 把一帧 NV21 按行落盘（去 stride 填充），用于 before/after 取证。 */
+static int dump_nv21_frame(const ot_video_frame_info *frame, const char *path)
+{
+    const ot_video_frame *vf = &frame->video_frame;
+    td_u32 row, map_size = vf->stride[0] * vf->height * 3 / 2;
+    td_u8 *virt = (td_u8 *)ss_mpi_sys_mmap(vf->phys_addr[0], map_size);
+    FILE *fp;
+    if (virt == TD_NULL) {
+        return -1;
+    }
+    fp = fopen(path, "wb");
+    if (fp == NULL) {
+        CHECK_RET(ss_mpi_sys_munmap(virt, map_size));
+        return -1;
+    }
+    for (row = 0; row < vf->height; row++) {
+        fwrite(virt + (size_t)row * vf->stride[0], 1, vf->width, fp);
+    }
+    for (row = 0; row < vf->height / 2; row++) {
+        fwrite(virt + (size_t)vf->stride[0] * vf->height + (size_t)row * vf->stride[1], 1,
+               vf->width, fp);
+    }
+    LOG_INFO("dump: %ux%u NV21 -> %s", vf->width, vf->height, path);
+    fclose(fp);
+    CHECK_RET(ss_mpi_sys_munmap(virt, map_size));
+    return 0;
+}
 
 static long now_ms(void)
 {
@@ -90,13 +131,27 @@ static const char *mode_name(expo_mode_t m)
     }
 }
 
+/* 干净 ASCII 标签（用于落盘文件名）。 */
+static const char *mode_tag(expo_mode_t m)
+{
+    switch (m) {
+        case EXPO_MODE_BRIGHTEN: return "brighten";
+        case EXPO_MODE_COMPRESS: return "compress";
+        case EXPO_MODE_BIDIR:    return "bidir";
+        default:                 return "bypass";
+    }
+}
+
 int main(int argc, char **argv)
 {
     int run_sec = 600;
     capture_cfg_t cap_cfg = {CAPTURE_SENSOR_INDEX_DEFAULT, CAPTURE_MODE_LINEAR};
     const char *touch_dev = "/dev/input/event0";
+    const char *dump_dir = NULL;
+    tone_block_t block = BLOCK_GAMMA; /* 默认走原生 Gamma（推荐路径） */
     float strength = 0.7f;
     unsigned poll = 5; /* 每 5 帧读一次 AE 统计评估刷新 */
+    int dump_seq = 0, dump_pending = 0;
     int rc = 1;
     int sys_up = 0, cap_up = 0, vpss_up = 0, bound = 0, disp_up = 0;
     int tfd = -1;
@@ -127,6 +182,10 @@ int main(int argc, char **argv)
             strength = (float)atof(argv[++i]);
         } else if (strcmp(argv[i], "--poll") == 0 && i + 1 < argc) {
             poll = (unsigned)atoi(argv[++i]);
+        } else if (strcmp(argv[i], "--dumpdir") == 0 && i + 1 < argc) {
+            dump_dir = argv[++i];
+        } else if (strcmp(argv[i], "--block") == 0 && i + 1 < argc) {
+            block = (strcmp(argv[++i], "clut") == 0) ? BLOCK_CLUT : BLOCK_GAMMA;
         } else {
             run_sec = atoi(argv[i]);
         }
@@ -135,8 +194,9 @@ int main(int argc, char **argv)
     if (capture_query_in_size(&in_w, &in_h) != 0) {
         return 1;
     }
-    LOG_INFO("test_cotf_auto: %ds sensor=%d in=%ux%u strength=%.2f poll=%u touch=%s", run_sec,
-             cap_cfg.sensor_index, in_w, in_h, strength, poll, touch_dev);
+    LOG_INFO("test_cotf_auto: %ds block=%s sensor=%d in=%ux%u strength=%.2f poll=%u touch=%s dump=%s",
+             run_sec, (block == BLOCK_GAMMA) ? "gamma" : "clut", cap_cfg.sensor_index, in_w, in_h,
+             strength, poll, touch_dev, dump_dir ? dump_dir : "off");
 
     buf_attr.width = in_w;
     buf_attr.height = in_h;
@@ -157,11 +217,11 @@ int main(int argc, char **argv)
     }
     cap_up = 1;
 
-    /* 缓存硬件默认 CLUT 表作为几何正确基线（tone 在其输出值上叠加）。 */
-    if (isp_clut_get_coeff(base_lut, OT_ISP_CLUT_LUT_LENGTH) != 0) {
+    /* CLUT 块需要默认表基线（Gamma 块内部自缓存默认 Gamma，不需要）。 */
+    if (block == BLOCK_CLUT && isp_clut_get_coeff(base_lut, OT_ISP_CLUT_LUT_LENGTH) != 0) {
         goto cleanup;
     }
-    (void)isp_set_clut(ISP_BLOCK_OFF, 1024, 1024, 1024); /* 初始关 CLUT = 原图 */
+    (void)apply_tone(block, base_lut, ISP_TONE_BYPASS, strength); /* 初始 = 原图（bypass） */
 
     if (vpss_init(0, in_w, in_h, chn_cfg) != 0) {
         goto cleanup;
@@ -183,17 +243,24 @@ int main(int argc, char **argv)
         LOG_INFO("==> 触摸屏幕切换 自动曝光校正 [ON 场景自适应 <-> OFF 原图]");
     }
 
+    if (dump_dir != NULL) {
+        dump_pending = 6; /* 先落一帧 bypass 基线（off）作 before */
+    }
     t0 = now_ms();
     t_last_log = t0;
     while (now_ms() - t0 < run_sec * 1000L) {
         if (tfd >= 0 && touch_pressed(tfd)) {
             auto_on = !auto_on;
             if (!auto_on) {
-                (void)isp_set_clut(ISP_BLOCK_OFF, 1024, 1024, 1024); /* 关 = 原图 */
+                cur_mode = EXPO_MODE_BYPASS;
+                (void)apply_tone(block, base_lut, ISP_TONE_BYPASS, strength); /* 关 = 原图 */
                 LOG_INFO(">>> AUTO OFF (原始相机图)");
             } else {
                 have_prev = 0; /* 重新立即刷新 */
                 LOG_INFO(">>> AUTO ON (场景自适应曝光校正)");
+            }
+            if (dump_dir != NULL) {
+                dump_pending = 6; /* 等 ~6 帧让生效再落盘取证 */
             }
         }
 
@@ -204,6 +271,13 @@ int main(int argc, char **argv)
             (void)vpss_release_frame(0, 0, &frame);
             goto cleanup;
         }
+        if (dump_pending > 0 && --dump_pending == 0) {
+            char path[256];
+            snprintf(path, sizeof(path), "%s/%s_%s_%d.nv21", dump_dir,
+                     (block == BLOCK_GAMMA) ? "gamma" : "clut",
+                     auto_on ? mode_tag(cur_mode) : "off", dump_seq++);
+            (void)dump_nv21_frame(&frame, path);
+        }
         (void)vpss_release_frame(0, 0, &frame);
         frames++;
 
@@ -213,11 +287,13 @@ int main(int argc, char **argv)
                 if (control_should_refresh_lut(have_prev ? &prev_stats : NULL, &cur_stats,
                                                (unsigned)frames - last_refresh_frame)) {
                     cur_mode = control_decide(&cur_stats);
-                    (void)isp_clut_apply_tone(base_lut, OT_ISP_CLUT_LUT_LENGTH,
-                                              mode_to_tone(cur_mode), strength);
+                    (void)apply_tone(block, base_lut, mode_to_tone(cur_mode), strength);
                     prev_stats = cur_stats;
                     have_prev = 1;
                     last_refresh_frame = (unsigned)frames;
+                    if (dump_dir != NULL) {
+                        dump_pending = 6;
+                    }
                     LOG_INFO("[ctrl] refresh -> %s (luma=%.1f low=%.1f%% high=%.1f%%)",
                              mode_name(cur_mode), cur_stats.mean_luma, cur_stats.clip_low_pct,
                              cur_stats.clip_high_pct);
@@ -239,7 +315,9 @@ cleanup:
     if (tfd >= 0) {
         close(tfd);
     }
-    (void)isp_set_clut(ISP_BLOCK_OFF, 1024, 1024, 1024);
+    if (cap_up) {
+        (void)apply_tone(block, base_lut, ISP_TONE_BYPASS, strength); /* 退出前还原 */
+    }
     if (disp_up) {
         CHECK_RET(display_deinit());
     }

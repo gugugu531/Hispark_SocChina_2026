@@ -317,6 +317,61 @@ int isp_clut_apply_tone(const unsigned int *base_lut, unsigned len, isp_tone_t t
     return 0;
 }
 
+/* 把归一化值 x∈[0,1] 过 tone 曲线（与 build_tone_lut 同一组曲线，浮点版）。 */
+static float tone_map(float x, isp_tone_t tone, float s)
+{
+    if (x < 0.0f) x = 0.0f;
+    if (x > 1.0f) x = 1.0f;
+    switch (tone) {
+        case ISP_TONE_BRIGHTEN: return powf(x, 1.0f / (1.0f + 2.0f * s));
+        case ISP_TONE_COMPRESS: return powf(x, 1.0f + 1.5f * s);
+        case ISP_TONE_BIDIR: {
+            float k = 1.0f + 12.0f * s;
+            return logf(1.0f + k * x) / logf(1.0f + k);
+        }
+        default: return x;
+    }
+}
+
+/* 原生 Gamma 块色调校正：首次缓存默认 Gamma 作基线，把 tone 叠在其输出上写回 USER_DEFINE。 */
+int isp_gamma_apply_tone(isp_tone_t tone, float strength)
+{
+    static ot_isp_gamma_attr g_gamma_default;
+    static int g_gamma_cached = 0;
+    ot_isp_gamma_attr attr;
+    int i, base_valid;
+    float s = (strength < 0.0f) ? 0.0f : (strength > 1.0f ? 1.0f : strength);
+
+    memset(&attr, 0, sizeof(attr));
+    CHECK_RET_GOTO(ss_mpi_isp_get_gamma_attr(ISP_PIPE, &attr), fail);
+    if (!g_gamma_cached) {
+        g_gamma_default = attr; /* 缓存上电默认 Gamma（曲线+表）作基线 */
+        g_gamma_cached = 1;
+    }
+    if (tone == ISP_TONE_BYPASS) {
+        CHECK_RET_GOTO(ss_mpi_isp_set_gamma_attr(ISP_PIPE, &g_gamma_default), fail);
+        LOG_INFO("isp gamma -> bypass (restore default)");
+        return 0;
+    }
+    /* 基线表：默认表单调有效则用之，否则退化用 sRGB 近似 (x^(1/2.2))。 */
+    base_valid = (g_gamma_default.table[OT_ISP_GAMMA_NODE_NUM - 1] > g_gamma_default.table[0]);
+    attr = g_gamma_default;
+    for (i = 0; i < OT_ISP_GAMMA_NODE_NUM; i++) {
+        float x = (float)i / (float)(OT_ISP_GAMMA_NODE_NUM - 1);
+        float base = base_valid ? (float)g_gamma_default.table[i] / 4095.0f : powf(x, 1.0f / 2.2f);
+        float y = tone_map(base, tone, s) * 4095.0f + 0.5f;
+        attr.table[i] = (td_u16)((y > 4095.0f) ? 4095.0f : y);
+    }
+    attr.enable = TD_TRUE;
+    attr.curve_type = OT_ISP_GAMMA_CURVE_USER_DEFINE;
+    CHECK_RET_GOTO(ss_mpi_isp_set_gamma_attr(ISP_PIPE, &attr), fail);
+    LOG_INFO("isp gamma tone applied: mode=%d strength=%.2f (base=%s)", tone, strength,
+             base_valid ? "default-table" : "sRGB");
+    return 0;
+fail:
+    return -1;
+}
+
 #else /* !WITH_SS928_SDK */
 
 /* SDK-free 构建桩。 */
@@ -406,6 +461,13 @@ int isp_clut_apply_tone(const unsigned int *base_lut, unsigned len, isp_tone_t t
 {
     (void)base_lut;
     (void)len;
+    (void)tone;
+    (void)strength;
+    return -1;
+}
+
+int isp_gamma_apply_tone(isp_tone_t tone, float strength)
+{
     (void)tone;
     (void)strength;
     return -1;
