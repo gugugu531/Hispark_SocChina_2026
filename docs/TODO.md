@@ -35,7 +35,7 @@
 | 10b 串流 | `stream.c` | 🟡 接口已固定 | 独占 chn1 的契约已定义；待 VENC H.264 + RTSP 实现（server 选型待定） |
 | 11 控制 | `control.c` | 🟡 初版+接线 | 判决逻辑/LUT 刷新策略主机单测过；**场景自适应闭环已板端跑通**（`control_decide`→ISP 色调块）：集成式 `test_cotf_auto` 自带整链 **~31fps**、AE→判决→**Gamma tone**(默认,原生 1D,出图干净无伪色; `--block clut` 为对照),2026-06-19;独立控制面 `test_cotf_ctrl` cross-process 注入 OK |
 | — 共享 | `pipeline.h` | ✅ 契约完成 | 通道、尺寸、状态、错误码、输入模式和指标已固定；实现仍由 main/pipeline 接管 |
-| — 入口 | `main.c` | 🟡 骨架 | 仅演示构建闭环；缺整链编排、SYS/VB 初始化、优雅退出 |
+| — 入口 | `main.c` | ✅ 生产整链 | **socchina_app 已板端跑通**（2026-06-19）：SYS/VB 初始化 + capture/vpss/display 起链 + **显示线程 30.5fps 直通** + **控制线程低频 AE→control_decide→Gamma tone** + SIGINT 优雅退出（逆序清理）。控制大脑现为规则判决，后续可换 infer.c 的 NN |
 
 ### 2.2 模型侧（`models/`）
 
@@ -129,11 +129,11 @@ ISP 硬件 CLUT 全分辨率施加（零 NPU）」**。完整验证与代码见 
 
 目标：`OS08A20 → VI → ISP(默认参数) → VPSS chn0 → display` 实时上屏。
 
-1. 🟡 `pipeline.h` 接口契约已完成；`main.c` 待接管 SYS/VB 初始化与整链编排
-   （当前最小直通链在 `test_capture` 测试驱动中，需迁入主程序）。
+1. ✅ `main.c` 已接管 SYS/VB 初始化与整链编排，迁出测试驱动：**socchina_app 板端跑通**
+   （显示线程 30.5fps + 控制线程，SIGINT 优雅退出，2026-06-19）。
 2. ✅ `capture.c`：线性模式和 WDR 2to1 均已点亮，板端 30fps。
 3. ✅ `vpss.c`：chn0 直送 display 已实测；chn1/chn2 待整链启用。
-4. ✅ 冒烟：实时相机画面上屏 30.2 fps（`test_capture --display`）；§6 点 5 flicker 观感待目视。
+4. ✅ 冒烟：实时相机画面上屏 30.5 fps（`socchina_app` / `test_capture --display`）；§6 点 5 flicker 观感待目视。
 5. ❌ 收尾：补 `deploy_board.sh` / `run_board.sh`。
 
 ### 阶段 B — 模型最小可用 + 推理上板（与 A 可并行）✅ 已完成（2026-06-15）
@@ -154,11 +154,11 @@ ISP 硬件 CLUT 全分辨率施加（零 NPU）」**。完整验证与代码见 
 
 1. 🟡 相机链联机点亮**已完成**（`test_cotf_live`：相机→ISP+CLUT→HDMI 30fps + 触摸 toggle，2026-06-16）；
    仍需用 identity/诊断 LUT 完成 **CLUT mesh 几何标定**（当前主机打包/恒等 LUT 不透传出伪色，用 gamma 绕过）。
-2. `infer.c`：VPSS chn2 256x144 NV21 接 AIPP/ACL，运行 CoTF param-net 输出 LUT。
-3. `lut_bridge.c`：实现板端 LUT 重采样/打包，并通过 ISP 接口写回。
-4. 把 AE 统计、`control_should_refresh_lut` 和 LUT 热刷新接入低频 control worker。
-5. `main.c` 建立 display/control/可选 stream 三线程并实现逆序回滚和优雅退出。
-6. 测量 30fps 主链、LUT 刷新耗时和热刷新稳定性。整图后处理/VGS 分屏作为备选演示另行评估。
+2. `infer.c`：VPSS chn2 256x144 NV21 接 AIPP/ACL，运行 CoTF param-net 输出参数（色调曲线/LUT）。
+3. `lut_bridge.c`：板端把 NN 参数转 ISP 块输入（色调→Gamma 表；色彩 3D→CLUT 17³ 打包）。
+4. ✅ AE 统计 + `control_should_refresh_lut` + 色调热刷新已接入低频 control worker（`main.c` 控制线程，2026-06-19）。
+5. ✅ `main.c` 已建立 display + control 双线程、逆序回滚与 SIGINT 优雅退出（可选 stream 线程后续加）。
+6. 🟡 已测显示主链 30.5fps + 控制线程低频刷新；Gamma 刷新耗时/热刷稳定性细测与 flicker 目视待补。
 
 ### 阶段 D — 控制大脑与画质
 
@@ -177,9 +177,9 @@ ISP 硬件 CLUT 全分辨率施加（零 NPU）」**。完整验证与代码见 
 
 | 里程碑 | 判据 |
 | --- | --- |
-| M1（阶段 A） | 相机实时画面上屏,链路可一键部署/启动 |
+| M1（阶段 A） | 相机实时画面上屏（✅ socchina_app 30.5fps，2026-06-19）；一键部署/启动脚本待补 |
 | M2（阶段 B） | OM 板端实测耗时出数,Config-R 可行性有结论 |
-| M3（阶段 C） | CoTF LUT 相机链联机生效（🟡 30fps 整链 + 触摸 toggle 已点亮 2026-06-16；余 mesh 标定 + 刷新耗时分解） |
+| M3（阶段 C） | CoTF 相机链联机生效（🟡 socchina_app 整链 30.5fps + 场景自适应 Gamma 双线程已跑通 2026-06-19；余 infer.c NN + 刷新耗时分解） |
 | M4（阶段 D） | 场景自适应生效,画质验证通过 |
 | M5（阶段 E） | RTSP 远程可看,拍照路径可用,可交付演示 |
 
