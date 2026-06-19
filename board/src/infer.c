@@ -64,6 +64,45 @@ static float half_to_float(uint16_t h)
     return f;
 }
 
+static int execute_and_copy(float *lut_out, size_t lut_count, long t0, long t1,
+                            infer_timing_t *timing)
+{
+    long t2, t3;
+    size_t i, n;
+    static uint8_t host_out[4 * PIPELINE_COTF_LUT_FLOAT_COUNT];
+
+    if (aclmdlExecute(g_model_id, g_in_ds, g_out_ds) != ACL_SUCCESS) {
+        LOG_ERR("infer: aclmdlExecute failed");
+        return -1;
+    }
+    t2 = now_us();
+    if (g_out_size > sizeof(host_out) ||
+        aclrtMemcpy(host_out, sizeof(host_out), g_out_dev, g_out_size,
+                    ACL_MEMCPY_DEVICE_TO_HOST) != ACL_SUCCESS) {
+        LOG_ERR("infer: D2H memcpy failed/out too large (%zu)", g_out_size);
+        return -1;
+    }
+    n = lut_count;
+    if (g_out_size == lut_count * sizeof(float)) {
+        const float *src = (const float *)host_out;
+        for (i = 0; i < n; i++) lut_out[i] = src[i];
+    } else if (g_out_size == lut_count * sizeof(uint16_t)) {
+        const uint16_t *src = (const uint16_t *)host_out;
+        for (i = 0; i < n; i++) lut_out[i] = half_to_float(src[i]);
+    } else {
+        LOG_ERR("infer: unexpected output size %zu for %zu floats", g_out_size, lut_count);
+        return -1;
+    }
+    t3 = now_us();
+    if (timing != NULL) {
+        timing->input_copy_ms = (t1 - t0) / 1000.0f;
+        timing->execute_ms = (t2 - t1) / 1000.0f;
+        timing->output_copy_ms = (t3 - t2) / 1000.0f;
+        timing->total_ms = (t3 - t0) / 1000.0f;
+    }
+    return 0;
+}
+
 int infer_init(const infer_cfg_t *cfg)
 {
     if (cfg == NULL || cfg->model_path == NULL) {
@@ -133,8 +172,8 @@ int infer_init(const infer_cfg_t *cfg)
 int infer_run_nv21(const void *frame_info, float *lut_out, size_t lut_count, infer_timing_t *timing)
 {
     const ot_video_frame_info *fi = (const ot_video_frame_info *)frame_info;
-    long t0, t1, t2, t3;
-    size_t copy_len, i, n;
+    long t0, t1;
+    size_t copy_len;
     td_u8 *virt;
     td_u32 map_size;
 
@@ -158,44 +197,26 @@ int infer_run_nv21(const void *frame_info, float *lut_out, size_t lut_count, inf
     (void)ss_mpi_sys_munmap(virt, map_size);
     t1 = now_us();
 
-    /* 2) 执行（NPU）。 */
-    if (aclmdlExecute(g_model_id, g_in_ds, g_out_ds) != ACL_SUCCESS) {
-        LOG_ERR("infer: aclmdlExecute failed");
+    return execute_and_copy(lut_out, lut_count, t0, t1, timing);
+}
+
+int infer_run_buffer(const void *input, size_t input_size, float *lut_out, size_t lut_count,
+                     infer_timing_t *timing)
+{
+    long t0, t1;
+
+    if (!g_inited || input == NULL || lut_out == NULL || input_size != g_in_size) {
+        LOG_ERR("infer_run_buffer: input=%p size=%zu expected=%zu", input, input_size, g_in_size);
         return -1;
     }
-    t2 = now_us();
-
-    /* 3) 输出：D2H 后按 fp16/fp32 转 float 写入 lut_out。 */
-    {
-        static uint8_t host_out[2 * PIPELINE_COTF_LUT_FLOAT_COUNT]; /* 容纳 fp16 输出 */
-        size_t want = (g_out_size < sizeof(host_out)) ? g_out_size : sizeof(host_out);
-        if (aclrtMemcpy(host_out, sizeof(host_out), g_out_dev, want, ACL_MEMCPY_DEVICE_TO_HOST) !=
-            ACL_SUCCESS) {
-            LOG_ERR("infer: D2H memcpy failed");
-            return -1;
-        }
-        n = lut_count;
-        if (g_out_size == lut_count * sizeof(float)) { /* fp32 */
-            const float *src = (const float *)host_out;
-            if (want >= lut_count * sizeof(float)) {
-                for (i = 0; i < n; i++) lut_out[i] = src[i];
-            }
-        } else { /* 默认按 fp16 */
-            const uint16_t *src = (const uint16_t *)host_out;
-            size_t avail = want / sizeof(uint16_t);
-            if (n > avail) n = avail;
-            for (i = 0; i < n; i++) lut_out[i] = half_to_float(src[i]);
-        }
+    t0 = now_us();
+    if (aclrtMemcpy(g_in_dev, g_in_size, input, input_size, ACL_MEMCPY_HOST_TO_DEVICE) !=
+        ACL_SUCCESS) {
+        LOG_ERR("infer: buffer H2D memcpy failed");
+        return -1;
     }
-    t3 = now_us();
-
-    if (timing != NULL) {
-        timing->input_copy_ms = (t1 - t0) / 1000.0f;
-        timing->execute_ms = (t2 - t1) / 1000.0f;
-        timing->output_copy_ms = (t3 - t2) / 1000.0f;
-        timing->total_ms = (t3 - t0) / 1000.0f;
-    }
-    return 0;
+    t1 = now_us();
+    return execute_and_copy(lut_out, lut_count, t0, t1, timing);
 }
 
 int infer_deinit(void)
@@ -235,6 +256,17 @@ int infer_init(const infer_cfg_t *cfg)
 int infer_run_nv21(const void *frame_info, float *lut_out, size_t lut_count, infer_timing_t *timing)
 {
     (void)frame_info;
+    (void)lut_out;
+    (void)lut_count;
+    (void)timing;
+    return -1;
+}
+
+int infer_run_buffer(const void *input, size_t input_size, float *lut_out, size_t lut_count,
+                     infer_timing_t *timing)
+{
+    (void)input;
+    (void)input_size;
     (void)lut_out;
     (void)lut_count;
     (void)timing;

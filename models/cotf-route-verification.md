@@ -9,7 +9,7 @@
 > 四段式：目标 / 命令路径 / 结果 / 解读 / 板端联机点亮。
 >
 > **一句话进展**：CLUT 硬件施加端已 30fps 点亮，Gamma 原生色调生产链已 31.2fps 跑通；
-> CLUT 几何已由厂商文档确认（17³ 逻辑节点 + 填充存储）。LCDP 正式权重与
+> CLUT 17v2 几何已由厂商资料和板端 sweep 确认（17³、8 bank、4 路交织、RGB/RGB）。LCDP 正式权重与
 > chn2 256x144+AIPP 已上板 30/30；剩 NN→ISP 安全参数桥、生产接线和动态闭环画质验证。
 
 ## 目标
@@ -39,7 +39,7 @@ scripts/test_host.sh                                        # control 主机单�
 # === 跑通整条 NN→硬件 LUT 桥（host 端，已可端到端运行）===
 python -m models.tools.cotf_make_lut                        # param-net→立方LUT→5508节点u32→.bin
 #   → models/weights/cotf_clut.bin（22032B = 5508×u32），板端 fread → isp_load_clut_lut(lut,5508)
-python -m pytest models/tests/test_cotf_lut_pack.py -q      # 打包桥单测（9 passed）
+python -m pytest models/tests/test_cotf_lut_pack.py -q      # 打包桥单测（10 passed）
 ```
 
 ## 结果
@@ -61,7 +61,7 @@ python -m pytest models/tests/test_cotf_lut_pack.py -q      # 打包桥单测（
   [exporters/cotf_onnx.py](exporters/cotf_onnx.py)（可复现导出）。
 - NN→硬件桥：[tools/cotf_lut_pack.py](tools/cotf_lut_pack.py)（resample→pack→write_bin）、
   [tools/cotf_make_lut.py](tools/cotf_make_lut.py)
-  （端到端 param-net→`cotf_clut.bin`）、[tests/test_cotf_lut_pack.py](tests/test_cotf_lut_pack.py)（9 单测）。
+  （端到端 param-net→`cotf_clut.bin`）、[tests/test_cotf_lut_pack.py](tests/test_cotf_lut_pack.py)（10 单测）。
 - 板端 CLUT API：`isp_set_clut`/`isp_load_clut_lut`（[isp.c](../board/src/isp.c)/[isp.h](../board/include/isp.h)）。
 - 控制策略：`control_should_refresh_lut`（[control.c](../board/src/control.c)/[control.h](../board/include/control.h)，主机单测）。
 - 板端实时演示：[`board/tests/test_cotf_live.c`](../board/tests/test_cotf_live.c)（相机→ISP+CLUT→HDMI 30fps +
@@ -72,7 +72,11 @@ python -m pytest models/tests/test_cotf_lut_pack.py -q      # 打包桥单测（
   相机→VPSS chn2→NPU→14739 LUT 系数 30/30；exec 平均 `1.13ms`，首轮冷启动最大 `3.84ms`。
 - 持续预览：`board/tests/test_paramnet_live.c` 以约 1Hz 运行正式模型，从预测 LUT 灰轴提取单调
   1D 曲线并以 25% 强度写 ISP Gamma；HDMI 主链约 30.2fps，触摸可切换模型/原图，退出恢复默认 Gamma。
-  任意 RGB CLUT 的 identity 门禁仍失败并出现伪色，故该预览明确不启用未经验证的 CLUT bridge。
+  RGB CLUT identity 已在后续 17v2 sweep 中通过；该预览暂时仍使用较保守的 Gamma bridge。
+- 数值对拍：`models/tools/cotf_parity.py` + `board/tests/test_model_parity.c` 固定输入比较
+  checkpoint→FP16 ONNX→裸 OM→AIPP OM，PyTorch vs AIPP OM MAE `0.000173`、max abs `0.001051`。
+- CLUT 布局扫测：`models/tools/cotf_clut_sweep.py` + `board/tests/test_clut_sweep.c` 在同一次锁曝光
+  相机链中测试 36 组轴序×位序候选。
 - 部署/运行脚本：`scripts/deploy_board.sh` / `scripts/run_board.sh`。
 - 演示用 LUT 与可视化（主机）：[tools/cotf_make_demo_lut.py](tools/cotf_make_demo_lut.py)（tone-curve LUT 打包）、
   [tools/cotf_demo_apply.py](tools/cotf_demo_apply.py)（经同一桥把 LUT 施加到真实图像，输出 input/校正/gt 对比图与 PSNR）。
@@ -123,14 +127,15 @@ NN 只预测**全局 LUT**，输入不必全分辨率——喂缩略图即可，
    上即时生效，新增板端测试 [`board/tests/test_cotf_live.c`](../board/tests/test_cotf_live.c)（交叉编译，
    复用现成 capture/isp/display 模块）。
 
-5. **施加端选块（2026-06-19 已厘清）**。最初把主机 `cotf_lut_pack`（误用 `17×18×18`）打包的 LUT 直接灌
-   `isp_load_clut_lut` → **出彩色乱码**（连恒等都不透传）。后查到厂商文档:**CLUT 实为 `17×17×17` 线性 RGB
-   3D-LUT,`lut[5508]=17×18×18` 是带填充存储**——是我方把填充当格点、用错维度,mesh 现可正确打包(见
-   「CLUT mesh 几何标定调查」更新)。但更重要:**曝光/色调的原生块是 Gamma/DRC,不是 CLUT**。故施加端按用途分:
+5. **施加端选块与布局（2026-06-20 已厘清）**。最初按 `17×18×18` 边界填充猜测打包会出现彩色乱码。
+   ReleaseDoc 只定义了 17³ 线性 RGB 逻辑网格；真正的 5508 线性布局来自 PQTools 模板和
+   `algClutcompLib.dll` 的 `clut_lut_print_17v2`：三轴奇偶拆成 8 bank，bank0..3 与 bank4..7
+   分别 4 路交织。板端 36 组 sweep 最终确认轴序 RGB、位序 R高/G中/B低；identity 相邻 OFF/ON
+   NV21 MAE `1.025`、UV MAE `0.116`，无此前伪色。曝光/色调的原生块仍是 Gamma/DRC，故按用途分:
    - **全局色调/曝光 → ISP `Gamma`**（1D 1025 节点,`isp_gamma_apply_tone`,**已板端 31fps 实测、出图干净无伪色**,
      见「Gamma 原生色调施加」）——CoTF 曝光用例的首选,零 mesh。
    - **双向动态范围 → ISP `DRC`**（原生,已接 `isp_set_drc`）。
-   - **颜色相关 3D → CLUT**（17³,现可正确打包,供色彩偏好/肤色等）。
+   - **颜色相关 3D → CLUT**（17³，17v2 identity 已通过，供色彩偏好/肤色等）。
    说明:`isp_clut_apply_tone` 的几何无关 CLUT-tone 仍保留作对照(`--block clut`),但默认与推荐是 Gamma。
 
 > 口径：第 1 环是离线单算 OM 执行耗时（`aclmdlExecute`，warmup 后），不含 ISP CLUT 施加（那是硬件内联、
@@ -202,12 +207,17 @@ OS08A20(8M30 linear) → VI(online) → ISP(+CLUT 三线性, 硬件内联) → V
   **输出值**叠 tone 曲线（gamma / 对比 / 逐通道曲线 / 白平衡增益），与点阵几何无关，已板端跑通、出图干净。
 - **仅当需要任意「与颜色相关的 3D LUT」才必须做完整几何标定**。
 
-**更新（2026-06-19，厂商文档已找到，结论修正）**：在 SDK ReleaseDoc 找到
-《ISP 图像调优指南》§4.20 与《ISP 颜色调优说明》§4.2：
-- **CLUT 是 `17×17×17` 均匀分格的线性 RGB 3D-LUT**（17³=4913 逻辑节点；`lut[5508]=17×18×18` 是
-  **带填充存储**，外层 17 平面、每平面 17×17 填进 18×18）——与上面 strace-free 测到的"外层 17、stride 324=18²"
-  完全吻合。**mesh 几何不再是无解之谜**：我方 `cotf_lut_pack` 用 `(17,18,18)` 把填充当成了格点，故恒等不透传；
-  修法明确（重采样到 17³ + 按 18 填充写存储 + 恒等验证），**不再需要外部资料**。
+**更新（2026-06-20，厂商资料 + 板端 sweep）**：
+
+- ReleaseDoc《ISP 图像调优指南》§4.20 与《ISP 颜色调优说明》§4.2 确认 CLUT 是
+  `17×17×17` 均匀分格的线性 RGB 3D-LUT。
+- PQTools 模板把该平台 CLUT 算法标为 `17v2`。对随 SDK 交付的 `algClutcompLib.dll` 反汇编确认：
+  4913 个逻辑点按三个坐标索引奇偶拆成 8 个 bank，逻辑计数为
+  `729/648/648/576/648/576/576/512`；输出先将 bank0..3 交织 729 组，再将 bank4..7
+  交织 648 组，短 bank 的空槽按官方打印逻辑处理，总计 5508 项。
+- 36 个 identity 候选在同一次锁曝光相机运行中实测，唯一显著正确的是三轴 `RGB`、
+  位域高/中/低 `RGB`。相邻 OFF/ON 总 MAE `1.025`、Y MAE `1.479`、UV MAE `0.116`；
+  其余候选总 MAE 为 `7.4–8.0`。因此 `cotf_lut_pack.py` 已不再使用历史 `17×18×18` 假设。
 - 但**更关键的认知**：CLUT 在文档里属 **AWB+CCM+CLUT+Gamma+CA 颜色链**，是给**颜色准确性/偏好色**用的，
   靠 PQ Tools 离线从 RGB 色对生成。CoTF 的**曝光/色调**用例，原生块是 **Gamma**（§4.11，1D、1025 节点均匀、
   `USER_DEFINE` 可写）与 **DRC**（§4.6，双向动态范围压缩）。→ **施加端应走 Gamma/DRC，而非 CLUT**

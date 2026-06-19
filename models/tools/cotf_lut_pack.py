@@ -4,17 +4,19 @@
   * `ot_isp_clut_lut.lut[OT_ISP_CLUT_LUT_LENGTH]`，`OT_ISP_CLUT_LUT_LENGTH = 5508` 个节点。
   * 每个 `td_u32` 取值 [0, 1073741823] = [0, 2^30-1]，即 **3×10bit 打包**（R/G/B 各 10bit）。
   * 另有 `ot_isp_clut_attr = { en, gain_r/g/b(12bit) }` 做全局增益+开关。
-  * 节点几何：逻辑 LUT 为 17³；5508 = 17×18×18 是每平面 18×18 的带填充存储。
+  * 节点几何：逻辑 LUT 为 17³；官方 PQTools ``clut_lut_print_17v2`` 将节点按
+    三轴索引奇偶拆成 8 个 bank，再把 bank0..3 交织为 729×4 项、bank4..7
+    交织为 648×4 项，因此总长 ``4*729 + 4*648 = 5508``。
 
 整条桥（host 侧）::
 
     NN param-net 输出 (3*D^3,) ──decode──► 立方 LUT (D,D,D,3) float[0,1]
-        ──padding/layout bridge──► (5508,3) float ──pack_u30──► (5508,) uint32
+        ──17v2 bank layout──► (5508,3) float ──pack_u30──► (5508,) uint32
         ──write_lut_bin──► .bin（板端读入 → ss_mpi_isp_set_clut_coeff）
 
-⚠ 当前 `resample_to_hw_mesh` 仍是早期把 17×18×18 当逻辑采样网格的原型，尚未按 17³→带填充
-存储重写，**不得用于正式任意 NN-LUT 上板**。10bit 位打包格式可信；正式 bridge 需补填充规则、
-轴序/位序对拍和 identity 板端验收。
+布局来自随 SDK 交付的 PQTools ``algClutcompLib.dll`` 中 ``clut_lut_print_17v2``，
+并由板端 36 组 identity 轴序×位序扫测确认：三轴为 RGB，输出位序为
+R 高 10bit、G 中 10bit、B 低 10bit。
 """
 
 from __future__ import annotations
@@ -24,8 +26,8 @@ import numpy as np
 HW_LUT_LENGTH = 5508          # OT_ISP_CLUT_LUT_LENGTH
 HW_BITS = 10                  # 每通道 10 bit
 HW_MAX = (1 << HW_BITS) - 1   # 1023
-HW_MESH_DIMS = (17, 18, 18)   # 旧原型 shape：实际是带填充存储，不是逻辑采样维度
-assert HW_MESH_DIMS[0] * HW_MESH_DIMS[1] * HW_MESH_DIMS[2] == HW_LUT_LENGTH
+HW_BANK_COUNTS = (729, 648, 648, 576, 648, 576, 576, 512)
+assert sum(HW_BANK_COUNTS) == 17**3
 
 
 def decode_paramnet_output(flat: np.ndarray, dim: int) -> np.ndarray:
@@ -58,24 +60,79 @@ def _trilinear_sample(cube: np.ndarray, coords: np.ndarray) -> np.ndarray:
     return out
 
 
-def resample_to_hw_mesh(cubic_lut: np.ndarray, mesh_dims: tuple = HW_MESH_DIMS) -> np.ndarray:
-    """旧原型：把立方 LUT 重采样为 17×18×18。
+def resample_to_hw_mesh(cubic_lut: np.ndarray) -> np.ndarray:
+    """重采样到逻辑 17³ 后，按官方 17v2 奇偶 bank 布局输出 5508×RGB。"""
+    axis = np.linspace(0.0, 1.0, 17)
+    rr, gg, bb = np.meshgrid(axis, axis, axis, indexing="ij")
+    coords = np.stack([rr.ravel(), gg.ravel(), bb.ravel()], axis=1)
+    logical = _trilinear_sample(cubic_lut, coords).reshape(17, 17, 17, 3)
+    banks: list[list[np.ndarray]] = [[] for _ in range(8)]
+    # 官方调用顺序：B 外层、G 中层、R 内层；bank bits = R0 | G0<<1 | B0<<2。
+    for b in range(17):
+        for g in range(17):
+            for r in range(17):
+                bank = (r & 1) | ((g & 1) << 1) | ((b & 1) << 2)
+                banks[bank].append(logical[r, g, b])
+    values = [np.asarray(bank, dtype=np.float64) for bank in banks]
+    assert tuple(len(bank) for bank in values) == HW_BANK_COUNTS
 
-    ⚠ 硬件实际需要 17³ 逻辑节点加填充；正式部署前必须替换本函数并完成 identity 对拍。
-    """
-    nr, ng, nb = mesh_dims
-    r = np.linspace(0.0, 1.0, nr)
-    g = np.linspace(0.0, 1.0, ng)
-    b = np.linspace(0.0, 1.0, nb)
-    rr, gg, bb = np.meshgrid(r, g, b, indexing="ij")
-    coords = np.stack([rr.ravel(), gg.ravel(), bb.ravel()], axis=1)  # (5508,3) row-major
-    return _trilinear_sample(cubic_lut, coords)
+    # 精确复现 print_v500_lut0to3/print_v500_lut4to7。内部 8 个 bank 连续存储；
+    # bank2、bank6 在打印尾部会继续读到下一 bank，短 bank1/3/5/7 则显式补零。
+    contiguous = np.concatenate(values, axis=0)
+    starts = np.cumsum((0,) + HW_BANK_COUNTS[:-1])
+    output: list[np.ndarray] = []
+    zero = np.zeros(3, dtype=np.float64)
+    for i in range(729):
+        output.append(contiguous[starts[0] + i])
+        output.append(contiguous[starts[1] + i] if i < HW_BANK_COUNTS[1] else zero)
+        output.append(contiguous[starts[2] + i])
+        output.append(contiguous[starts[3] + i] if i < HW_BANK_COUNTS[3] else zero)
+    for i in range(648):
+        output.append(contiguous[starts[4] + i])
+        output.append(contiguous[starts[5] + i] if i < HW_BANK_COUNTS[5] else zero)
+        output.append(contiguous[starts[6] + i])
+        output.append(contiguous[starts[7] + i] if i < HW_BANK_COUNTS[7] else zero)
+    return np.asarray(output)
+
+
+def unpack_hw_mesh(hw_rgb: np.ndarray) -> np.ndarray:
+    """把 5508×RGB 的 17v2 交织存储还原为 (17,17,17,3) 逻辑 RGB 立方。"""
+    hw = np.asarray(hw_rgb)
+    if hw.shape != (HW_LUT_LENGTH, 3):
+        raise ValueError(f"need ({HW_LUT_LENGTH},3), got {hw.shape}")
+    banks: list[list[np.ndarray]] = [[] for _ in range(8)]
+    for i in range(729):
+        banks[0].append(hw[4 * i])
+        if i < HW_BANK_COUNTS[1]:
+            banks[1].append(hw[4 * i + 1])
+        if i < HW_BANK_COUNTS[2]:
+            banks[2].append(hw[4 * i + 2])
+        if i < HW_BANK_COUNTS[3]:
+            banks[3].append(hw[4 * i + 3])
+    base = 4 * 729
+    for i in range(648):
+        banks[4].append(hw[base + 4 * i])
+        if i < HW_BANK_COUNTS[5]:
+            banks[5].append(hw[base + 4 * i + 1])
+        if i < HW_BANK_COUNTS[6]:
+            banks[6].append(hw[base + 4 * i + 2])
+        if i < HW_BANK_COUNTS[7]:
+            banks[7].append(hw[base + 4 * i + 3])
+    positions = [0] * 8
+    logical = np.empty((17, 17, 17, 3), dtype=hw.dtype)
+    for b in range(17):
+        for g in range(17):
+            for r in range(17):
+                bank = (r & 1) | ((g & 1) << 1) | ((b & 1) << 2)
+                logical[r, g, b] = banks[bank][positions[bank]]
+                positions[bank] += 1
+    return logical
 
 
 def pack_u30(lut_rgb: np.ndarray, order: str = "rgb") -> np.ndarray:
     """(N,3) float[0,1] → (N,) uint32，每通道量化 10bit 打包（每个 ≤ 2^30-1）。
 
-    order='rgb' → bits[29:20]=R,[19:10]=G,[9:0]=B；'bgr' 反之。（位序以 CLUT 调优说明为准。）
+    order='rgb' → bits[29:20]=R,[19:10]=G,[9:0]=B，为 SS928 ``17v2`` 板端确认位序。
     """
     lut = np.clip(np.asarray(lut_rgb, dtype=np.float64), 0.0, 1.0)
     q = np.round(lut * HW_MAX).astype(np.uint32)
@@ -109,7 +166,7 @@ if __name__ == "__main__":
     packed = pack_cubic_to_hw(lut)
     assert packed.shape == (HW_LUT_LENGTH,) and packed.dtype == np.uint32
     assert packed.max() <= (1 << 30) - 1
-    print(f"cubic 17³ → hw mesh {HW_MESH_DIMS} = {packed.size} nodes; "
+    print(f"cubic 17³ → 17v2 banks {HW_BANK_COUNTS} interleaved = {packed.size} nodes; "
           f"u32 max={packed.max()} (≤{(1 << 30) - 1})")
     print(f"sample node[3000]={packed[3000]:#010x}")
-    print("10bit 打包格式已坐实；17³→填充存储 bridge 尚未实现，当前输出仅供旧原型测试。")
+    print("官方 17v2 bank 交织布局与 RGB 10bit 打包已实现并通过板端 sweep。")

@@ -35,7 +35,8 @@
 - `1024x576` 整图输出路线无法满足 33ms 预算，不再作为 Config-R 主线。
 - CoTF 参数网络正式 LCDP OM 使用 `256x144` VPSS chn2 NV21+AIPP 输入，板端 30/30 成功，
   NPU exec 平均 `1.13ms`（首轮冷启动最大 `3.84ms`）。
-- CLUT/Gamma 硬件施加、热刷新、ACL 推理和 30fps 主链已分别验证；CLUT 为 17³ 逻辑节点加填充存储。
+- CLUT/Gamma 硬件施加、热刷新、ACL 推理和 30fps 主链已分别验证；CLUT 为 17³ 逻辑节点、
+  8 个奇偶 bank 的 4 路交织存储，RGB/RGB identity 门禁已通过。
 - param-net 已用 LCDP 的 1415/100/218 对完成 200 epoch 正式训练；best epoch 167，
   val PSNR `19.7247dB`、独立 test PSNR `20.4813dB`（输入基线 `14.0203dB`）。
 - checkpoint→ONNX→FP16+AIPP OM→板端相机帧推理链已完成；生产安全参数桥尚未完成。

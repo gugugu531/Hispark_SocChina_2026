@@ -170,6 +170,24 @@ elapsed=12m30s eta=3h15m20s finish=2026-06-20 02:35:10 CST
 该结果确认正式权重、AIPP 和 chn2 输入链可在板端运行；尚未确认的是 NN 输出经
 Gamma/DRC/CLUT 安全参数桥后的动态闭环画质，而不是模型加载或推理可行性。
 
+### checkpoint → ONNX → OM 数值一致性（2026-06-20）
+
+新增固定 `256x144` RGB 图案，按 BT.601 limited-range 转 NV21，并用与 AIPP 配置相同的整数
+CSC 生成裸 OM 的 NCHW FP16 输入。板端用同一输入分别运行无 AIPP OM 与 AIPP OM，输出统一拉回为
+14,739 项 float32：
+
+| 对比 | MAE | RMSE | max abs | cosine | `abs>1e-2` |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| PyTorch vs FP16 ONNX | 0.000113 | 0.000152 | 0.000530 | 0.999999967 | 0% |
+| PyTorch vs 裸 OM | 0.000173 | 0.000234 | 0.001051 | 0.999999912 | 0% |
+| 裸 OM vs AIPP OM | 0.00000485 | 0.0000399 | 0.000488 | ≈1.0 | 0% |
+| PyTorch vs AIPP OM | 0.000173 | 0.000235 | 0.001051 | 0.999999917 | 0% |
+
+固定输入板端总耗时约 `1.81–1.87ms`，其中模型执行约 `1.24ms`。结果证明 checkpoint、FP16
+ONNX、裸 OM、NV21+AIPP OM 的输出在 FP16 误差范围内一致，AIPP 本身没有引入可见数值偏差。
+复现工具为 `models/tools/cotf_parity.py` 与 `board/tests/test_model_parity.c`，原始数组和报告位于
+`artifacts/cotf-paramnet-parity/`。
+
 ### 板端持续预览（2026-06-20）
 
 新增 `test_paramnet_live`，持续运行：
@@ -186,10 +204,11 @@ OS08A20 → ISP(+模型 Gamma) → VPSS chn0 → HDMI
 - SIGINT/SIGTERM、时限结束或错误退出都会恢复默认 Gamma 并逆序清理媒体链；
 - 15 秒板端冒烟为 453 帧、约 `30.2fps`，15/15 次更新成功、0 次失败。
 
-直接把训练 17³ LUT 写入 CLUT 的 identity 门禁**未通过**：修正为“17³ 逻辑节点 +
-17×18×18 边界复制填充”后，CLUT ON 抓帧仍出现明显亮度变化和伪色。因此正式持续预览不走
-任意 CLUT 写入；Python 原型继续保留“不得正式上板”的警告。当前 Gamma 灰轴路径只能展示
-模型学习到的全局色调，不等于完整 RGB 3D-LUT 效果。
+后续结合 ReleaseDoc、PQTools 模板和 `algClutcompLib.dll` 的 `clut_lut_print_17v2`，确认 5508
+存储不是 `17×18×18` 边界填充，而是 17³ 逻辑点按三轴奇偶拆为 8 个 bank，再以 4 路交织输出。
+板端 36 组轴序×位序 sweep 确认坐标轴为 RGB，位域为 R 高/G 中/B 低；正确 identity 的相邻
+OFF/ON NV21 MAE 为 `1.025`，UV MAE 为 `0.116`，此前伪色消失。持续预览仍保留较保守的 Gamma
+灰轴路径；完整 RGB LUT 动态写回将在增加范围、单调性和刷新事务保护后接入。
 
 纯计算基准（AMP，预热后 50 step；不含磁盘解码、验证和 checkpoint）：
 

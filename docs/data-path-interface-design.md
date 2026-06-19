@@ -1,8 +1,8 @@
 # Config-R 数据通路接口与协作设计
 
-> 状态快照：2026-06-19。本文保留阶段 C 的模块边界和帧所有权契约；具体 SDK 调用以实现和板端实测为准。
+> 状态快照：2026-06-20。本文保留阶段 C 的模块边界和帧所有权契约；具体 SDK 调用以实现和板端实测为准。
 > 当前实现差异：display + 规则 control→Gamma 已进生产 `main.c` 并板端 30fps 跑通；ACL 推理已独立验证；
-> CLUT 几何已确认。尚未完成的是 chn2+AIPP、正式权重和 NN→Gamma/DRC/CLUT 安全参数桥。
+> 正式权重、chn2+AIPP、CLUT 17v2 identity 均已板端验证。尚未完成的是生产 NN→Gamma/DRC/CLUT 安全参数桥。
 > **命名说明**：文中「CoTF」指受官方 CoTF 启发、只保留「预测 3D-LUT + ISP 硬件施加」的子集，**非官方 CoTF**
 > （协同变换/自适应采样/注意力融合等红名单部件已丢弃，画质 ≈ 全局 3D-LUT 级）。详见
 > [architecture.md §4.1](architecture.md) 与 [../models/cotf-route-verification.md](../models/cotf-route-verification.md)。
@@ -111,8 +111,9 @@ control worker 默认每 3 帧执行一次控制轮询，但只有 `control_shou
 9. 仅在 ISP 写入成功后提交“当前参数版本”和成功时间；失败时保留旧参数并回退规则控制。
 
 当前模型输出布局固定为 `[RGB][R][G][B]`，B 轴最快，共 `3 * 17^3 = 14,739` 个 float。
-厂商文档确认逻辑 CLUT 为 17³；`5,508=17×18×18` 是带填充存储，不是 17×18×18 逻辑采样网格。
-轴序、填充和通道位序必须集中在参数桥，不得散落到推理或 ISP 模块。
+厂商文档确认逻辑 CLUT 为 17³；PQTools `17v2` 实现进一步确认 5,508 项是 8 个奇偶 bank 的
+4 路交织存储，不是 `17×18×18` 逻辑采样网格或边界填充。RGB 轴序和 R高/G中/B低位序必须
+集中在参数桥，不得散落到推理或 ISP 模块。
 
 ## 6. 内存与数据搬运
 
@@ -198,8 +199,8 @@ control worker 默认每 3 帧执行一次控制轮询，但只有 `control_shou
 
 ## 11. 尚未关闭的设计问题
 
-- CLUT 逻辑网格已确认是 17³，存储为 17×18×18 带填充布局；当前 Python/C bridge 仍需按填充规则
-  实现并通过 identity/诊断 LUT 板端验收，packed 通道位序也需最终对拍。
+- CLUT 逻辑网格和 17v2 存储已确认；Python packer 已通过 identity、轴序和位序板端门禁。
+  C 生产 bridge 仍需接入范围检查、失败保留旧表和低频刷新事务。
 - ACL 是否能安全直接导入 VPSS/VB 物理地址尚未验证；当前基线是缩略图 copy。
 - ISP CLUT 主线不能直接提供严格同帧原图/增强图分屏；需要额外 ISP/旁路能力或整图备选。
 - RTSP server 复用厂商 sample 还是引入轻量实现尚未选型。

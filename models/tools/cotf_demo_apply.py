@@ -5,7 +5,7 @@
 与板端完全相同的桥：
 
     cubic LUT ──pack_cubic_to_hw──► 5508 节点 u32 ──write_lut_bin──► cotf_clut.bin
-        ──(读回)──► 17×18×18 硬件 mesh ──三线性施加(模拟 ISP CLUT 硬件)──► 全分辨率输出
+        ──(读回)──► 17v2 bank 反交织为 17³ ──三线性施加(模拟 ISP CLUT 硬件)──► 全分辨率输出
 
 输出 input | 经 .bin 施加 | gt 的对比图，并报告施加前/后 PSNR。
 证明：cotf_clut.bin 里的字节，按 ISP CLUT 的方式解释，能在全分辨率重建该校正。
@@ -20,9 +20,9 @@ import numpy as np
 from PIL import Image
 
 from models.tools.cotf_lut_pack import (
-    HW_MESH_DIMS,
     HW_MAX,
     pack_cubic_to_hw,
+    unpack_hw_mesh,
     write_lut_bin,
 )
 
@@ -75,17 +75,13 @@ def fit_cubic_lut(inp: np.ndarray, gt: np.ndarray, dim: int) -> np.ndarray:
     return lut
 
 
-def apply_hw_mesh(packed_u32: np.ndarray, img: np.ndarray,
-                  mesh_dims=HW_MESH_DIMS) -> np.ndarray:
-    """按 ISP CLUT 硬件方式施加：解包 5508 节点 u32 → 17×18×18 mesh → 三线性查表。
-
-    与 cotf_lut_pack.resample_to_hw_mesh 的几何一致（R 外层 row-major, 各轴 linspace）。
-    """
-    nr, ng, nb = mesh_dims
+def apply_hw_mesh(packed_u32: np.ndarray, img: np.ndarray) -> np.ndarray:
+    """解包 5508 节点 u32，反交织 17v2 bank 后在 17³ 逻辑立方上三线性查表。"""
     r = ((packed_u32 >> 20) & 0x3FF).astype(np.float64) / HW_MAX
     g = ((packed_u32 >> 10) & 0x3FF).astype(np.float64) / HW_MAX
     b = (packed_u32 & 0x3FF).astype(np.float64) / HW_MAX
-    mesh = np.stack([r, g, b], axis=1).reshape(nr, ng, nb, 3)
+    mesh = unpack_hw_mesh(np.stack([r, g, b], axis=1))
+    nr, ng, nb = mesh.shape[:3]
 
     flat = img.reshape(-1, 3)
     out = np.zeros_like(flat)
@@ -152,7 +148,7 @@ def main() -> int:
     panel = np.concatenate([u8(inp), gap, u8(corrected), gap, u8(gt)], axis=1)
     Image.fromarray(panel).save(args.out)
 
-    print(f"input {w}x{h}  lut_dim={args.lut_dim}  mesh={HW_MESH_DIMS}={back.size} nodes")
+    print(f"input {w}x{h}  lut_dim={args.lut_dim}  mesh=17v2 banks={back.size} stored nodes")
     print(f"  wrote {args.bin} ({packed.size*4} bytes)  u32 range "
           f"[{packed.min():#010x},{packed.max():#010x}]")
     print(f"  PSNR(input vs gt)            = {p_before:5.2f} dB")
