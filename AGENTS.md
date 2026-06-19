@@ -12,18 +12,19 @@ Config-R 核心数据通路（详见 `docs/architecture.md`）：
 
 ```text
 主路径:
-OS08A20 -> VI -> ISP(WDR/3DNR/DRC/CLUT) -> VPSS -> VO/HDMI
+OS08A20 -> VI -> ISP(WDR/3DNR/DRC/Gamma/CLUT) -> VPSS -> VO/HDMI
                                              -> VENC/RTSP
 
 低频控制旁路:
-VPSS chn2 缩略图 -> AIPP -> CoTF param-net -> LUT 打包 -> ISP CLUT
-ISP AE 统计 -------------------------------------> 场景判决/刷新控制
+VPSS chn2 缩略图 -> AIPP -> CoTF-inspired param-net -> 安全参数桥 -> ISP Gamma/DRC/CLUT
+ISP AE 统计 ----------------------------------------------> 场景判决/刷新控制
 ```
 
 设计要点：
 
-- 降噪交给 ISP 硬件（3DNR/HNR）；NN 只从低分辨率缩略图预测 LUT，ISP CLUT 负责全分辨率施加。
-- 当前主线已经由整图曲线网络修正为 **CoTF 参数网络预测 LUT + ISP CLUT 全分辨率施加**。
+- 降噪交给 ISP 硬件（3DNR/HNR）；NN 只从低分辨率缩略图预测参数，ISP 负责全分辨率施加。
+- 当前生产默认是 **AE 统计/规则判决 → ISP Gamma**；训练中的 CoTF-inspired param-net 输出 17³ LUT，
+  后续需通过安全参数桥按用途写入 Gamma/DRC/CLUT。
 - NPU 与 CPU LUT 打包位于低频控制旁路；主路径目标是零 CPU/NPU 全分辨率逐像素搬运。
 - Config-R 目标为 1024x600 显示 30fps；整图 `768x432 shared niter8` 仅保留为备选。
 - Config-Q 用于拍照或低帧率高画质整图增强。
@@ -182,8 +183,8 @@ Web Portal
 - **OS08A20 的 WDR 模式有 SDK 文档记载的限制**（短曝光精度/亮度受影响）。"WDR 作为过曝主防线"需先实测；不达预期则退化为 AE 曝光控制 + DRC/CLUT 色调压缩为主。
 
 架构级待验证点清单维护在 `docs/architecture.md` §6。整图 OM 的 go/no-go 已完成：算子可干净落
-AICore，但 `1024x576` 超过 33ms。当前 Config-R 主线已转为 CoTF 参数网络 + ISP CLUT；最高优先级是
-CLUT mesh 核对和相机链联机点亮。
+AICore，但 `1024x576` 超过 33ms。硬件施加端和规则控制整链已联机；当前最高优先级是正式训练
+param-net、接入 VPSS chn2+AIPP，并实现 NN→Gamma/DRC/CLUT 的安全参数桥。
 
 ## Git 规范
 

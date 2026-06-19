@@ -11,13 +11,16 @@
 
 ```text
 主路径：
-OS08A20 -> VI -> ISP(WDR/降噪/DRC/CLUT) -> VPSS -> VO/HDMI
+OS08A20 -> VI -> ISP(WDR/降噪/DRC/Gamma/CLUT) -> VPSS -> VO/HDMI
                                               -> VENC/RTSP
 
 低频控制旁路：
-VPSS 缩略图 -> AIPP -> CoTF 参数网络 -> LUT 打包 -> ISP CLUT 热刷新
-ISP AE 统计 ---------------------------> 场景判决与刷新控制
+VPSS 缩略图 -> AIPP -> CoTF-inspired param-net -> 安全参数桥 -> ISP Gamma/DRC/CLUT
+ISP AE 统计 -------------------------------------> 场景判决与刷新控制
 ```
+
+当前生产程序已用规则判决驱动 ISP Gamma 在板端 30fps 跑通；param-net 的训练/配置/导出闭环已完成，
+但正式权重、VPSS chn2+AIPP 接入和 NN→ISP 安全参数桥仍待完成。
 
 完整数据通路与设计依据见 [docs/architecture.md](docs/architecture.md)。
 

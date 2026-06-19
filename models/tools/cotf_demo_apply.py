@@ -1,7 +1,7 @@
 """可视化演示：CoTF 3D-LUT 经 *同一条 host→硬件桥* 施加到真实图像（input→gt）。
 
-param-net 当前是随机权重的速率/可行性探针，自己产不出有意义的曝光校正。本演示因此
-**拟合**一个 input→gt 的立方 3D-LUT（即训练好的 param-net 应当输出的东西），再把它喂进
+本演示不依赖训练 checkpoint，而是直接**拟合**一个 input→gt 的立方 3D-LUT
+（训练后的 param-net 应当预测的目标），再把它喂进
 与板端完全相同的桥：
 
     cubic LUT ──pack_cubic_to_hw──► 5508 节点 u32 ──write_lut_bin──► cotf_clut.bin

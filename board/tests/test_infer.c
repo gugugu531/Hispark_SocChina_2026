@@ -2,7 +2,7 @@
  *
  * 链路：相机 → VI → ISP → VPSS chn0 NV21 → infer_run_nv21（ACL 在 NPU 跑 param-net OM）→ LUT 系数。
  * 验证 infer.c 的 ACL 推理通路：模型加载、输入复制、NPU 执行、输出取回与耗时分解。
- * 注：当前 param-net 为随机权重（训练暂跳过），输出 LUT 仅用于验证通路与耗时，非有意义校正。
+ * 注：默认部署的历史 OM 仅用于结构通路与耗时验证；正式画质验收需显式传入训练权重转换的 OM。
  *
  * 用法：./test_infer [--model <om>] [--iters N] [--sensor 0|1]
  * 前置：板上接 OS08A20；OM 已部署；LD_LIBRARY_PATH 含 /opt/lib/npu（libascendcl 等）。

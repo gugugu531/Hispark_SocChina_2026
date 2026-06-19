@@ -1,6 +1,6 @@
 # CoTF 路线可行性验证 + 代码实现 —— NN 出 LUT + ISP 硬件施加
 
-> 状态：2026-06-16。**分环验证与接口代码已完成**（host 桥 + 板端 CLUT API + 控制策略）；
+> 状态：2026-06-19。**分环验证、硬件施加、Gamma 生产链与 ACL 推理均已完成**；
 > **板端相机链联机点亮已完成**——相机→ISP+CLUT→HDMI 实时整链 **30fps 跑通、点屏 toggle CLUT 开/关、
 > 零 NPU**（见下「板端联机点亮（2026-06-16）」）。回答 [architecture.md](../docs/architecture.md) §4.1 / §6
 > 中 CoTF 3D-LUT 能否落地的问题：
@@ -8,10 +8,9 @@
 > 这是 [expo-curve-network.md](expo-curve-network.md) 横评后唯一能突破"全分辨率访存地板"的架构。
 > 四段式：目标 / 命令路径 / 结果 / 解读 / 板端联机点亮。
 >
-> **一句话进展**：CoTF 硬件施加端已在真板上以 30fps 实时点亮（相机→ISP CLUT→HDMI，触摸切换），
-> 唯一仍开放的是 **CLUT mesh 几何标定**——主机 `cotf_lut_pack` 按 17×18×18 打包的 LUT 灌进去出彩色乱码
-> （连恒等表都不透传），证实文档早标注的轴序/遍历待标定问题。当前演示用**几何无关**的绕过法
-> （读硬件默认表→在输出值上叠 gamma 提亮）拿到干净可见的曝光校正。
+> **一句话进展**：CLUT 硬件施加端已 30fps 点亮，Gamma 原生色调生产链已 31.2fps 跑通；
+> CLUT 几何已由厂商文档确认（17³ 逻辑节点 + 填充存储）。param-net 训练闭环已具备，剩正式权重、
+> chn2+AIPP、NN→ISP 安全参数桥和动态闭环画质验证。
 
 ## 目标
 
@@ -69,7 +68,8 @@ python -m pytest models/tests/test_cotf_lut_pack.py -q      # 打包桥单测（
   触摸 toggle + `--auto`/`--dumpdir`/`--probe`/`--tone`/`--lockexp`，2026-06-16）。
 - 生产主程序：`board/src/main.c`（`socchina_app`，显示线程 30fps + 低频控制线程→Gamma，SIGINT 优雅退出，2026-06-19）。
 - 板端 NPU 推理：`board/src/infer.c`（全 ACL `aclmdl*` 跑 param-net OM）+ `board/tests/test_infer.c`
-  （相机帧→NPU→LUT，**板端 exec ~5.6ms 实测**，2026-06-19）。注：随机权重，验证通路；接控制环待训练色调网络。
+  （相机帧→NPU→LUT，**板端 exec ~5.6ms 实测**，2026-06-19）。历史 OM 用于结构/耗时验证；
+  正式训练权重及 256x144+AIPP 尚未上板。
 - 部署/运行脚本：`scripts/deploy_board.sh` / `scripts/run_board.sh`。
 - 演示用 LUT 与可视化（主机）：[tools/cotf_make_demo_lut.py](tools/cotf_make_demo_lut.py)（tone-curve LUT 打包）、
   [tools/cotf_demo_apply.py](tools/cotf_demo_apply.py)（经同一桥把 LUT 施加到真实图像，输出 input/校正/gt 对比图与 PSNR）。
@@ -342,12 +342,12 @@ NPU 近乎空闲。这是曲线网络做不到的——后者 NPU 必须为每�
 
 板端联机已验证（2026-06-16，见「板端联机点亮」专节）：① `isp_load_clut_lut`/`set_clut_attr` 在跑流中
 即时生效、CLUT 开关全程 **30fps 不掉帧、零 NPU**，触摸点屏 toggle 稳定（flicker 观感待现场目视终判）；
-② LUT 刷新率 vs 场景适应延迟的取舍标定仍待实测；③ 任意 NN-LUT 精确落地仍卡在 mesh 几何标定。
+② 动态 NN 参数刷新率 vs 场景适应延迟仍待实测；③ 正式训练权重与安全参数桥尚未接入生产链。
 
 ## 一句话判决
 
 **CoTF 路线可行且独占优势**：要在 1024x576（乃至更高）做真·实时双向曝光，这是唯一不撞访存地板的路——
 NN 出 LUT（喂缩略图 ~1ms、喂全分辨率 ~5ms）+ ISP 硬件全分辨率施加（零 NPU）。更关键的是它**把模型整个移出
 每帧关键路径**：显示吞吐回到纯硬件链（30fps+），NPU 仅在低频控制环刷 LUT（占空 ~3–15%），天然流水线。
-代码与格式已就绪，剩 mesh 表 + 联机点亮两步板端工作。若只需快速上线，仍可先用本网络 768x432+共享曲线
+硬件与训练基础设施已就绪，剩正式训练、chn2+AIPP 和生产参数桥。若只需快速上线，仍可先用本网络 768x432+共享曲线
 (27ms，但 NPU 每帧满载)；要冲全分辨率实时 + 释放 NPU，则投 CoTF 路线。

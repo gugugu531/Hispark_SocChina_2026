@@ -4,8 +4,8 @@
 
 - 任务：**实时双向曝光校正**——既拉亮暗部，也抑制高光过曝（而非单向拉亮）。
 - 过曝是 sensor 像素阱饱和导致的**不可逆**信息丢失，正解是**拍摄端预防（WDR/曝光控制）**，而非末端补救。
-- 关键设计：**多帧降噪交给 ISP 硬件（3DNR/HNR）**；NN 读取低分辨率缩略图并预测 3D-LUT，
-  ISP CLUT 对全分辨率帧施加。这样规避多帧融合鬼影和整图模型的访存瓶颈。
+- 关键设计：**多帧降噪交给 ISP 硬件（3DNR/HNR）**；NN 读取低分辨率缩略图并预测低频参数，
+  ISP Gamma/DRC/CLUT 对全分辨率帧施加。这样规避多帧融合鬼影和整图模型的访存瓶颈。
 - 主路径不做 CPU 或 NPU 全分辨率逐像素搬运。NPU 与少量 CPU LUT 打包仅在低频控制旁路工作。
 
 ## 2. 端到端数据通路
@@ -14,15 +14,15 @@
 主路径（每帧，目标 30fps）：
 
 OS08A20 -> VI -> ISP
-  ISP: WDR/3A/3DNR/DRC/dehaze -> CLUT(当前 LUT) -> YVU420SP
+  ISP: WDR/3A/3DNR/DRC/dehaze -> Gamma/CLUT(当前参数) -> YVU420SP
        -> VPSS chn0 1024x600 -> VO -> HDMI
        -> VPSS chn1 1024x576 -> VENC -> RTSP
 
 控制旁路（低频或场景变化时）：
 
 ISP AE 统计 ---------------------------> control_decide
-VPSS chn2 256x144 NV21 -> AIPP -> CoTF param-net -> 立方 LUT
-       -> 5508 节点重采样/10bit 打包 -> ss_mpi_isp_set_clut_coeff
+VPSS chn2 256x144 NV21 -> AIPP -> CoTF-inspired param-net -> 安全参数桥
+       -> 全局曝光/色调: ISP Gamma；动态范围: DRC；颜色: 17³ CLUT
        -> control_should_refresh_lut 控制刷新频率
 
 整图增强备选：
@@ -30,7 +30,7 @@ VPSS chn2 256x144 NV21 -> AIPP -> CoTF param-net -> 立方 LUT
 VPSS chn1 -> AIPP -> ExpoCurveNet 768x432 -> 后处理 -> VGS/VO
 ```
 
-CoTF 主路径中的 CLUT 位于 ISP 内，因此同一 ISP 输出天然是“已增强帧”。如果演示必须同时显示严格同帧的
+ISP 参数块位于公共图像链内，因此同一 ISP 输出天然是“已增强帧”。如果演示必须同时显示严格同帧的
 原图/增强图，需要额外的旁路能力或使用整图增强备选；当前主线优先支持全屏增强和增强开关切换。
 
 ## 3. 逐级明细
@@ -40,20 +40,20 @@ CoTF 主路径中的 CLUT 位于 ISP 内，因此同一 ISP 输出天然是“�
 | 1 | 采集 | VI+MIPI | OS08A20 RAW12 WDR/DOL | RAW(DOL) | 多曝光交错读出（OS08A20 WDR 有限制，见§7）| 0 |
 | 2 | 宽动态融合 | ISP | 多帧RAW | 1帧宽DR RAW | WDR融合（源头保高光，受 §7 限制）| 0 |
 | 3 | 降噪 | ISP 3DNR+HNR | RAW/YUV | 去噪YUV | 时域+空域硬件降噪（替代NN融合）| 0 |
-| 4 | 色调与 LUT 施加 | ISP dehaze/LTM/DRC/CLUT | RAW/RGB/YUV | YVU420SP | 每帧施加当前 LUT | 0 |
+| 4 | 色调与 LUT 施加 | ISP dehaze/LTM/DRC/Gamma/CLUT | RAW/RGB/YUV | YVU420SP | 每帧施加当前参数 | 0 |
 | 5 | 分发缩放 | VPSS | NV21 全幅 | chn0/chn1/chn2 | 1024x600 显示 + 1024x576 串流 + 256x144 控制缩略图 | 0 |
 | 6 | 参数网预处理 | AIPP（融入 OM） | chn2 NV21 | NCHW FP16 RGB /255 | CSC+归一+布局 | NNN，低频 |
-| 7 | LUT 预测 | NNN/ACL OM | 256x144 FP16 | 立方 LUT 参数 | CoTF param-net | NNN，约 0.8ms/次 |
-| 8 | LUT 桥 | CPU 轻量 | 立方 LUT | 5508 个 u32 | mesh 重采样、10bit 打包 | 0 |
-| 9 | LUT 刷新 | CPU→ISP | u32 LUT | ISP CLUT 系数 | 限流/迟滞后热刷新 | 0 |
+| 7 | 参数预测 | NNN/ACL OM | 256x144 FP16 | 17³ LUT/色调参数 | CoTF-inspired param-net | NNN，缩略图 benchmark 约 0.8ms/次 |
+| 8 | 安全参数桥 | CPU 轻量 | NN 参数 | Gamma/DRC/CLUT 输入 | clamp、正则检查、格式转换 | 0 |
+| 9 | 参数刷新 | CPU→ISP | 安全参数 | ISP 参数块 | 限流/迟滞后热刷新 | 0 |
 | 10a | 本地显示 | VO→HDMI | chn0 NV21 | 1024x600 DVI | 零拷贝送显 | 0 |
 | 10b | 远程串流 | VENC→RTSP | NV21 | H.264 | 硬件编码+推流 | 0 |
 | 11 | 控制 | CPU | ISP统计 | ISP参数+刷新决策 | 场景判决+迟滞 | 0 |
 
 ## 4. 两套运行配置
 
-- **Config-R（实时 30fps，主线）**：CoTF 参数网络读取 VPSS 缩略图，低频预测 3D-LUT；ISP CLUT
-  对每帧全分辨率施加。模型不进入每帧关键路径，复用已验证 30fps 的 ISP/VPSS/VO 硬件链。
+- **Config-R（实时 30fps，主线）**：低频参数网络读取 VPSS 缩略图；ISP Gamma/DRC/CLUT
+  对每帧全分辨率施加。当前规则判决→Gamma 已板端 30fps 跑通，NN 接入仍在开发。
 - **Config-R 备选**：`768x432 + 共享曲线 niter8` 整图 OM，单次执行约 `27.2ms`；适合快速演示，
   但仍需为整链开销留预算，且 NPU 每帧参与。
 - **Config-Q（拍照/低帧，高画质）**：更大输入（如 1024x640）、更多迭代、可叠加多帧堆栈；约 100ms 量级，用于按键抓拍增强。
@@ -64,7 +64,8 @@ CoTF 主路径中的 CLUT 位于 ISP 内，因此同一 ISP 输出天然是“�
 > **命名说明**：本仓库所称「CoTF 路线」只移植了官方 CoTF（`CoNet`）中「预测 3D-LUT」这一子组件（该子组件本身借自
 > Image-Adaptive-3DLUT / SepLUT），并把施加卸给 ISP 硬件。官方 CoTF 的命名贡献——协同变换、自适应采样、注意力
 > 融合——因落在 NNN 红名单已**全部丢弃**，故画质 ≈ 全局 3D-LUT 级，**不等于官方 CoTF**。对照详见
-> [../models/cotf-route-verification.md](../models/cotf-route-verification.md) 与 [model-route-summary.md](model-route-summary.md) 待测项1。CoTF 路线为**基础设施验证 + 代码就绪、联机待测**。
+> [../models/cotf-route-verification.md](../models/cotf-route-verification.md) 与 [model-route-summary.md](model-route-summary.md)。
+> 硬件施加和 ACL 推理已分别联机；训练闭环已完成，正式权重与生产接线待完成。
 
 横评 5 个架构后确认，「输出整图」的模型在 1024x576 都撞**全分辨率访存的像素线性地板**（与参数量无关）。两条路线：
 
@@ -73,8 +74,8 @@ CoTF 主路径中的 CLUT 位于 ISP 内，因此同一 ISP 输出天然是“�
 | **曲线网络（本仓库 ExpoCurveNet）** | /4 backbone 出曲线 + **全分辨率逐像素施加** | 在 NPU | ~100%（每帧 gating） | ❌（768x432 可，27ms） | 快速上线、实现简单 |
 | **CoTF（NN 出 LUT + ISP 施加）** | 低分辨率出 3D-LUT（~1–5ms） | **ISP 硬件 CLUT**（零 NPU） | ~3–15%（低频刷 LUT） | ✅（NN 移出每帧路径） | 全分辨率真实时、释放 NPU |
 
-CoTF 路线已逐环验证 + 代码就绪（`isp_set_clut`/`isp_load_clut_lut` + `control_should_refresh_lut` + host 打包桥），
-剩 CLUT mesh 标定 + 联机点亮两步板端工作。完整记录见 [../models/cotf-route-verification.md](../models/cotf-route-verification.md)。
+硬件 CLUT/Gamma 施加、ACL 推理和 30fps 主链均已分别验证。CLUT 几何已由厂商文档确认：
+17³ 逻辑节点写入 17×18×18 带填充存储。剩余工作是正式训练、chn2+AIPP、参数桥和动态闭环验证。
 
 ## 5. 模块与代码映射
 
@@ -94,7 +95,7 @@ Config-R 固定 `chn0=1024x600` 显示、`chn1=1024x576` 串流/整图备选互�
    （`640x360 niter8 共享=19.5ms`）；1024x576 归 Config-Q。
 2. ✅ 已验证（2026-06-14）：AIPP 全分辨率 CSC/归一开销 **≈0ms**（挂/不挂同速，差值噪声内），
    预处理可零开销融入 OM 前端。
-3. CoTF 主线：CLUT mesh 维度/轴序、联机加载和热刷新稳定性待验证。
+3. 🟡 参数网主线：硬件施加和热刷新已联机；待正式权重、chn2+AIPP、NN→ISP 安全参数桥及动态闭环验证。
 4. ~~ISP 统计读取~~ ✅ 已验证（2026-06-11）：`ss_mpi_isp_get_ae_stats` 低频读取正常，
    `isp_get_luma_stats` 归约为 mean/clip% 直接供 `control_decide`（见 `board/README.md`）。
 5. VO 视频层的现场 flicker 观感待确认；VGS 分屏仅属于整图增强备选。

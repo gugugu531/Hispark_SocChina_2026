@@ -20,7 +20,7 @@ typedef struct {
     lut_channel_order_t channel_order;
 } lut_bridge_cfg_t;
 
-/* 当前 17x18x18 仅为待 SDK 调优文档确认的候选 mesh，不得当作已标定事实。 */
+/* 厂商文档确认逻辑 CLUT 为 17^3；5508=17x18x18 是带填充存储，不是逻辑 mesh。 */
 void lut_bridge_default_cfg(lut_bridge_cfg_t *cfg);
 
 /*

@@ -4,17 +4,17 @@
   * `ot_isp_clut_lut.lut[OT_ISP_CLUT_LUT_LENGTH]`，`OT_ISP_CLUT_LUT_LENGTH = 5508` 个节点。
   * 每个 `td_u32` 取值 [0, 1073741823] = [0, 2^30-1]，即 **3×10bit 打包**（R/G/B 各 10bit）。
   * 另有 `ot_isp_clut_attr = { en, gain_r/g/b(12bit) }` 做全局增益+开关。
-  * 节点几何：5508 = 17×18×18（非均匀 3D mesh）。
+  * 节点几何：逻辑 LUT 为 17³；5508 = 17×18×18 是每平面 18×18 的带填充存储。
 
 整条桥（host 侧）::
 
     NN param-net 输出 (3*D^3,) ──decode──► 立方 LUT (D,D,D,3) float[0,1]
-        ──resample_to_hw_mesh──► (5508,3) float ──pack_u30──► (5508,) uint32
+        ──padding/layout bridge──► (5508,3) float ──pack_u30──► (5508,) uint32
         ──write_lut_bin──► .bin（板端读入 → ss_mpi_isp_set_clut_coeff）
 
-⚠ 几何假设：mesh 维度/轴序/遍历顺序（默认 17×18×18、R 外层 row-major）**需对照 SDK《ISP CLUT 调优说明》
-最终标定**；下面实现是结构完整、可跑通的版本，标定只改 `HW_MESH_DIMS` 与遍历顺序常量，不动主流程。
-**10bit 位打包格式来自头文件，可信。**
+⚠ 当前 `resample_to_hw_mesh` 仍是早期把 17×18×18 当逻辑采样网格的原型，尚未按 17³→带填充
+存储重写，**不得用于正式任意 NN-LUT 上板**。10bit 位打包格式可信；正式 bridge 需补填充规则、
+轴序/位序对拍和 identity 板端验收。
 """
 
 from __future__ import annotations
@@ -24,7 +24,7 @@ import numpy as np
 HW_LUT_LENGTH = 5508          # OT_ISP_CLUT_LUT_LENGTH
 HW_BITS = 10                  # 每通道 10 bit
 HW_MAX = (1 << HW_BITS) - 1   # 1023
-HW_MESH_DIMS = (17, 18, 18)   # 17*18*18 = 5508（轴序/大小待 CLUT 调优文档确认）
+HW_MESH_DIMS = (17, 18, 18)   # 旧原型 shape：实际是带填充存储，不是逻辑采样维度
 assert HW_MESH_DIMS[0] * HW_MESH_DIMS[1] * HW_MESH_DIMS[2] == HW_LUT_LENGTH
 
 
@@ -59,9 +59,9 @@ def _trilinear_sample(cube: np.ndarray, coords: np.ndarray) -> np.ndarray:
 
 
 def resample_to_hw_mesh(cubic_lut: np.ndarray, mesh_dims: tuple = HW_MESH_DIMS) -> np.ndarray:
-    """把立方 LUT (D,D,D,3) 三线性重采样到硬件 mesh（默认 17×18×18，共 5508 节点）→ (5508,3)。
+    """旧原型：把立方 LUT 重采样为 17×18×18。
 
-    遍历顺序：R 外层、G 中层、B 内层（row-major）。⚠ 实际硬件轴序/顺序待 CLUT 调优文档确认。
+    ⚠ 硬件实际需要 17³ 逻辑节点加填充；正式部署前必须替换本函数并完成 identity 对拍。
     """
     nr, ng, nb = mesh_dims
     r = np.linspace(0.0, 1.0, nr)
@@ -112,4 +112,4 @@ if __name__ == "__main__":
     print(f"cubic 17³ → hw mesh {HW_MESH_DIMS} = {packed.size} nodes; "
           f"u32 max={packed.max()} (≤{(1 << 30) - 1})")
     print(f"sample node[3000]={packed[3000]:#010x}")
-    print("10bit 打包格式已坐实；mesh 轴序/顺序待 CLUT 调优文档标定（只改常量）。")
+    print("10bit 打包格式已坐实；17³→填充存储 bridge 尚未实现，当前输出仅供旧原型测试。")

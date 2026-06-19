@@ -1,7 +1,7 @@
 """生成一个**可见的**曝光校正 3D-LUT（提亮暗部的 tone-curve），经同一 host→硬件桥打包为
 SS928 ISP CLUT 的 5508 节点 u32 .bin。用于板端实时演示：CLUT 关=原始相机图，CLUT 开=CoTF 校正。
 
-这不是训练好的 param-net 输出（那需要训练），而是一条语义明确、对任意场景都成立的全局色调
+这不是训练 checkpoint 的输出，而是一条语义明确、对任意场景都成立的全局色调
 校正：lift shadows（gamma<1）+ 轻微 S 形对比 + 轻微提饱和。toggle 时效果一眼可辨。
 """
 from __future__ import annotations
