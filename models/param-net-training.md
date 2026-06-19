@@ -1,6 +1,6 @@
 # Param-net 训练与部署
 
-> 状态：2026-06-19。本文记录受 CoTF 启发、面向 SS928 AICore 的轻量参数网络训练闭环。
+> 状态：2026-06-20。本文记录受 CoTF 启发、面向 SS928 AICore 的轻量参数网络训练闭环。
 > 该网络保留现有板端接口：输入 `256x144` RGB 缩略图，输出 `3×17³=14739` 个 FP16 LUT 系数。
 
 ## 目标
@@ -121,8 +121,54 @@ elapsed=12m30s eta=3h15m20s finish=2026-06-20 02:35:10 CST
 - `python -m pytest models/tests -q`：`27 passed`。
 - 单 pair、`crop=256`、2 epoch GPU 冒烟训练成功，`best.pt/last.pt` 可正常恢复和导出。
 - checkpoint 导出的 FP16 ONNX 算子为
-  `AveragePool/Conv/GlobalAveragePool/Clip/Constant`，无 `Resize/GridSample/Cast` 等 ONNX 红名单；
-  正式权重仍须再经 ATC 转 OM 和板端 profiling，才能确认无 AICPU 回退。
+  `AveragePool/Conv/GlobalAveragePool/Clip/Constant`，无 `Resize/GridSample/Cast` 等 ONNX 红名单。
+
+### LCDP 正式训练与上板结果（2026-06-20）
+
+数据：
+
+- LCDP 实际可读 pair：训练 `1415`、验证 `100`、独立测试 `218`；
+- 全部 pair 同名、可读且分辨率一致，最低边长 `1080`，满足 `512` crop；
+- 数据与日志位于被 Git 忽略的 `artifacts/datasets/cotf/lcdp/` 与
+  `artifacts/training-logs/cotf_paramnet_lcdp_rtx4060.log`。
+
+训练：
+
+| 项 | 结果 |
+| --- | ---: |
+| 总轮数 | 200 epoch / 35,400 step |
+| 本机总耗时 | `1h05m49s` |
+| best checkpoint | epoch 167 |
+| best val PSNR | `19.7247 dB` |
+| best val loss | `0.0905539` |
+| final val PSNR | `19.6248 dB` |
+| 独立 test PSNR（best） | `20.4813 dB` |
+| 独立 test PSNR（last） | `20.4431 dB` |
+| 独立 test 输入基线 | `14.0203 dB` |
+
+训练日志完整覆盖 200/200 epoch，无 NaN、Inf、OOM、Traceback 或中断。best 位于后段但不是末轮；
+最后 33 轮仅有约 `0.10dB` 验证回落，因此部署选择 `best.pt`。
+
+部署：
+
+- checkpoint：`models/weights/cotf_paramnet_lcdp_rtx4060/best.pt`；
+- FP16 ONNX：`cotf_paramnet_256x144_lcdp_best_e0167_fp16.onnx`；
+- AIPP：[`configs/aipp_nv21_256x144.cfg`](configs/aipp_nv21_256x144.cfg)，静态
+  `256x144 NV21 → RGB/255 → NCHW FP16`；
+- OPTG OM：`cotf_paramnet_256x144_lcdp_best_e0167_fp16_aipp.om`。
+
+板端通过 OS08A20 → ISP → VPSS chn2 256x144 NV21 → AIPP → ACL/NNN 完成 30/30 次推理：
+
+| 指标 | 结果 |
+| --- | ---: |
+| OM 输入 | `55,296 B`（256×144×1.5 NV21） |
+| OM 输出 | `29,478 B`（14,739 FP16） |
+| NPU exec 平均 | `1.13 ms` |
+| 首轮冷启动最大 | `3.84 ms` |
+| 稳态样本 | 约 `0.93–1.07 ms` |
+
+该结果确认正式权重、AIPP 和 chn2 输入链可在板端运行；尚未确认的是 NN 输出经
+Gamma/DRC/CLUT 安全参数桥后的动态闭环画质，而不是模型加载或推理可行性。
 
 纯计算基准（AMP，预热后 50 step；不含磁盘解码、验证和 checkpoint）：
 
@@ -162,7 +208,8 @@ elapsed=12m30s eta=3h15m20s finish=2026-06-20 02:35:10 CST
   欠曝、过曝、混合高动态范围和正常曝光样本；只用低光数据会把网络训练成单向提亮器。
 - 先用公开成对曝光数据预训练，再用 OS08A20 同机位采集做微调。板端数据至少保留 20–50 张独立
   验证图，且不能与训练 crop 泄漏。
-- 训练后先做主机 PSNR/SSIM、LUT 单调性和高光裁剪检查，再转 FP16 OM。最后用 VPSS chn2 的
-  `256x144 NV21 + AIPP` 上板，比较 checkpoint→ONNX→OM 的输出容差。
+- 正式权重和 `256x144 NV21 + AIPP` 已上板；下一步补 checkpoint→ONNX→OM 的同输入数值容差、
+  LUT 单调性、高光裁剪和 20–50 张代表性 OS08A20 画质检查。
 - 当前 `socchina_app` 的生产控制线程仍使用规则判决→Gamma。把 NN 真正接入生产路径还需完成：
-  chn2 取帧、AIPP 模型转换、NN 输出到 Gamma/DRC/CLUT 的安全桥，以及失败时回退到现有规则控制。
+  control worker 调用已验证的 chn2+AIPP 推理、NN 输出到 Gamma/DRC/CLUT 的安全桥，以及失败时
+  回退到现有规则控制。

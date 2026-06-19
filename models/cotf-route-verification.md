@@ -1,6 +1,6 @@
 # CoTF 路线可行性验证 + 代码实现 —— NN 出 LUT + ISP 硬件施加
 
-> 状态：2026-06-19。**分环验证、硬件施加、Gamma 生产链与 ACL 推理均已完成**；
+> 状态：2026-06-20。**分环验证、硬件施加、Gamma 生产链与正式权重 ACL 推理均已完成**；
 > **板端相机链联机点亮已完成**——相机→ISP+CLUT→HDMI 实时整链 **30fps 跑通、点屏 toggle CLUT 开/关、
 > 零 NPU**（见下「板端联机点亮（2026-06-16）」）。回答 [architecture.md](../docs/architecture.md) §4.1 / §6
 > 中 CoTF 3D-LUT 能否落地的问题：
@@ -9,8 +9,8 @@
 > 四段式：目标 / 命令路径 / 结果 / 解读 / 板端联机点亮。
 >
 > **一句话进展**：CLUT 硬件施加端已 30fps 点亮，Gamma 原生色调生产链已 31.2fps 跑通；
-> CLUT 几何已由厂商文档确认（17³ 逻辑节点 + 填充存储）。param-net 训练闭环已具备，剩正式权重、
-> chn2+AIPP、NN→ISP 安全参数桥和动态闭环画质验证。
+> CLUT 几何已由厂商文档确认（17³ 逻辑节点 + 填充存储）。LCDP 正式权重与
+> chn2 256x144+AIPP 已上板 30/30；剩 NN→ISP 安全参数桥、生产接线和动态闭环画质验证。
 
 ## 目标
 
@@ -67,9 +67,9 @@ python -m pytest models/tests/test_cotf_lut_pack.py -q      # 打包桥单测（
 - 板端实时演示：[`board/tests/test_cotf_live.c`](../board/tests/test_cotf_live.c)（相机→ISP+CLUT→HDMI 30fps +
   触摸 toggle + `--auto`/`--dumpdir`/`--probe`/`--tone`/`--lockexp`，2026-06-16）。
 - 生产主程序：`board/src/main.c`（`socchina_app`，显示线程 30fps + 低频控制线程→Gamma，SIGINT 优雅退出，2026-06-19）。
-- 板端 NPU 推理：`board/src/infer.c`（全 ACL `aclmdl*` 跑 param-net OM）+ `board/tests/test_infer.c`
-  （相机帧→NPU→LUT，**板端 exec ~5.6ms 实测**，2026-06-19）。历史 OM 用于结构/耗时验证；
-  正式训练权重及 256x144+AIPP 尚未上板。
+- 板端 NPU 推理：`board/src/infer.c`（全 ACL `aclmdl*` 跑 param-net OM）+ `board/tests/test_infer.c`。
+  2026-06-20 使用 LCDP best epoch 167 正式权重和 256x144 NV21+AIPP，完成
+  相机→VPSS chn2→NPU→14739 LUT 系数 30/30；exec 平均 `1.13ms`，首轮冷启动最大 `3.84ms`。
 - 部署/运行脚本：`scripts/deploy_board.sh` / `scripts/run_board.sh`。
 - 演示用 LUT 与可视化（主机）：[tools/cotf_make_demo_lut.py](tools/cotf_make_demo_lut.py)（tone-curve LUT 打包）、
   [tools/cotf_demo_apply.py](tools/cotf_demo_apply.py)（经同一桥把 LUT 施加到真实图像，输出 input/校正/gt 对比图与 PSNR）。

@@ -27,10 +27,10 @@
 | 路线 | 状态 | 板端结论 |
 | --- | --- | --- |
 | ExpoCurveNet 整图输出 | 已完成结构和性能去风险，尚未认真训练 | `768x432 shared niter8 ≈27.2ms`；`1024x576` 不满足 33ms |
-| CoTF-inspired 参数网络 + ISP 参数块 | 训练/导出/推理闭环已具备；硬件施加端已联机 | 缩略图输入约 `0.8ms`；主推全分辨率实时路线 |
+| CoTF-inspired 参数网络 + ISP 参数块 | LCDP 正式训练、256x144+AIPP 推理和硬件施加端已验证 | 正式 OM 30/30，NPU exec 平均 `1.13ms`；主推全分辨率实时路线 |
 | Zero-DCE Lite / SCI / MSEC | 性能对照 | 用于证明整图输出的全分辨率访存瓶颈，不作为当前主线 |
 
-硬件施加端和 ACL 推理已分别在板端验证；当前开放项是使用正式数据训练、把 VPSS chn2+AIPP
+硬件施加端、正式训练权重和 VPSS chn2+AIPP ACL 推理已分别在板端验证；当前开放项是把推理
 接入生产控制线程，以及按 Gamma/DRC/CLUT 的用途建立安全参数桥。详细状态见
 [`cotf-route-verification.md`](cotf-route-verification.md) 与
 [`param-net-training.md`](param-net-training.md)。

@@ -10,7 +10,7 @@
 
 | 级别 | 路线 | 一句话 | 实时性 | 方向 | 状态 |
 | --- | --- | --- | --- | --- | --- |
-| **主推（开发中）** | CoTF-inspired 参数网 + ISP 参数块 | NN 低频出参数，ISP Gamma/DRC/CLUT 全分辨率施加 | ✅ 1024x576 可（NN 移出每帧路径） | 双向 | 规则→Gamma 整链已跑通；训练闭环完成，正式权重/接线待完成 |
+| **主推（开发中）** | CoTF-inspired 参数网 + ISP 参数块 | NN 低频出参数，ISP Gamma/DRC/CLUT 全分辨率施加 | ✅ 1024x576 可（NN 移出每帧路径） | 双向 | 正式权重与 256x144+AIPP 已上板；生产安全桥待完成 |
 | **备选（已验证可行）** | 曲线网络 ExpoCurveNet（整图增强） | 单段全分辨率 NN 直接出增强帧 | 🟡 仅 768x432（27ms，NPU 每帧满载） | 双向 | 结构去风险完，可直接训练 |
 | **兜底** | Zero-DCE（Lite） | 探索层已板端实测的单向低光增强 | ✅ 640x320≈30ms | **单向（仅提亮）** | 已有 OM 与实测基线，需场景门控 |
 
@@ -33,10 +33,12 @@
 - ExpoCurveNet、Zero-DCE Lite、SCI、MSEC 等“输出整图”模型均受到全分辨率访存限制，参数量小不等于快。
 - ExpoCurveNet 的实时备选为 `768x432 + shared niter8`，单次 OM 执行约 `27.2ms`；该数字不含整链开销。
 - `1024x576` 整图输出路线无法满足 33ms 预算，不再作为 Config-R 主线。
-- CoTF 参数网络使用 `256x144` 缩略图时约 `0.8ms`，输出 LUT 后由 ISP CLUT 对全分辨率帧施加。
+- CoTF 参数网络正式 LCDP OM 使用 `256x144` VPSS chn2 NV21+AIPP 输入，板端 30/30 成功，
+  NPU exec 平均 `1.13ms`（首轮冷启动最大 `3.84ms`）。
 - CLUT/Gamma 硬件施加、热刷新、ACL 推理和 30fps 主链已分别验证；CLUT 为 17³ 逻辑节点加填充存储。
-- param-net 训练、YAML 配置、ETA、完整 epoch 边界断点恢复和 checkpoint→ONNX 导出已实现；
-  正式数据训练、chn2+AIPP 与生产安全参数桥尚未完成。
+- param-net 已用 LCDP 的 1415/100/218 对完成 200 epoch 正式训练；best epoch 167，
+  val PSNR `19.7247dB`、独立 test PSNR `20.4813dB`（输入基线 `14.0203dB`）。
+- checkpoint→ONNX→FP16+AIPP OM→板端相机帧推理链已完成；生产安全参数桥尚未完成。
 
 ## 解读
 
@@ -82,9 +84,8 @@ Config-R 主线应采用“低频参数网络 + ISP 参数块每帧施加”。�
 
 ## 下一步
 
-1. 完成 LCDP 数据准备，按推荐配置正式训练 param-net，并保留独立验证集。
-2. 为 256x144 NV21 生成 AIPP OM，接入 VPSS chn2 与 control worker。
-3. 实现 NN→Gamma/DRC/CLUT 安全参数桥；失败时保留旧参数并回退规则控制。
-4. 测量动态刷新事务 p95、闭环稳定性和现场 flicker。
-5. 联调 ISP 局部块（LDCI/DRC/SHARPEN/Dither）并用 20–50 张代表性相机帧做画质评估。
-6. 余量 NPU 上感知→控制最小验证（场景分类/人脸测光 → `control.c`）。
+1. 实现 NN→Gamma/DRC/CLUT 安全参数桥；失败时保留旧参数并回退规则控制。
+2. 把已验证的 256x144 chn2+AIPP 推理接入 control worker。
+3. 测量动态刷新事务 p95、闭环稳定性和现场 flicker。
+4. 联调 ISP 局部块（LDCI/DRC/SHARPEN/Dither）并用 20–50 张代表性相机帧做画质评估。
+5. 余量 NPU 上感知→控制最小验证（场景分类/人脸测光 → `control.c`）。

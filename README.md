@@ -19,8 +19,9 @@ VPSS 缩略图 -> AIPP -> CoTF-inspired param-net -> 安全参数桥 -> ISP Gamm
 ISP AE 统计 -------------------------------------> 场景判决与刷新控制
 ```
 
-当前生产程序已用规则判决驱动 ISP Gamma 在板端 30fps 跑通；param-net 的训练/配置/导出闭环已完成，
-但正式权重、VPSS chn2+AIPP 接入和 NN→ISP 安全参数桥仍待完成。
+当前生产程序已用规则判决驱动 ISP Gamma 在板端 30fps 跑通；LCDP param-net 正式训练、
+256x144 VPSS chn2 + AIPP OM 和板端 NPU 推理已完成。当前仍待把 NN 输出经安全参数桥接入
+生产控制线程，并完成动态闭环画质验收。
 
 完整数据通路与设计依据见 [docs/architecture.md](docs/architecture.md)。
 

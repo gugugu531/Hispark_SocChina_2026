@@ -65,7 +65,7 @@ ISP 参数块位于公共图像链内，因此同一 ISP 输出天然是“已�
 > Image-Adaptive-3DLUT / SepLUT），并把施加卸给 ISP 硬件。官方 CoTF 的命名贡献——协同变换、自适应采样、注意力
 > 融合——因落在 NNN 红名单已**全部丢弃**，故画质 ≈ 全局 3D-LUT 级，**不等于官方 CoTF**。对照详见
 > [../models/cotf-route-verification.md](../models/cotf-route-verification.md) 与 [model-route-summary.md](model-route-summary.md)。
-> 硬件施加和 ACL 推理已分别联机；训练闭环已完成，正式权重与生产接线待完成。
+> 硬件施加、LCDP 正式权重和 256x144+AIPP ACL 推理已分别联机；生产安全参数桥与控制线程接线待完成。
 
 横评 5 个架构后确认，「输出整图」的模型在 1024x576 都撞**全分辨率访存的像素线性地板**（与参数量无关）。两条路线：
 

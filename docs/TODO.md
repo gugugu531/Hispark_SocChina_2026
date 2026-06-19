@@ -1,9 +1,9 @@
 # TODO — 未完成部分与开发规划
 
-> 状态快照日期：2026-06-19。阶段 A/B 已完成，硬件施加端与规则控制→Gamma 生产整链已板端
+> 状态快照日期：2026-06-20。阶段 A/B 已完成，硬件施加端与规则控制→Gamma 生产整链已板端
 > 30fps 跑通；CLUT 几何已由厂商文档确认（17³ 逻辑节点 + 18 填充存储）。param-net 的训练、
-> 推荐 YAML、ETA/断点恢复和 checkpoint→ONNX 已实现。当前主线剩余：正式数据训练、VPSS chn2+AIPP、
-> NN→Gamma/DRC/CLUT 安全参数桥、动态闭环画质验证和 RTSP。
+> 推荐 YAML、ETA/断点恢复、LCDP 正式权重和 256x144+AIPP 板端推理已完成。当前主线剩余：
+> NN→Gamma/DRC/CLUT 安全参数桥、生产 control worker 接线、动态闭环画质验证和 RTSP。
 > 数据通路与模块定义见 [architecture.md](architecture.md)；规范见 [development-guide.md](development-guide.md)。
 > 阶段 C 的接口与协作契约见 [data-path-interface-design.md](data-path-interface-design.md)。
 
@@ -25,9 +25,9 @@
 | --- | --- | --- | --- |
 | 1 采集 | `capture.c` | ✅ 已完成 | linear 与 WDR 2to1 均板端 30fps 实测；运行时帧率/镜像/翻转可调 |
 | 2–4 ISP | `isp.c` | ✅ 基本完成 | Gamma/CLUT 热刷新已板端联机；CLUT 17³+填充几何已厘清。余：DRC/局部块画质标定和动态 NN 参数安全写回 |
-| 5 分发缩放 | `vpss.c` | ✅ 已完成 | chn0 1024x600 已实测；接口已固定 chn1 1024x576、chn2 256x144，待整链启用 |
-| 6 预处理 | （融入 OM 的 AIPP） | 🟡 模型侧已验证 | 配置和开销已验证；待 `infer.c` 对接 chn2 NV21 |
-| 7 推理 | `infer.c` | ✅ ACL 实现+板端验证 | 1024x576 结构模型板端 30/30 OK，exec 平均 5.61ms；余：256x144+AIPP、正式训练权重和 p95/重复性验收 |
+| 5 分发缩放 | `vpss.c` | ✅ 已完成 | chn0 1024x600 已实测；chn2 256x144 已在正式 param-net 推理冒烟中启用；chn1 留给 RTSP |
+| 6 预处理 | （融入 OM 的 AIPP） | ✅ 板端验证 | `aipp_nv21_256x144.cfg` 已随正式 OM 上板，输入 55296B NV21，30/30 成功 |
+| 7 推理 | `infer.c` | ✅ ACL 实现+板端验证 | LCDP best epoch 167 正式 OM，chn2+AIPP 30/30，exec 平均 1.13ms、冷启动最大 3.84ms；余：生产接线与 p95 长测 |
 | 8 参数桥 | `lut_bridge.c` | 🟡 接口已固定 | CLUT 几何已厘清；待实现 NN→Gamma/DRC/CLUT clamp、格式转换、失败保旧参数和主机单测 |
 | 9 后处理/合成 | `postproc.c` / `compose.c` | ⏸ 备选路线 | 仅整图 ExpoCurveNet 分屏演示需要，非 CoTF 主路径依赖 |
 | 10a 显示 | `display.c` | ✅ 已完成 | 板端冒烟 PASS，启动杂线已修（黑场预帧）；flicker 观感需现场目视确认 |
@@ -41,13 +41,14 @@
 - ✅ 曲线预测网络实现（2026-06-14，`models/networks/expo_curve.py`，参数化 niter/filters/down/shared_curve，
   仅绿名单算子，pytest 11 过）+ 导出 ONNX（NCHW、opset13、单输出、无 Resize）+ ATC FP16 OM + 算子探测
   （干净落 AICore，无 AICPU/Cast）+ **板端实测耗时**（见 `models/expo-curve-network.md`）。
-- ✅ AIPP 配置（`models/configs/aipp_nv21_1024x576.cfg`，NV21/rbuv_swap//255）+ ATC 转 FP16 OM；AIPP 开销实测 ≈0ms。
+- ✅ AIPP 配置（`aipp_nv21_1024x576.cfg` 与 `aipp_nv21_256x144.cfg`，NV21/rbuv_swap//255）
+  + ATC 转 FP16 OM；256x144 配置已随正式权重板端验证。
 - 🟡 **结论**：1024x576 全分辨率超 33ms（niter8=94.9ms，瓶颈是全分辨率访存）；实时档应取 `768x432+共享曲线`
   （27ms）或 `640x360`。横评 Zero-DCE Lite/SCI/MSEC/CoTF 后，**唯一能在 1024x576 真实时的是 CoTF 路线**
   （NN 出 LUT ~5ms + ISP 硬件施加，见 `models/cotf-route-verification.md`）。
-- 🟡 param-net 训练闭环已实现（成对数据、可微 3D-LUT、恒等初始化、YAML 推荐配置、ETA、完整 epoch
-  边界断点恢复、checkpoint→ONNX，模型测试 27 项通过，见 `models/param-net-training.md`）；
-  LCDP 正在准备，待正式训练/画质验证。Config-Q
+- ✅ param-net 已用 LCDP 1415/100/218 对完成 200 epoch 正式训练；best epoch 167，
+  val/test PSNR 为 19.7247/20.4813dB，输入 test 基线 14.0203dB。checkpoint→FP16 ONNX→
+  256x144+AIPP OM→板端 30/30 推理完成，见 `models/param-net-training.md`。Config-Q
   （高画质 1024x640 级）仍未产出。
 
 ### 2.3 脚本与工程
