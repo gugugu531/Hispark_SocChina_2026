@@ -17,6 +17,8 @@ from models.trainers.cotf_paramnet import (
     compute_loss,
     discover_pairs,
     format_duration,
+    load_config_defaults,
+    parse_args,
     restore_rng_state,
 )
 
@@ -81,3 +83,30 @@ def test_progress_estimate_and_duration_format():
     assert remaining >= 30.0
     assert format_duration(3661) == "1h01m01s"
     assert format_duration(math.inf) == "--"
+
+
+def test_yaml_config_and_cli_override(tmp_path):
+    config = tmp_path / "train.yaml"
+    config.write_text(
+        "epochs: 200\nbatch_size: 8\namp: true\ntrain_input: from-config\n"
+        "train_target: target-config\n",
+        encoding="utf-8",
+    )
+    args = parse_args(["--config", str(config), "--batch-size", "4"])
+    assert args.epochs == 200
+    assert args.batch_size == 4
+    assert args.amp is True
+    assert args.train_input == "from-config"
+    assert args.config == str(config)
+
+
+def test_yaml_config_rejects_unknown_keys(tmp_path):
+    config = tmp_path / "bad.yaml"
+    config.write_text("epochz: 200\n", encoding="utf-8")
+    parser_args = ["--config", str(config)]
+    try:
+        parse_args(parser_args)
+    except ValueError as error:
+        assert "epochz" in str(error)
+    else:
+        raise AssertionError("unknown config key must fail")

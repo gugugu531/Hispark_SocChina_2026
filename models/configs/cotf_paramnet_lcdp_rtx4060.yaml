@@ -1,0 +1,51 @@
+# CoTF-inspired param-net：LCDP 正式首训建议配置
+#
+# 目标平台：RTX 4060 Laptop 8 GB（本机实测 batch=8/crop=512 约 14.6 ms/step，
+# 峰值训练张量显存约 331 MiB；实际总显存还包含 CUDA runtime 和 DataLoader）。
+# 数据路径保持为空，运行时通过 CLI 传入，避免写死个人目录：
+#   python -m models.trainers.cotf_paramnet \
+#     --config models/configs/cotf_paramnet_lcdp_rtx4060.yaml \
+#     --train-input <LCDP_TRAIN_INPUT> --train-target <LCDP_TRAIN_TARGET> \
+#     --val-input <LCDP_VAL_INPUT> --val-target <LCDP_VAL_TARGET>
+
+# 数据与输出
+train_input: null
+train_target: null
+val_input: null
+val_target: null
+output_dir: models/weights/cotf_paramnet_lcdp_rtx4060
+
+# 训练周期
+# LCDP 解压后应先核对实际 pair 数；200 epoch 是首轮建议值，以 val PSNR/视觉结果选择 best.pt。
+epochs: 200
+batch_size: 8
+crop_size: 512
+workers: 6
+seed: 1024
+amp: true
+
+# 部署网络结构：必须与 256x144 VPSS chn2、17³ 输出和现有 infer.c 保持一致。
+thumb_width: 256
+thumb_height: 144
+lut_dim: 17
+channels: 32
+down: 8
+
+# 优化器与余弦退火
+# 相比官方完整 CoTF 的 4e-4，轻量直出 14739 系数的 head 用 2e-4 更保守。
+lr: 0.0002
+weight_decay: 0.000001
+
+# 损失权重
+# pixel 为主目标；gradient 保边缘；smooth 抑制 LUT 抖动；monotonic 防颜色反转。
+# 单调项从代码默认 10 降为 1，避免过强约束压制颜色/曝光拟合。
+pixel_weight: 1.0
+gradient_weight: 0.2
+smooth_weight: 0.0001
+monotonic_weight: 1.0
+
+# 日志与 checkpoint
+log_every: 50
+save_every: 10
+resume: null
+device: cuda

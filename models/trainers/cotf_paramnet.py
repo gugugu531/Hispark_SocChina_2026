@@ -25,6 +25,7 @@ import cv2
 import numpy as np
 import torch
 import torch.nn.functional as F
+import yaml
 from torch import nn
 from torch.utils.data import DataLoader, Dataset
 
@@ -272,10 +273,11 @@ def save_checkpoint(path: Path, model: nn.Module, optimizer: torch.optim.Optimiz
     }, path)
 
 
-def parse_args() -> argparse.Namespace:
+def build_arg_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--train-input", required=True)
-    parser.add_argument("--train-target", required=True)
+    parser.add_argument("--config", help="YAML 训练配置；显式命令行参数优先于配置文件")
+    parser.add_argument("--train-input")
+    parser.add_argument("--train-target")
     parser.add_argument("--val-input")
     parser.add_argument("--val-target")
     parser.add_argument("--output-dir", default="models/weights/cotf_paramnet_train")
@@ -301,11 +303,38 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--gradient-weight", type=float, default=0.2)
     parser.add_argument("--smooth-weight", type=float, default=1e-4)
     parser.add_argument("--monotonic-weight", type=float, default=10.0)
-    return parser.parse_args()
+    return parser
+
+
+def load_config_defaults(path: str, parser: argparse.ArgumentParser) -> dict[str, Any]:
+    """读取与 argparse dest 同名的扁平 YAML 配置，并拒绝静默拼错的键。"""
+    with open(path, encoding="utf-8") as file:
+        payload = yaml.safe_load(file) or {}
+    if not isinstance(payload, dict):
+        raise ValueError(f"config root must be a mapping: {path}")
+    normalized = {str(key).replace("-", "_"): value for key, value in payload.items()}
+    allowed = {action.dest for action in parser._actions if action.dest != "help"}
+    unknown = sorted(set(normalized) - allowed)
+    if unknown:
+        raise ValueError(f"unknown config keys in {path}: {', '.join(unknown)}")
+    normalized["config"] = path
+    return normalized
+
+
+def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
+    config_parser = argparse.ArgumentParser(add_help=False)
+    config_parser.add_argument("--config")
+    known, _ = config_parser.parse_known_args(argv)
+    parser = build_arg_parser()
+    if known.config:
+        parser.set_defaults(**load_config_defaults(known.config, parser))
+    return parser.parse_args(argv)
 
 
 def main() -> int:
     args = parse_args()
+    if not args.train_input or not args.train_target:
+        raise ValueError("--train-input and --train-target are required (CLI or YAML config)")
     if bool(args.val_input) != bool(args.val_target):
         raise ValueError("--val-input and --val-target must be provided together")
     seed_everything(args.seed)

@@ -91,6 +91,7 @@ python -m models.exporters.cotf_onnx --height 144 --width 256
 
 # CoTF-inspired param-net 成对图像训练
 python -m models.trainers.cotf_paramnet \
+  --config models/configs/cotf_paramnet_lcdp_rtx4060.yaml \
   --train-input /path/to/train/input --train-target /path/to/train/target \
   --val-input /path/to/val/input --val-target /path/to/val/target
 
@@ -116,7 +117,8 @@ python -m models.tools.cotf_make_lut
 训练细节、数据约定、耗时评估与部署边界见
 [`param-net-training.md`](param-net-training.md)。
 
-当前测试基线为 25 项：ExpoCurveNet 11 项，CoTF LUT 打包 9 项，param-net 训练/进度/恢复 5 项。
+当前测试基线为 27 项：ExpoCurveNet 11 项，CoTF LUT 打包 9 项，param-net
+训练/配置/进度/恢复 7 项。
 
 ## 生成物
 

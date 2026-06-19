@@ -33,8 +33,9 @@ dataset/
 同一 pair 必须是对齐内容，不能只凭文件名把不同视角或不同 resize 策略的图片配在一起。
 
 ```sh
-# 训练；默认 100 epoch、batch 4、384 crop、AMP、余弦学习率
+# LCDP + RTX 4060 建议配置；路径由 CLI 提供
 python -m models.trainers.cotf_paramnet \
+  --config models/configs/cotf_paramnet_lcdp_rtx4060.yaml \
   --train-input /path/to/train/input \
   --train-target /path/to/train/target \
   --val-input /path/to/val/input \
@@ -59,6 +60,26 @@ python -m models.tools.cotf_make_lut \
   --input /path/to/frame.png \
   --thumb-h 144 --thumb-w 256
 ```
+
+配置文件采用与命令行参数同名的扁平 YAML 键。命令行显式参数优先于 YAML；未知配置键会直接报错，
+避免拼写错误被静默忽略。推荐首训配置见
+[`configs/cotf_paramnet_lcdp_rtx4060.yaml`](configs/cotf_paramnet_lcdp_rtx4060.yaml)：
+
+| 参数 | 建议值 | 理由 |
+| --- | ---: | --- |
+| `epochs` | 200 | 先覆盖充足迭代，以验证集选择 `best.pt`；解压后按实际 pair 数复核总 step |
+| `batch_size` | 8 | RTX 4060 实测余量充足，兼顾稳定梯度和数据吞吐 |
+| `crop_size` | 512 | 全局 LUT 需要同时观察亮暗区域；比 384 crop 更不易丢失混合曝光上下文 |
+| `lr` | `2e-4` | 比官方完整 CoTF 的 `4e-4` 更保守，适合直接输出 14739 系数的轻量 head |
+| `weight_decay` | `1e-6` | 轻微抑制 head 过拟合，不明显改变恒等 LUT 起点 |
+| `gradient_weight` | `0.2` | 保护边缘和局部对比，但不盖过像素曝光目标 |
+| `smooth_weight` | `1e-4` | 抑制相邻 LUT 节点抖动和 banding |
+| `monotonic_weight` | `1.0` | 防颜色反转；比代码默认 10 更温和，保留拟合空间 |
+| `workers` | 6 | 适配 8 核移动 CPU，给系统和下载/解码留余量 |
+| `AMP` | 开启 | 已验证稳定，降低显存并提高吞吐 |
+
+本机补充实测：`batch=8,crop=512` 的纯计算约 `14.6 ms/step`、`548 img/s`，峰值训练张量显存约
+`331 MiB`。真实训练仍会受 JPEG/PNG 解码和验证集读取影响。
 
 训练损失为：
 
@@ -97,7 +118,7 @@ elapsed=12m30s eta=3h15m20s finish=2026-06-20 02:35:10 CST
 
 功能验证：
 
-- `python -m pytest models/tests -q`：`25 passed`。
+- `python -m pytest models/tests -q`：`27 passed`。
 - 单 pair、`crop=256`、2 epoch GPU 冒烟训练成功，`best.pt/last.pt` 可正常恢复和导出。
 - checkpoint 导出的 FP16 ONNX 算子为
   `AveragePool/Conv/GlobalAveragePool/Clip/Constant`，无 `Resize/GridSample/Cast` 等 ONNX 红名单；
