@@ -45,6 +45,7 @@ python -m models.trainers.cotf_paramnet \
 python -m models.trainers.cotf_paramnet \
   --train-input /path/to/train/input \
   --train-target /path/to/train/target \
+  --epochs 100 \
   --resume models/weights/cotf_paramnet_train/last.pt
 
 # 导出训练权重；结构参数须与训练时一致
@@ -66,6 +67,25 @@ python -m models.tools.cotf_make_lut \
 - LUT 邻域平滑正则；
 - LUT 单调性违例惩罚，降低颜色反转和 banding 风险。
 
+### 训练进度与断点恢复
+
+默认每 20 个 batch 输出一次：
+
+```text
+epoch=0007/0100 batch=00020/02500 overall=6.01% loss=... \
+elapsed=12m30s eta=3h15m20s finish=2026-06-20 02:35:10 CST
+```
+
+- `--epochs` 表示训练结束时的**总轮数**，不是“再训练多少轮”。
+- `--log-every N` 控制 batch 进度输出频率；设为 `0` 时只输出每轮汇总。
+- ETA 依据当前运行和 checkpoint 中累计的实际耗时估算，包含已经发生的验证开销；数据刚开始加载时
+  波动较大，跑过若干 batch/epoch 后才稳定。
+- 每轮结束写 `last.pt`；指标改善时写 `best.pt`；`--save-every` 控制周期快照。
+- checkpoint 保存并恢复模型、optimizer、scheduler、AMP GradScaler、Python/NumPy/PyTorch/CUDA
+  RNG、历史最佳指标、已完成 epoch 和累计训练时间。
+- 恢复命令应保持模型结构、数据、batch size 和总 epoch 配置一致。恢复发生在 epoch 边界；
+  当前不支持从一个 epoch 的中间 batch 继续。
+
 ## 结果
 
 本机验证环境：
@@ -77,7 +97,7 @@ python -m models.tools.cotf_make_lut \
 
 功能验证：
 
-- `python -m pytest models/tests -q`：`23 passed`。
+- `python -m pytest models/tests -q`：`25 passed`。
 - 单 pair、`crop=256`、2 epoch GPU 冒烟训练成功，`best.pt/last.pt` 可正常恢复和导出。
 - checkpoint 导出的 FP16 ONNX 算子为
   `AveragePool/Conv/GlobalAveragePool/Clip/Constant`，无 `Resize/GridSample/Cast` 等 ONNX 红名单；

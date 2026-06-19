@@ -13,6 +13,7 @@ param-net，不包含 ``grid_sample``。
 from __future__ import annotations
 
 import argparse
+import datetime as dt
 import json
 import math
 import random
@@ -38,6 +39,80 @@ def seed_everything(seed: int) -> None:
     torch.manual_seed(seed)
     if torch.cuda.is_available():
         torch.cuda.manual_seed_all(seed)
+
+
+def capture_rng_state() -> dict[str, Any]:
+    """捕获断点续训需要的 Python/NumPy/PyTorch RNG 状态。"""
+    state: dict[str, Any] = {
+        "python": random.getstate(),
+        "numpy": np.random.get_state(),
+        "torch": torch.get_rng_state(),
+    }
+    if torch.cuda.is_available():
+        state["cuda"] = torch.cuda.get_rng_state_all()
+    return state
+
+
+def restore_rng_state(state: dict[str, Any] | None) -> None:
+    """恢复 checkpoint 中的 RNG 状态；兼容没有该字段的旧 checkpoint。"""
+    if not state:
+        return
+    random.setstate(state["python"])
+    np.random.set_state(state["numpy"])
+    torch_state = state["torch"]
+    if not isinstance(torch_state, torch.Tensor):
+        torch_state = torch.as_tensor(torch_state, dtype=torch.uint8)
+    torch.set_rng_state(torch_state.detach().to(device="cpu", dtype=torch.uint8))
+    if torch.cuda.is_available() and "cuda" in state:
+        cuda_states = []
+        for cuda_state in state["cuda"]:
+            if not isinstance(cuda_state, torch.Tensor):
+                cuda_state = torch.as_tensor(cuda_state, dtype=torch.uint8)
+            cuda_states.append(cuda_state.detach().to(device="cpu", dtype=torch.uint8))
+        torch.cuda.set_rng_state_all(cuda_states)
+
+
+def format_duration(seconds: float) -> str:
+    """把秒数格式化为紧凑 ETA。"""
+    if not math.isfinite(seconds) or seconds < 0:
+        return "--"
+    seconds = int(round(seconds))
+    hours, remainder = divmod(seconds, 3600)
+    minutes, secs = divmod(remainder, 60)
+    if hours:
+        return f"{hours:d}h{minutes:02d}m{secs:02d}s"
+    if minutes:
+        return f"{minutes:d}m{secs:02d}s"
+    return f"{secs:d}s"
+
+
+class TrainingProgress:
+    """按全局 batch 进度估算剩余时长和完成时间。"""
+
+    def __init__(self, total_steps: int, completed_steps: int = 0,
+                 previous_seconds: float = 0.0) -> None:
+        self.total_steps = total_steps
+        self.completed_steps = completed_steps
+        self.previous_seconds = previous_seconds
+        self.started = time.perf_counter()
+
+    @property
+    def elapsed_seconds(self) -> float:
+        return self.previous_seconds + (time.perf_counter() - self.started)
+
+    def estimate(self, completed_steps: int) -> tuple[float, float]:
+        elapsed = self.elapsed_seconds
+        if completed_steps <= 0:
+            return elapsed, math.inf
+        rate = elapsed / completed_steps
+        remaining = max(self.total_steps - completed_steps, 0) * rate
+        return elapsed, remaining
+
+    def finish_time(self, remaining_seconds: float) -> str:
+        if not math.isfinite(remaining_seconds):
+            return "--"
+        finish = dt.datetime.now().astimezone() + dt.timedelta(seconds=remaining_seconds)
+        return finish.strftime("%Y-%m-%d %H:%M:%S %Z")
 
 
 def discover_pairs(input_dir: Path, target_dir: Path) -> list[tuple[Path, Path]]:
@@ -179,17 +254,21 @@ def validate(model: nn.Module, lut_apply: LUTApply, loader: DataLoader,
 
 
 def save_checkpoint(path: Path, model: nn.Module, optimizer: torch.optim.Optimizer,
-                    scheduler: torch.optim.lr_scheduler.LRScheduler, epoch: int,
-                    args: argparse.Namespace, metrics: dict[str, float], best_score: float) -> None:
+                    scheduler: torch.optim.lr_scheduler.LRScheduler, scaler: Any, epoch: int,
+                    args: argparse.Namespace, metrics: dict[str, float], best_score: float,
+                    training_seconds: float) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     torch.save({
         "model": model.state_dict(),
         "optimizer": optimizer.state_dict(),
         "scheduler": scheduler.state_dict(),
+        "scaler": scaler.state_dict(),
+        "rng_state": capture_rng_state(),
         "epoch": epoch,
         "args": vars(args),
         "metrics": metrics,
         "best_score": best_score,
+        "training_seconds": training_seconds,
     }, path)
 
 
@@ -216,6 +295,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--amp", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--resume")
     parser.add_argument("--save-every", type=int, default=10)
+    parser.add_argument("--log-every", type=int, default=20,
+                        help="每多少个训练 batch 输出一次进度；0 表示仅输出 epoch 汇总")
     parser.add_argument("--pixel-weight", type=float, default=1.0)
     parser.add_argument("--gradient-weight", type=float, default=0.2)
     parser.add_argument("--smooth-weight", type=float, default=1e-4)
@@ -256,14 +337,19 @@ def main() -> int:
         scaler = torch.cuda.amp.GradScaler(enabled=amp_enabled)
     start_epoch = 1
     best_score = -math.inf
+    previous_training_seconds = 0.0
     if args.resume:
         checkpoint = torch.load(args.resume, map_location=device, weights_only=False)
         model.load_state_dict(checkpoint["model"])
         optimizer.load_state_dict(checkpoint["optimizer"])
         if "scheduler" in checkpoint:
             scheduler.load_state_dict(checkpoint["scheduler"])
+        if "scaler" in checkpoint:
+            scaler.load_state_dict(checkpoint["scaler"])
         start_epoch = int(checkpoint["epoch"]) + 1
         best_score = float(checkpoint.get("best_score", -math.inf))
+        previous_training_seconds = float(checkpoint.get("training_seconds", 0.0))
+        restore_rng_state(checkpoint.get("rng_state"))
 
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -275,14 +361,23 @@ def main() -> int:
         "monotonic": args.monotonic_weight,
     }
     thumb_size = (args.thumb_height, args.thumb_width)
+    steps_per_epoch = len(train_loader)
+    total_steps = args.epochs * steps_per_epoch
+    completed_steps = (start_epoch - 1) * steps_per_epoch
+    progress = TrainingProgress(total_steps, completed_steps, previous_training_seconds)
     print(f"device={device} train_pairs={len(train_set)} val_pairs={len(val_set) if val_set else 0} "
-          f"params={sum(p.numel() for p in model.parameters()):,}")
+          f"params={sum(p.numel() for p in model.parameters()):,} "
+          f"epochs={start_epoch}-{args.epochs} batches_per_epoch={steps_per_epoch}")
+    if args.resume:
+        _, remaining = progress.estimate(completed_steps)
+        print(f"resume={args.resume} completed_epoch={start_epoch - 1} "
+              f"remaining={format_duration(remaining)} finish={progress.finish_time(remaining)}")
 
     for epoch in range(start_epoch, args.epochs + 1):
         started = time.perf_counter()
         running = {"loss": 0.0, "pixel": 0.0}
         seen = 0
-        for batch in train_loader:
+        for batch_index, batch in enumerate(train_loader, start=1):
             source = batch["input"].to(device, non_blocking=True)
             target = batch["target"].to(device, non_blocking=True)
             optimizer.zero_grad(set_to_none=True)
@@ -295,8 +390,25 @@ def main() -> int:
             running["loss"] += stats["loss"] * batch_size
             running["pixel"] += stats["pixel"] * batch_size
             seen += batch_size
+            completed_steps += 1
+            should_log = (args.log_every > 0 and
+                          (batch_index % args.log_every == 0 or batch_index == steps_per_epoch))
+            if should_log:
+                elapsed, remaining = progress.estimate(completed_steps)
+                overall = 100.0 * completed_steps / max(total_steps, 1)
+                print(
+                    f"epoch={epoch:04d}/{args.epochs:04d} "
+                    f"batch={batch_index:05d}/{steps_per_epoch:05d} "
+                    f"overall={overall:6.2f}% "
+                    f"loss={running['loss'] / seen:.6f} "
+                    f"elapsed={format_duration(elapsed)} "
+                    f"eta={format_duration(remaining)} "
+                    f"finish={progress.finish_time(remaining)}",
+                    flush=True,
+                )
         scheduler.step()
 
+        validation_started = time.perf_counter()
         metrics = {
             "train_loss": running["loss"] / seen,
             "train_pixel": running["pixel"] / seen,
@@ -304,21 +416,32 @@ def main() -> int:
             "lr": optimizer.param_groups[0]["lr"],
         }
         if val_loader:
+            print(f"epoch={epoch:04d}/{args.epochs:04d} validating batches={len(val_loader)}",
+                  flush=True)
             metrics.update({f"val_{k}": v for k, v in
                             validate(model, lut_apply, val_loader, device, thumb_size, weights).items()})
+        metrics["validation_seconds"] = time.perf_counter() - validation_started
         score = metrics.get("val_psnr", -metrics["train_loss"])
-        print(f"epoch={epoch:04d} " + " ".join(f"{k}={v:.6g}" for k, v in metrics.items()))
+        elapsed, remaining = progress.estimate(completed_steps)
+        print(
+            f"epoch={epoch:04d}/{args.epochs:04d} complete "
+            + " ".join(f"{key}={value:.6g}" for key, value in metrics.items())
+            + f" elapsed={format_duration(elapsed)} eta={format_duration(remaining)} "
+              f"finish={progress.finish_time(remaining)}",
+            flush=True,
+        )
 
         improved = score > best_score
         best_score = max(best_score, score)
-        save_checkpoint(output_dir / "last.pt", model, optimizer, scheduler, epoch, args, metrics,
-                        best_score)
+        training_seconds = progress.elapsed_seconds
+        save_checkpoint(output_dir / "last.pt", model, optimizer, scheduler, scaler, epoch, args,
+                        metrics, best_score, training_seconds)
         if epoch % args.save_every == 0:
             save_checkpoint(output_dir / f"epoch_{epoch:04d}.pt", model, optimizer, scheduler,
-                            epoch, args, metrics, best_score)
+                            scaler, epoch, args, metrics, best_score, training_seconds)
         if improved:
-            save_checkpoint(output_dir / "best.pt", model, optimizer, scheduler, epoch, args,
-                            metrics, best_score)
+            save_checkpoint(output_dir / "best.pt", model, optimizer, scheduler, scaler, epoch,
+                            args, metrics, best_score, training_seconds)
     return 0
 
 

@@ -94,6 +94,11 @@ python -m models.trainers.cotf_paramnet \
   --train-input /path/to/train/input --train-target /path/to/train/target \
   --val-input /path/to/val/input --val-target /path/to/val/target
 
+# 从 last.pt 继续到总计 100 epoch；默认每 20 batch 显示进度和 ETA
+python -m models.trainers.cotf_paramnet \
+  --train-input /path/to/train/input --train-target /path/to/train/target \
+  --epochs 100 --resume models/weights/cotf_paramnet_train/last.pt
+
 # 导出训练 checkpoint
 python -m models.exporters.cotf_onnx \
   --height 144 --width 256 \
@@ -111,7 +116,7 @@ python -m models.tools.cotf_make_lut
 训练细节、数据约定、耗时评估与部署边界见
 [`param-net-training.md`](param-net-training.md)。
 
-当前测试基线为 23 项：ExpoCurveNet 11 项，CoTF LUT 打包 9 项，param-net 训练闭环 3 项。
+当前测试基线为 25 项：ExpoCurveNet 11 项，CoTF LUT 打包 9 项，param-net 训练/进度/恢复 5 项。
 
 ## 生成物
 

@@ -2,12 +2,23 @@
 
 from __future__ import annotations
 
+import math
+import random
+
 import cv2
 import numpy as np
 import torch
 
 from models.networks.cotf import LUTApply, build_param_net
-from models.trainers.cotf_paramnet import PairedExposureDataset, compute_loss, discover_pairs
+from models.trainers.cotf_paramnet import (
+    PairedExposureDataset,
+    TrainingProgress,
+    capture_rng_state,
+    compute_loss,
+    discover_pairs,
+    format_duration,
+    restore_rng_state,
+)
 
 
 def test_untrained_paramnet_is_identity():
@@ -51,3 +62,22 @@ def test_paired_dataset_matches_relative_paths(tmp_path):
     sample = PairedExposureDataset(str(input_dir), str(target_dir), crop_size=8, training=False)[0]
     assert sample["input"].shape == (3, 8, 8)
     torch.testing.assert_close(sample["input"], sample["target"])
+
+
+def test_rng_state_round_trip():
+    state = capture_rng_state()
+    expected = (random.random(), np.random.rand(), torch.rand(1))
+    restore_rng_state(state)
+    actual = (random.random(), np.random.rand(), torch.rand(1))
+    assert actual[0] == expected[0]
+    assert actual[1] == expected[1]
+    torch.testing.assert_close(actual[2], expected[2])
+
+
+def test_progress_estimate_and_duration_format():
+    progress = TrainingProgress(total_steps=100, completed_steps=25, previous_seconds=10.0)
+    elapsed, remaining = progress.estimate(25)
+    assert elapsed >= 10.0
+    assert remaining >= 30.0
+    assert format_duration(3661) == "1h01m01s"
+    assert format_duration(math.inf) == "--"
