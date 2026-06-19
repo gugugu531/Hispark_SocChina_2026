@@ -46,7 +46,9 @@
 - 🟡 **结论**：1024x576 全分辨率超 33ms（niter8=94.9ms，瓶颈是全分辨率访存）；实时档应取 `768x432+共享曲线`
   （27ms）或 `640x360`。横评 Zero-DCE Lite/SCI/MSEC/CoTF 后，**唯一能在 1024x576 真实时的是 CoTF 路线**
   （NN 出 LUT ~5ms + ISP 硬件施加，见 `models/cotf-route-verification.md`）。
-- ❌ 认真训练（结构与耗时已解耦验证完，可投训练）；Config-Q（高画质 1024x640 级）产出。
+- 🟡 param-net 训练闭环已实现（成对数据、可微 3D-LUT、恒等初始化、正则、checkpoint、ONNX 导出，
+  见 `models/param-net-training.md`）；待准备正式双向曝光数据并完成认真训练/画质验证。Config-Q
+  （高画质 1024x640 级）仍未产出。
 
 ### 2.3 脚本与工程
 

@@ -27,11 +27,13 @@
 | 路线 | 状态 | 板端结论 |
 | --- | --- | --- |
 | ExpoCurveNet 整图输出 | 已完成结构和性能去风险，尚未认真训练 | `768x432 shared niter8 ≈27.2ms`；`1024x576` 不满足 33ms |
-| CoTF 参数网络 + ISP CLUT | 接口和离线链已验证，尚未相机联机点亮 | 缩略图输入约 `0.8ms`；主推全分辨率实时路线 |
+| CoTF-inspired 参数网络 + ISP 参数块 | 训练/导出/推理闭环已具备；硬件施加端已联机 | 缩略图输入约 `0.8ms`；主推全分辨率实时路线 |
 | Zero-DCE Lite / SCI / MSEC | 性能对照 | 用于证明整图输出的全分辨率访存瓶颈，不作为当前主线 |
 
-“CoTF 已验证”仅表示参数网络可生成输出、主机侧可打包 CLUT、板端 CLUT API 可编译链接。
-CLUT mesh 顺序、相机链加载、运行中热刷新和画质效果仍需板端实测。
+硬件施加端和 ACL 推理已分别在板端验证；当前开放项是使用正式数据训练、把 VPSS chn2+AIPP
+接入生产控制线程，以及按 Gamma/DRC/CLUT 的用途建立安全参数桥。详细状态见
+[`cotf-route-verification.md`](cotf-route-verification.md) 与
+[`param-net-training.md`](param-net-training.md)。
 
 ## 环境
 
@@ -87,11 +89,29 @@ python -m models.exporters.expo_curve_onnx \
 # CoTF 参数网络导出
 python -m models.exporters.cotf_onnx --height 144 --width 256
 
+# CoTF-inspired param-net 成对图像训练
+python -m models.trainers.cotf_paramnet \
+  --train-input /path/to/train/input --train-target /path/to/train/target \
+  --val-input /path/to/val/input --val-target /path/to/val/target
+
+# 导出训练 checkpoint
+python -m models.exporters.cotf_onnx \
+  --height 144 --width 256 \
+  --checkpoint models/weights/cotf_paramnet_train/best.pt
+
+# 用训练权重和一张场景图生成板端 CLUT 二进制
+python -m models.tools.cotf_make_lut \
+  --checkpoint models/weights/cotf_paramnet_train/best.pt \
+  --input /path/to/frame.png
+
 # 主机侧生成 CLUT 验证二进制
 python -m models.tools.cotf_make_lut
 ```
 
-当前测试基线为 20 项：ExpoCurveNet 11 项，CoTF LUT 打包 9 项。
+训练细节、数据约定、耗时评估与部署边界见
+[`param-net-training.md`](param-net-training.md)。
+
+当前测试基线为 23 项：ExpoCurveNet 11 项，CoTF LUT 打包 9 项，param-net 训练闭环 3 项。
 
 ## 生成物
 
