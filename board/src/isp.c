@@ -19,6 +19,9 @@
 #define ISP_CLIP_LOW_BIN  51
 #define ISP_CLIP_HIGH_BIN 973
 
+static ot_isp_gamma_attr g_gamma_default;
+static int g_gamma_cached = 0;
+
 int isp_set_antiflicker(int freq_hz)
 {
     ot_isp_exposure_attr exp_attr;
@@ -336,8 +339,6 @@ static float tone_map(float x, isp_tone_t tone, float s)
 /* 原生 Gamma 块色调校正：首次缓存默认 Gamma 作基线，把 tone 叠在其输出上写回 USER_DEFINE。 */
 int isp_gamma_apply_tone(isp_tone_t tone, float strength)
 {
-    static ot_isp_gamma_attr g_gamma_default;
-    static int g_gamma_cached = 0;
     ot_isp_gamma_attr attr;
     int i, base_valid;
     float s = (strength < 0.0f) ? 0.0f : (strength > 1.0f ? 1.0f : strength);
@@ -367,6 +368,69 @@ int isp_gamma_apply_tone(isp_tone_t tone, float strength)
     CHECK_RET_GOTO(ss_mpi_isp_set_gamma_attr(ISP_PIPE, &attr), fail);
     LOG_INFO("isp gamma tone applied: mode=%d strength=%.2f (base=%s)", tone, strength,
              base_valid ? "default-table" : "sRGB");
+    return 0;
+fail:
+    return -1;
+}
+
+int isp_gamma_apply_curve(const float *curve, unsigned nodes, float strength)
+{
+    ot_isp_gamma_attr attr;
+    float safe[64];
+    float s;
+    int i, base_valid;
+    unsigned j;
+
+    if (curve == TD_NULL || nodes < 2 || nodes > 64) {
+        LOG_ERR("isp_gamma_apply_curve: curve=%p nodes=%u", (const void *)curve, nodes);
+        return -1;
+    }
+    s = (strength < 0.0f) ? 0.0f : (strength > 1.0f ? 1.0f : strength);
+    memset(&attr, 0, sizeof(attr));
+    CHECK_RET_GOTO(ss_mpi_isp_get_gamma_attr(ISP_PIPE, &attr), fail);
+    if (!g_gamma_cached) {
+        g_gamma_default = attr;
+        g_gamma_cached = 1;
+    }
+    if (s == 0.0f) {
+        CHECK_RET_GOTO(ss_mpi_isp_set_gamma_attr(ISP_PIPE, &g_gamma_default), fail);
+        LOG_INFO("isp gamma curve -> bypass (restore default)");
+        return 0;
+    }
+
+    safe[0] = 0.0f;
+    for (j = 1; j + 1 < nodes; j++) {
+        float value = isfinite(curve[j]) ? curve[j] : safe[j - 1];
+        if (value < safe[j - 1]) value = safe[j - 1];
+        if (value > 1.0f) value = 1.0f;
+        safe[j] = value;
+    }
+    safe[nodes - 1] = 1.0f;
+
+    base_valid = (g_gamma_default.table[OT_ISP_GAMMA_NODE_NUM - 1] > g_gamma_default.table[0]);
+    attr = g_gamma_default;
+    for (i = 0; i < OT_ISP_GAMMA_NODE_NUM; i++) {
+        float x = (float)i / (float)(OT_ISP_GAMMA_NODE_NUM - 1);
+        float base = base_valid ? (float)g_gamma_default.table[i] / 4095.0f : powf(x, 1.0f / 2.2f);
+        float pos = base * (nodes - 1);
+        unsigned lo = (unsigned)pos;
+        float frac, mapped, mixed;
+        if (lo >= nodes - 1) {
+            lo = nodes - 2;
+            frac = 1.0f;
+        } else {
+            frac = pos - lo;
+        }
+        mapped = safe[lo] + frac * (safe[lo + 1] - safe[lo]);
+        mixed = base + s * (mapped - base);
+        if (mixed < 0.0f) mixed = 0.0f;
+        if (mixed > 1.0f) mixed = 1.0f;
+        attr.table[i] = (td_u16)(mixed * 4095.0f + 0.5f);
+    }
+    attr.enable = TD_TRUE;
+    attr.curve_type = OT_ISP_GAMMA_CURVE_USER_DEFINE;
+    CHECK_RET_GOTO(ss_mpi_isp_set_gamma_attr(ISP_PIPE, &attr), fail);
+    LOG_INFO("isp gamma model curve applied: nodes=%u strength=%.2f", nodes, s);
     return 0;
 fail:
     return -1;
@@ -469,6 +533,14 @@ int isp_clut_apply_tone(const unsigned int *base_lut, unsigned len, isp_tone_t t
 int isp_gamma_apply_tone(isp_tone_t tone, float strength)
 {
     (void)tone;
+    (void)strength;
+    return -1;
+}
+
+int isp_gamma_apply_curve(const float *curve, unsigned nodes, float strength)
+{
+    (void)curve;
+    (void)nodes;
     (void)strength;
     return -1;
 }

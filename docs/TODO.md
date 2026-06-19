@@ -28,7 +28,7 @@
 | 5 分发缩放 | `vpss.c` | ✅ 已完成 | chn0 1024x600 已实测；chn2 256x144 已在正式 param-net 推理冒烟中启用；chn1 留给 RTSP |
 | 6 预处理 | （融入 OM 的 AIPP） | ✅ 板端验证 | `aipp_nv21_256x144.cfg` 已随正式 OM 上板，输入 55296B NV21，30/30 成功 |
 | 7 推理 | `infer.c` | ✅ ACL 实现+板端验证 | LCDP best epoch 167 正式 OM，chn2+AIPP 30/30，exec 平均 1.13ms、冷启动最大 3.84ms；余：生产接线与 p95 长测 |
-| 8 参数桥 | `lut_bridge.c` | 🟡 接口已固定 | CLUT 几何已厘清；待实现 NN→Gamma/DRC/CLUT clamp、格式转换、失败保旧参数和主机单测 |
+| 8 参数桥 | `lut_bridge.c` / Gamma 灰轴预览 | 🟡 部分验证 | 正式模型灰轴→单调 Gamma 已持续预览；任意 RGB CLUT identity 门禁仍失败并出现伪色，bridge 不得用于生产 |
 | 9 后处理/合成 | `postproc.c` / `compose.c` | ⏸ 备选路线 | 仅整图 ExpoCurveNet 分屏演示需要，非 CoTF 主路径依赖 |
 | 10a 显示 | `display.c` | ✅ 已完成 | 板端冒烟 PASS，启动杂线已修（黑场预帧）；flicker 观感需现场目视确认 |
 | 10b 串流 | `stream.c` | 🟡 接口已固定 | 独占 chn1 的契约已定义；待 VENC H.264 + RTSP 实现（server 选型待定） |

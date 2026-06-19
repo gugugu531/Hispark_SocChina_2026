@@ -70,6 +70,9 @@ python -m pytest models/tests/test_cotf_lut_pack.py -q      # 打包桥单测（
 - 板端 NPU 推理：`board/src/infer.c`（全 ACL `aclmdl*` 跑 param-net OM）+ `board/tests/test_infer.c`。
   2026-06-20 使用 LCDP best epoch 167 正式权重和 256x144 NV21+AIPP，完成
   相机→VPSS chn2→NPU→14739 LUT 系数 30/30；exec 平均 `1.13ms`，首轮冷启动最大 `3.84ms`。
+- 持续预览：`board/tests/test_paramnet_live.c` 以约 1Hz 运行正式模型，从预测 LUT 灰轴提取单调
+  1D 曲线并以 25% 强度写 ISP Gamma；HDMI 主链约 30.2fps，触摸可切换模型/原图，退出恢复默认 Gamma。
+  任意 RGB CLUT 的 identity 门禁仍失败并出现伪色，故该预览明确不启用未经验证的 CLUT bridge。
 - 部署/运行脚本：`scripts/deploy_board.sh` / `scripts/run_board.sh`。
 - 演示用 LUT 与可视化（主机）：[tools/cotf_make_demo_lut.py](tools/cotf_make_demo_lut.py)（tone-curve LUT 打包）、
   [tools/cotf_demo_apply.py](tools/cotf_demo_apply.py)（经同一桥把 LUT 施加到真实图像，输出 input/校正/gt 对比图与 PSNR）。

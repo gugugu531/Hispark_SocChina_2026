@@ -170,6 +170,27 @@ elapsed=12m30s eta=3h15m20s finish=2026-06-20 02:35:10 CST
 该结果确认正式权重、AIPP 和 chn2 输入链可在板端运行；尚未确认的是 NN 输出经
 Gamma/DRC/CLUT 安全参数桥后的动态闭环画质，而不是模型加载或推理可行性。
 
+### 板端持续预览（2026-06-20）
+
+新增 `test_paramnet_live`，持续运行：
+
+```text
+OS08A20 → ISP(+模型 Gamma) → VPSS chn0 → HDMI
+                    └→ VPSS chn2 256x144 → AIPP → param-net
+                       → LUT 灰轴 → 单调/端点安全处理 → ISP Gamma
+```
+
+- 默认每 30 帧刷新一次，模型 NPU exec 稳态约 `1.04–1.14ms`；
+- 默认强度 `0.25`，把模型灰轴曲线叠到 ISP 上电默认 Gamma，避免突然出现激进画质；
+- 点击触摸屏在 `MODEL ON` 与默认 Gamma 原图之间切换；
+- SIGINT/SIGTERM、时限结束或错误退出都会恢复默认 Gamma 并逆序清理媒体链；
+- 15 秒板端冒烟为 453 帧、约 `30.2fps`，15/15 次更新成功、0 次失败。
+
+直接把训练 17³ LUT 写入 CLUT 的 identity 门禁**未通过**：修正为“17³ 逻辑节点 +
+17×18×18 边界复制填充”后，CLUT ON 抓帧仍出现明显亮度变化和伪色。因此正式持续预览不走
+任意 CLUT 写入；Python 原型继续保留“不得正式上板”的警告。当前 Gamma 灰轴路径只能展示
+模型学习到的全局色调，不等于完整 RGB 3D-LUT 效果。
+
 纯计算基准（AMP，预热后 50 step；不含磁盘解码、验证和 checkpoint）：
 
 | batch | crop | 每 step | 图像吞吐 | 峰值训练张量显存 |

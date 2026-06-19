@@ -77,4 +77,9 @@ int isp_clut_apply_tone(const unsigned int *base_lut, unsigned len, isp_tone_t t
  * 首次调用缓存默认 Gamma 作基线；tone=BYPASS 还原默认。R/G/B 共用同一 Gamma 表 ⇒ 等效全局色调。 */
 int isp_gamma_apply_tone(isp_tone_t tone, float strength);
 
+/* 把模型预测的归一化单调 1D 曲线叠到 ISP 默认 Gamma 输出域。
+ * curve 至少 2 个等距节点、值域 [0,1]；内部再次 clamp/单调化并固定 0/1 端点。
+ * strength=0 还原默认，1 完全采用模型曲线。 */
+int isp_gamma_apply_curve(const float *curve, unsigned nodes, float strength);
+
 #endif /* SOCCHINA_ISP_H */
