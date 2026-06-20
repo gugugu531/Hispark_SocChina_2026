@@ -20,8 +20,10 @@ ISP AE 统计 -------------------------------------> 场景判决与刷新控制
 ```
 
 当前生产程序已用规则判决驱动 ISP Gamma 在板端 30fps 跑通；LCDP param-net 正式训练、
-256x144 VPSS chn2 + AIPP OM 和板端 NPU 推理已完成。当前仍待把 NN 输出经安全参数桥接入
-生产控制线程，并完成动态闭环画质验收。
+256x144 VPSS chn2 + AIPP OM、板端 NPU 推理和 SS928 `17v2` C LUT bridge 已完成独立验证。
+完整 RGB CLUT 动态预览已跑通，但强光场景仍有 pre-CLUT 裁剪、端点保护不足和 post-CLUT
+反馈问题；当前长期展示仍使用稳定 Gamma 路径。下一步是把 NN/bridge 接入生产控制线程，
+补齐降级回退和动态闭环画质验收。
 
 完整数据通路与设计依据见 [docs/architecture.md](docs/architecture.md)。
 

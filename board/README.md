@@ -9,7 +9,7 @@ board/
 ├── CMakeLists.txt
 ├── cmake/toolchain-aarch64-mix210-linux.cmake   # 交叉编译 toolchain file
 ├── include/     # 头文件: pipeline / capture / vpss / isp / infer / lut_bridge / control / display / stream
-├── src/         # 源码, 按功能分文件: main.c / control.c / display.c / capture.c / vpss.c / isp.c / infer.c
+├── src/         # 源码, 按功能分文件: main / capture / vpss / isp / infer / lut_bridge / control / display
 └── tests/       # 单元/驱动测试: test_<名字>.c, 各编一个可执行 + ctest
 ```
 
@@ -111,7 +111,8 @@ dehaze / DRC / LDCI 增强块（关/自动/手动三态）。
 - **手动曝光坑**：四个增益分量必须全 MANUAL（数字增益固定 1x）——若 d_gain/isp_d_gain
   留 AUTO，AE 会用数字增益把亮度补回目标值，手动曝光形同虚设（板端实测踩坑）。
 - 曝光/全局色调首选 Gamma，动态范围走 DRC，颜色相关变换才使用 CLUT。CLUT 为 17³ 逻辑节点，
-  按 17×18×18 带填充存储；HNR/锐化/AWB 等纯 ISP 项留待专项调优。
+  SS928 `17v2` 存储按三轴奇偶拆为 8 个 bank，再以 4 路交织写入 5508 个 u32；
+  位域为 R 高/G 中/B 低。HNR/锐化/AWB 等纯 ISP 项留待专项调优。
 
 #### CoTF CLUT 实时演示 `test_cotf_live`（2026-06-16，板端联机点亮）
 
@@ -137,12 +138,23 @@ ssh "${BOARD}" '/root/socchina-2026/test_cotf_live 4 --probe'
 
 - **相机→ISP+CLUT→HDMI 实时整链 30.2fps 稳定**，CLUT 开关全程不掉帧、零 NPU；触摸点屏 toggle 连续 15+ 次稳定生效。
 - **AE 在 CLUT 之前测光**：开关 CLUT 时 AE 直方图 luma 不变（恒 ~53），故 CLUT 提亮不被 AE 抵消，toggle 一眼可辨。
-- 历史排查中，主机曾把 17×18×18 填充存储误当逻辑网格，导致 LUT（含恒等表）
-  直接灌 `isp_load_clut_lut` → **出彩色乱码 / 不透传**（轴序/遍历顺序与硬件不符，等效转置；10bit 位打包格式可信）。
+- 历史排查中，主机曾把 `17×18×18` 猜测为边界填充网格，导致 LUT（含恒等表）
+  直接灌 `isp_load_clut_lut` → **出彩色乱码 / 不透传**。
   当前演示用**几何无关绕过法**：`ss_mpi_isp_get_clut_coeff` 回读硬件默认表（格式/几何天然正确），在每个节点
-  **输出值**上叠 gamma 提亮 → 干净可见的全局曝光校正。后续厂商文档确认逻辑网格为 17³，
-  5508=17×18×18 是填充存储；曝光生产路径则改用原生 Gamma/DRC。详见
+  **输出值**上叠 gamma 提亮 → 干净可见的全局曝光校正。后续结合 ReleaseDoc、PQTools `17v2`
+  和板端 36 组 sweep，已确认 17³→8 bank→4 路交织、RGB 轴序和位序；C bridge 与 identity
+  门禁均已完成。曝光生产路径仍优先原生 Gamma/DRC。详见
   [`../models/cotf-route-verification.md`](../models/cotf-route-verification.md)「板端联机点亮（2026-06-16）」。
+
+#### param-net RGB CLUT 实验预览 `test_paramnet_live`（2026-06-20）
+
+正式 LCDP param-net 读取 VPSS chn2 `256x144 NV21`，经 AIPP/ACL 输出 17³ RGB LUT，再由
+`lut_bridge.c` 做有限值/范围检查、identity 强度混合和 17v2 打包后热刷 ISP CLUT。
+
+- 20 秒板端冒烟：604 帧、约 30.2fps、20/20 更新成功、0 失败；
+- `--dumpdir` 可一次性抓取 ON/OFF/ON NV21、原始模型 LUT 和 packed CLUT；
+- 强光取证发现 CLUT 前已有明显裁剪，RGB 路径还存在中间调压暗和 post-CLUT chn2 反馈；
+- 因此 RGB 预览目前仅作实验入口，长期展示继续使用稳定 Gamma 路径；程序退出会关闭 CLUT/HDMI。
 
 ### vpss — 多路硬件缩放分发（数据通路第 5 级）
 

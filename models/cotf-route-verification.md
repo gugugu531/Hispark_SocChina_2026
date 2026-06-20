@@ -115,7 +115,7 @@ NN 只预测**全局 LUT**，输入不必全分辨率——喂缩略图即可，
    | 层 | 文件 | 状态 |
    | --- | --- | --- |
    | NN（出 LUT） | `networks/cotf.py` / `exporters/cotf_onnx.py` | ✅ 导出干净、板端 ~1–5ms |
-   | NN→硬件桥 | `tools/cotf_lut_pack.py` / `tools/cotf_make_lut.py` | ✅ 可跑、9 单测过 |
+   | NN→硬件桥 | `tools/cotf_lut_pack.py` / `tools/cotf_make_lut.py` | ✅ 17v2 pack/unpack、10 单测过 |
    | 板端 CLUT API | `isp.c`/`isp.h`：`isp_set_clut` / `isp_load_clut_lut` | ✅ 编译+链接验证 |
    | 控制策略 | `control.c`/`control.h`：`control_should_refresh_lut`（限流/迟滞，把 NN 移出每帧路径） | ✅ 纯逻辑、主机单测过 |
 

@@ -255,8 +255,8 @@ pre/post-CLUT 控制输入隔离。
   欠曝、过曝、混合高动态范围和正常曝光样本；只用低光数据会把网络训练成单向提亮器。
 - 先用公开成对曝光数据预训练，再用 OS08A20 同机位采集做微调。板端数据至少保留 20–50 张独立
   验证图，且不能与训练 crop 泄漏。
-- 正式权重和 `256x144 NV21 + AIPP` 已上板；下一步补 checkpoint→ONNX→OM 的同输入数值容差、
-  LUT 单调性、高光裁剪和 20–50 张代表性 OS08A20 画质检查。
+- 正式权重、`256x144 NV21 + AIPP` 和 checkpoint→ONNX→裸 OM→AIPP OM 同输入数值对拍均已完成；
+  下一步补 LUT 高光/端点/单调性护栏和 20–50 张代表性 OS08A20 画质检查。
 - 当前 `socchina_app` 的生产控制线程仍使用规则判决→Gamma。把 NN 真正接入生产路径还需完成：
-  control worker 调用已验证的 chn2+AIPP 推理、NN 输出到 Gamma/DRC/CLUT 的安全桥，以及失败时
-  回退到现有规则控制。
+  control worker 调用已验证的 chn2+AIPP 推理和 17v2 bridge，按 Gamma/DRC/CLUT 用途分流，
+  并在失败时保留旧参数、进入降级状态和回退现有规则控制。
