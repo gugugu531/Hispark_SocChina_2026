@@ -110,3 +110,199 @@ timeout 20 cat /dev/input/event0 | hexdump -C   # 触摸时有数据即通
 Clash Verge TUN 会增加 IPv6 策略路由表。电脑端测试和 SSH 时显式使用
 `-I <Wi-Fi IPv6>` / `-o BindAddress=<Wi-Fi IPv6>`，避免连接被 TUN 默认路由接管。
 完整地址稳定性、SSH 别名和故障恢复见 [network-access.md](network-access.md)。
+
+## 8. RTSP 开机自启动与 HDMI 选择
+
+### 8.1 设计
+
+板端由 `socchina-stream.service` 管理生产程序：
+
+```text
+systemd
+  -> /usr/local/sbin/socchina-start
+     -> /etc/socchina/runtime.conf
+        -> /root/socchina-2026/socchina_app --stream [--no-display]
+```
+
+- 服务随 `multi-user.target` 启动，排序在厂商 `rc-local.service` 媒体模块加载之后，但不等待
+  Portal 认证完成。相机/VENC/RTSP 可先初始化并监听 IPv4/IPv6 通配地址，网络地址就绪后客户端再连接。
+- 默认 `ENABLE_HDMI=0`：只启用 VPSS chn1、VENC 和 RTSP，不创建 chn0，不初始化 VO/HDMI。
+- `ENABLE_HDMI=1`：同时创建 chn0，启用 VO/HDMI，并保留 RTSP。
+- `Restart=on-failure`，异常退出后 3 秒重试；启动频率不封顶，避免开机早期 sensor 短暂未就绪后
+  服务永久停在 failed。
+- 包装器在启动媒体链前最多等待 `/dev/ot_mipi_rx` 30 秒，避免驱动设备节点尚未创建时过早调用
+  MIPI/VI 并留下短暂 VB 冲突；超时后退出并交给 systemd 重试。
+- 正常 `stop/restart` 发送 SIGTERM，应用按 stream/VENC、display、VPSS、capture、SYS/VB 的逆序清理。
+- 第一版 HDMI 切换需要重启媒体服务，通常中断 RTSP 数秒；不做运行时热插拔。
+
+仓库文件：
+
+| 文件 | 用途 |
+| --- | --- |
+| `deploy/systemd/socchina-stream.service` | systemd unit 模板 |
+| `deploy/systemd/runtime.conf` | 首次安装的默认配置 |
+| `scripts/board/socchina-start` | 配置校验与应用参数拼装 |
+| `scripts/board/socchina-display` | HDMI on/off/status 控制 |
+| `scripts/install_board_service.sh` | 主机侧幂等安装/更新入口 |
+
+### 8.2 构建与安装
+
+先按开发规范完成 SDK Release 构建，再安装：
+
+```sh
+export CROSS_COMPILE_ROOT=/path/to/aarch64-mix210-linux
+export ISL_LIB_DIR=/path/to/libisl
+export SS928_SDK_ROOT=/path/to/ss928-mpp-sample
+scripts/build_board.sh Release
+
+BOARD=hispark-remote scripts/install_board_service.sh
+```
+
+安装器会：
+
+1. 停止旧的 `socchina-stream.service`（不存在时忽略）。
+2. 更新 `/root/socchina-2026/socchina_app`。
+3. 安装包装脚本到 `/usr/local/sbin/`。
+4. 安装 unit 到 `/etc/systemd/system/`。
+5. **仅当配置不存在时**创建 `/etc/socchina/runtime.conf`，更新版本不会覆盖现场选择。
+6. `daemon-reload`，然后 `enable --now`。
+
+首次安装默认仅 RTSP：
+
+```sh
+ENABLE_HDMI=0
+RTSP_PORT=8554
+STREAM_PATH=live
+BITRATE_KBPS=3000
+SENSOR_INDEX=1
+TONE_STRENGTH=0.7
+```
+
+### 8.3 日常使用
+
+服务管理：
+
+```sh
+systemctl status socchina-stream.service
+systemctl restart socchina-stream.service
+systemctl stop socchina-stream.service
+systemctl start socchina-stream.service
+journalctl -u socchina-stream.service -f
+```
+
+切换 HDMI：
+
+```sh
+socchina-display status
+socchina-display on
+socchina-display off
+```
+
+命令会持久化 `ENABLE_HDMI` 并优雅重启服务；下一次开机沿用最后选择。
+
+直接编辑其它参数后重启：
+
+```sh
+vi /etc/socchina/runtime.conf
+systemctl restart socchina-stream.service
+```
+
+RTSP 地址：
+
+```text
+rtsp://[<BOARD_IPV6>]:8554/live
+```
+
+Haruna/VLC 中选择“打开 URL”并输入上面的地址。GStreamer 验证：
+
+```sh
+gst-launch-1.0 -q \
+  rtspsrc location='rtsp://[<BOARD_IPV6>]:8554/live' protocols=tcp latency=100 \
+  ! rtph264depay ! fakesink sync=false
+```
+
+### 8.4 健康检查与恢复
+
+```sh
+systemctl is-enabled socchina-stream.service
+systemctl is-active socchina-stream.service
+ss -lntp | grep 8554
+grep -A5 "venc chn attr 1" /proc/umap/venc
+grep -A4 "vpss chn output status" /proc/umap/vpss
+grep -E "run status|rsen|phy output enable" /proc/umap/hdmi0
+```
+
+- HDMI off 时应看到 `run status: CLOSE`、`phy output enable: NO`，VPSS 仅 chn1。
+- HDMI on 时应看到 `run status: OPEN START`、`phy output enable: YES`，VPSS 同时有 chn0/chn1。
+- 当前面板使用 DVI 模式，`hdmi enable: NO` 在 HDMI 输出已启动时也可能成立，不能单独作为开关判据。
+- 配置错误时 `socchina-start` 会以状态 2 退出，错误可从 journal 查看；修正配置后执行 restart。
+- 媒体栈进入 D 态或 ACL/SMMU 超时仍按 §4 干净重启板卡，不依赖 systemd 无限重试修复坏硬件上下文。
+
+### 8.5 开发与验收记录
+
+#### 2026-06-20 systemd 服务与 HDMI 双态冒烟
+
+目标：
+
+- 安装并启用开机 RTSP 服务；验证默认 HDMI off、运行时切换 on/off、RTSP 连续播放和资源状态。
+
+命令/路径：
+
+```sh
+systemctl enable --now socchina-stream.service
+socchina-display on
+socchina-display off
+gst-launch-1.0 -q \
+  rtspsrc location='rtsp://[<BOARD_IPV6>]:8554/live' protocols=tcp latency=100 \
+  ! rtph264depay ! fakesink sync=false
+```
+
+结果：
+
+- unit 为 `enabled` 且 `active (running)`，主进程参数来自 `/etc/socchina/runtime.conf`。
+- 默认 HDMI off：应用带 `--no-display`，VPSS 仅 chn1，HDMI `run status: CLOSE`、PHY NO；
+  RTSP GStreamer 连续 8 秒，到测试超时才退出。
+- HDMI on：配置持久化为 `ENABLE_HDMI=1`，VPSS chn0/chn1 均为 30fps，HDMI
+  `run status: OPEN START`、RSEN/PHY YES；显示平均约 30.1–30.5fps，stream drops=0，
+  同时 RTSP 连续 8 秒通过。
+- 再切回 HDMI off：服务重启后配置为 0，HDMI CLOSE/PHY NO，VPSS 仅 chn1，8554 保持监听。
+- systemd 启停均由 SIGTERM 触发应用逆序清理；`NRestarts=0`，无异常自动重启。
+- 第一次完整重启中，unit 在 boot 后约 8 秒首次运行，当时 `/dev/ot_mipi_rx` 尚未创建；
+  systemd 自动重试 3 次并在 boot 后约 19 秒稳定启动，随后 10 秒 RTSP 拉流通过。依据该证据，
+  包装器增加了最多 30 秒的 MIPI 设备等待门禁。
+- 第二次完整重启中，MIPI 节点在 boot 后约 10 秒出现，但厂商 `rc-local.service` 仍在加载
+  VPSS/ISP/VENC 等模块，SYS/VB 尚未稳定，仍发生 3 次重试。`systemd-analyze blame` 显示
+  `rc-local.service` 耗时约 12.8 秒，kernel journal 也确认媒体模块由该阶段加载。因此 unit
+  增加 `After/Wants=rc-local.service`，以真实模块加载完成作为启动顺序门。
+- 第三次完整重启终验：SSH 约 20 秒恢复，unit 本次 boot 仅启动 1 次，`NRestarts=0`；
+  `ActiveEnterTimestamp` 为 boot 后约 20 秒。VPSS chn1 30fps、VENC 队列无积压、
+  stream 每 5 秒约 147–152 帧且 drops=0；GStreamer TCP RTSP 连续 10 秒至测试超时。
+  持久配置仍为 HDMI off，HDMI `run status: CLOSE`、PHY NO。开机自启动验收通过。
+- journal 中可能出现 `/var/log/npu/conf/slog/slog.conf` 或 slogd 缺失告警；当前二进制链接 ACL
+  运行库，即使生产规则 Gamma/RTSP 路径未调用 NPU也会初始化其日志设施。该告警非致命，
+  不影响相机、VENC、RTSP 或服务 active 状态。
+
+解读：
+
+- 服务安装、配置持久化、RTSP/HDMI 双态和完整重启自恢复均已通过。
+- `hdmi enable: NO` 是当前 DVI 输出模式属性，不能表示服务是否启用了显示；以 run status/PHY 为准。
+
+推荐后续每次修改服务时继续记录：
+
+```markdown
+目标：
+
+- 服务启停、异常恢复、开机自启、RTSP 与 HDMI 配置。
+
+命令/路径：
+
+- systemctl / journalctl / socchina-display / 播放命令。
+
+结果：
+
+- 启动耗时、RTSP 帧率、重连、HDMI 状态、退出后 VENC/VPSS 状态。
+
+解读：
+
+- 是否满足无人值守启动；仍开放的限制。
+```

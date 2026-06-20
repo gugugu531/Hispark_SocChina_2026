@@ -33,4 +33,4 @@ done
 
 echo "[deploy] 传输 ${#FILES[@]} 个文件..."
 scp "${FILES[@]}" "${BOARD}:${DEST}/"
-echo "[deploy] 完成。板端运行见 scripts/run_board.sh"
+echo "[deploy] 完成。手动运行见 scripts/run_board.sh；安装开机服务见 scripts/install_board_service.sh"

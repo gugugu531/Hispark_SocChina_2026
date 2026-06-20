@@ -76,6 +76,10 @@ scripts/test_host.sh              # 本机 cc 编译并运行 SDK-free 单元测
 - 板端网络与 SSH：[docs/network-access.md](docs/network-access.md)。
 - 部署/运行：先在 `~/.ssh/config` 配置 `hispark-remote`，再运行
   `scripts/deploy_board.sh` / `scripts/run_board.sh`。
+- RTSP 开机自启动：构建后运行
+  `BOARD=hispark-remote scripts/install_board_service.sh`；默认仅 RTSP，使用板端
+  `socchina-display on|off|status` 切换 HDMI。完整说明见
+  [docs/board-operations.md](docs/board-operations.md) §8。
 
 ## 文档导航
 

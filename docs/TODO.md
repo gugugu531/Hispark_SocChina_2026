@@ -57,6 +57,9 @@
 
 - ✅ `scripts/deploy_board.sh`（build 产物 + OM/LUT scp 到板）/ `scripts/run_board.sh`（板端运行，自动设
   `LD_LIBRARY_PATH=/opt/lib/npu`），2026-06-19。
+- ✅ `socchina-stream.service` + runtime config + HDMI 控制命令已实现并完成服务启停、
+  HDMI 双态和三轮重启排障（2026-06-20）。最终 unit 排序在厂商 `rc-local.service` 媒体模块
+  加载之后，完整重启只启动一次、`NRestarts=0`，RTSP 自动恢复并通过 10 秒拉流。
 - ❌ 板端测试自动化：目前 `test_display` 靠手工 scp + ssh，部署脚本应统一接管。
 - ❌ `LICENSE` 内容待定（当前占位）。
 - ✅ `feat/display-hdmi` 已合入 `main` 并推送（2026-06-10）。

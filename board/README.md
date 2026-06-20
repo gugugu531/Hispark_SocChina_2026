@@ -227,6 +227,16 @@ gst-launch-1.0 -q rtspsrc \
   不能据本次数据声称显示与串流并行验收通过。
 - 当前限制：单客户端、仅 RTP over RTSP/TCP，不提供鉴权、UDP transport 或音频。
 
+开机自启动、运行配置和 HDMI 持久化选择见
+[`../docs/board-operations.md`](../docs/board-operations.md) §8。默认服务参数等价于：
+
+```sh
+socchina_app --stream --no-display --bitrate 3000 --rtsp-port 8554 --stream-path live
+```
+
+2026-06-20 完整重启终验：服务在厂商 `rc-local.service` 媒体模块加载完成后自动启动，
+本次 boot 仅启动一次、`NRestarts=0`；默认 HDMI off，RTSP 10 秒拉流通过。
+
 ### Config-R 接口契约（阶段 C）
 
 `include/pipeline.h`、`infer.h`、`lut_bridge.h`、`stream.h` 已固定通道、同步调用、帧所有权和输出布局。

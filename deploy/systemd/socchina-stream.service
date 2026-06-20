@@ -1,0 +1,18 @@
+[Unit]
+Description=SocChina camera RTSP stream
+After=local-fs.target network.target rc-local.service
+Wants=network.target rc-local.service
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+Environment=LD_LIBRARY_PATH=/opt/lib/npu
+ExecStart=/usr/local/sbin/socchina-start
+Restart=on-failure
+RestartSec=3
+TimeoutStopSec=15
+KillSignal=SIGTERM
+SuccessExitStatus=0 143
+
+[Install]
+WantedBy=multi-user.target

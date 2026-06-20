@@ -1,0 +1,67 @@
+#!/usr/bin/env bash
+# 切换开机服务的 HDMI 配置。切换通过 systemd 优雅重启生效。
+set -euo pipefail
+
+readonly CONFIG="${SOCCHINA_CONFIG:-/etc/socchina/runtime.conf}"
+readonly SERVICE="${SOCCHINA_SERVICE:-socchina-stream.service}"
+
+usage() {
+    echo "用法: socchina-display {on|off|status}" >&2
+}
+
+read_value() {
+    local value
+    value="$(sed -n 's/^[[:space:]]*ENABLE_HDMI[[:space:]]*=[[:space:]]*//p' "${CONFIG}" | tail -n 1)"
+    [[ "${value}" == "1" ]] && echo "on" || echo "off"
+}
+
+write_value() {
+    local value="$1"
+    local tmp
+    tmp="$(mktemp "${CONFIG}.XXXXXX")"
+    awk -v value="${value}" '
+        BEGIN { updated = 0 }
+        /^[[:space:]]*ENABLE_HDMI[[:space:]]*=/ {
+            if (!updated) {
+                print "ENABLE_HDMI=" value
+                updated = 1
+            }
+            next
+        }
+        { print }
+        END {
+            if (!updated) {
+                print "ENABLE_HDMI=" value
+            }
+        }
+    ' "${CONFIG}" >"${tmp}"
+    chmod --reference="${CONFIG}" "${tmp}"
+    chown --reference="${CONFIG}" "${tmp}"
+    mv "${tmp}" "${CONFIG}"
+}
+
+if [[ ! -r "${CONFIG}" ]]; then
+    echo "[socchina-display] config not readable: ${CONFIG}" >&2
+    exit 1
+fi
+
+case "${1:-}" in
+    on)
+        write_value 1
+        systemctl restart "${SERVICE}"
+        echo "HDMI on; ${SERVICE} restarted"
+        ;;
+    off)
+        write_value 0
+        systemctl restart "${SERVICE}"
+        echo "HDMI off; ${SERVICE} restarted"
+        ;;
+    status)
+        echo "HDMI $(read_value)"
+        systemctl --no-pager --full status "${SERVICE}" || true
+        ;;
+    *)
+        usage
+        exit 2
+        ;;
+esac
