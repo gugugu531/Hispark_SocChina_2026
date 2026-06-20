@@ -40,6 +40,9 @@
 - param-net 已用 LCDP 的 1415/100/218 对完成 200 epoch 正式训练；best epoch 167，
   val PSNR `19.7247dB`、独立 test PSNR `20.4813dB`（输入基线 `14.0203dB`）。
 - checkpoint→ONNX→FP16+AIPP OM→板端相机帧推理链已完成；生产安全参数桥尚未完成。
+- 修正后的 17v2 RGB bridge 已在 `test_paramnet_live` 动态预览：每 30 帧推理并热刷完整 CLUT，
+  20 秒 604 帧、20/20 更新成功；强光场景仍有预裁剪、亮度压暗和 post-CLUT 反馈问题，当前长时
+  展示回退 Gamma，RGB 路径待补高光/端点护栏后再做长期画质验收。
 
 ## 解读
 

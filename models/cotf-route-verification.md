@@ -70,9 +70,10 @@ python -m pytest models/tests/test_cotf_lut_pack.py -q      # 打包桥单测（
 - 板端 NPU 推理：`board/src/infer.c`（全 ACL `aclmdl*` 跑 param-net OM）+ `board/tests/test_infer.c`。
   2026-06-20 使用 LCDP best epoch 167 正式权重和 256x144 NV21+AIPP，完成
   相机→VPSS chn2→NPU→14739 LUT 系数 30/30；exec 平均 `1.13ms`，首轮冷启动最大 `3.84ms`。
-- 持续预览：`board/tests/test_paramnet_live.c` 以约 1Hz 运行正式模型，从预测 LUT 灰轴提取单调
-  1D 曲线并以 25% 强度写 ISP Gamma；HDMI 主链约 30.2fps，触摸可切换模型/原图，退出恢复默认 Gamma。
-  RGB CLUT identity 已在后续 17v2 sweep 中通过；该预览暂时仍使用较保守的 Gamma bridge。
+- 持续预览：`board/tests/test_paramnet_live.c` 以约 1Hz 运行正式模型，经 `lut_bridge.c` 做有限值/
+  范围检查、25% identity 混合与 17v2 打包后热刷完整 RGB CLUT；HDMI 主链约 30.2fps，触摸可切换
+  模型/原图，退出关闭 CLUT。20 秒冒烟 604 帧、20/20 更新成功、0 失败。强光抓帧发现输入在 CLUT
+  前已大量裁剪，且 post-CLUT chn2 形成反馈；当前长时展示回退 Gamma，RGB 预览保留为实验入口。
 - 数值对拍：`models/tools/cotf_parity.py` + `board/tests/test_model_parity.c` 固定输入比较
   checkpoint→FP16 ONNX→裸 OM→AIPP OM，PyTorch vs AIPP OM MAE `0.000173`、max abs `0.001051`。
 - CLUT 布局扫测：`models/tools/cotf_clut_sweep.py` + `board/tests/test_clut_sweep.c` 在同一次锁曝光

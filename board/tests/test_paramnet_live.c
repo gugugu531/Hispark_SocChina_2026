@@ -1,10 +1,10 @@
 /* test_paramnet_live — 正式 LCDP param-net 持续预览。
  *
- * 主链：OS08A20 → ISP(+当前 Gamma) → VPSS chn0 1024x600 → HDMI。
- * 控制旁路：VPSS chn2 256x144 NV21 → AIPP → param-net → 灰轴/单调安全桥 → ISP Gamma。
+ * 主链：OS08A20 → ISP(+当前 CLUT) → VPSS chn0 1024x600 → HDMI。
+ * 控制旁路：VPSS chn2 256x144 NV21 → AIPP → param-net → 17v2 安全桥 → ISP CLUT。
  *
- * 默认每 30 帧（约 1 秒）刷新一次模型灰轴曲线，以 25% 强度叠到默认 Gamma。触摸屏点击
- * 在 MODEL ON 与原图(默认 Gamma)之间切换。SIGINT/SIGTERM 或时限结束时还原 Gamma 并逆序清理。
+ * 默认每 30 帧（约 1 秒）刷新一次完整 RGB 3D-LUT，以 25% 强度混合 identity。触摸屏点击
+ * 在 MODEL ON 与原图(CLUT OFF)之间切换。SIGINT/SIGTERM 或时限结束时关闭 CLUT 并逆序清理。
  */
 
 #include "capture.h"
@@ -12,6 +12,7 @@
 #include "infer.h"
 #include "isp.h"
 #include "log.h"
+#include "lut_bridge.h"
 #include "vpss.h"
 
 #ifndef WITH_SS928_SDK
@@ -40,6 +41,7 @@ int main(void)
 #include "ot_common_video.h"
 #include "ot_type.h"
 #include "sample_comm.h"
+#include "ss_mpi_sys.h"
 
 #define WARMUP_FRAMES   30u
 
@@ -71,19 +73,36 @@ static int touch_pressed(int fd)
     return pressed;
 }
 
-static size_t cubic_index(unsigned channel, unsigned r, unsigned g, unsigned b)
+static int dump_nv21_frame(const ot_video_frame_info *frame, const char *path)
 {
-    return (((size_t)channel * PIPELINE_COTF_LUT_DIM + r) * PIPELINE_COTF_LUT_DIM + g) *
-               PIPELINE_COTF_LUT_DIM +
-           b;
+    const ot_video_frame *vf = &frame->video_frame;
+    td_u32 map_size = vf->stride[0] * vf->height * 3 / 2;
+    td_u8 *virt = (td_u8 *)ss_mpi_sys_mmap(vf->phys_addr[0], map_size);
+    FILE *fp;
+    td_u32 row;
+    if (virt == TD_NULL) return -1;
+    fp = fopen(path, "wb");
+    if (fp == NULL) {
+        (void)ss_mpi_sys_munmap(virt, map_size);
+        return -1;
+    }
+    for (row = 0; row < vf->height; row++)
+        (void)fwrite(virt + (size_t)row * vf->stride[0], 1, vf->width, fp);
+    for (row = 0; row < vf->height / 2; row++)
+        (void)fwrite(virt + (size_t)vf->stride[0] * vf->height +
+                         (size_t)row * vf->stride[1],
+                     1, vf->width, fp);
+    fclose(fp);
+    (void)ss_mpi_sys_munmap(virt, map_size);
+    LOG_INFO("dump: %ux%u NV21 -> %s", vf->width, vf->height, path);
+    return 0;
 }
 
-/* 从 17³ RGB LUT 的灰轴提取单调 1D 曲线，并统计原始输出。 */
-static int extract_gray_curve(const float *raw, float curve[PIPELINE_COTF_LUT_DIM],
-                              float *raw_min, float *raw_max, float *raw_mean,
-                              float *mean_delta)
+/* 检查模型输出并统计相对 identity 的变化；正式打包由 lut_bridge 完成。 */
+static int inspect_lut(const float *raw, float *raw_min, float *raw_max, float *raw_mean,
+                       float *mean_delta)
 {
-    unsigned c, r, g, b, i;
+    unsigned c, r, g, b;
     size_t count = 0;
     double sum = 0.0, delta = 0.0;
     float lo = raw[0], hi = raw[0];
@@ -92,7 +111,10 @@ static int extract_gray_curve(const float *raw, float curve[PIPELINE_COTF_LUT_DI
         for (r = 0; r < PIPELINE_COTF_LUT_DIM; r++) {
             for (g = 0; g < PIPELINE_COTF_LUT_DIM; g++) {
                 for (b = 0; b < PIPELINE_COTF_LUT_DIM; b++) {
-                    size_t index = cubic_index(c, r, g, b);
+                    size_t index =
+                        (((size_t)c * PIPELINE_COTF_LUT_DIM + r) * PIPELINE_COTF_LUT_DIM + g) *
+                            PIPELINE_COTF_LUT_DIM +
+                        b;
                     float value = raw[index];
                     float identity = (c == 0) ? (float)r / 16.0f
                                               : ((c == 1) ? (float)g / 16.0f
@@ -115,17 +137,6 @@ static int extract_gray_curve(const float *raw, float curve[PIPELINE_COTF_LUT_DI
     if (lo < -0.05f || hi > 1.05f) {
         return -1;
     }
-    curve[0] = 0.0f;
-    for (i = 1; i + 1 < PIPELINE_COTF_LUT_DIM; i++) {
-        float value = (raw[cubic_index(0, i, i, i)] + raw[cubic_index(1, i, i, i)] +
-                       raw[cubic_index(2, i, i, i)]) /
-                      3.0f;
-        if (!isfinite(value)) return -1;
-        if (value < curve[i - 1]) value = curve[i - 1];
-        if (value > 1.0f) value = 1.0f;
-        curve[i] = value;
-    }
-    curve[PIPELINE_COTF_LUT_DIM - 1] = 1.0f;
     *raw_min = lo;
     *raw_max = hi;
     *raw_mean = (float)(sum / count);
@@ -140,15 +151,18 @@ int main(int argc, char **argv)
     unsigned refresh_frames = 30;
     float strength = 0.25f;
     const char *touch_dev = "/dev/input/event0";
+    const char *dump_dir = NULL;
     const char *model = "/root/socchina-2026/cotf_paramnet_256x144_lcdp_best_e0167_fp16_aipp.om";
     capture_cfg_t cap_cfg;
     int rc = 1, sys_up = 0, cap_up = 0, vpss_up = 0, bound = 0, display_up = 0;
     int infer_up = 0, touch_fd = -1, model_on = 1, have_lut = 0;
+    int dump_phase = 0, dump_countdown = 0, dump_saved_lut = 0;
     unsigned in_w = 0, in_h = 0, frames = 0, infer_ok = 0, infer_fail = 0, updates = 0;
     long started, last_log;
     float exec_sum = 0.0f, exec_max = 0.0f;
     static float raw_lut[PIPELINE_COTF_LUT_FLOAT_COUNT];
-    static float model_curve[PIPELINE_COTF_LUT_DIM];
+    static unsigned int packed_lut[PIPELINE_ISP_CLUT_NODE_COUNT];
+    lut_bridge_cfg_t bridge_cfg;
     ot_vb_cfg vb_cfg = {0};
     ot_pic_buf_attr buf_attr = {0};
     ot_vb_calc_cfg calc_cfg = {0};
@@ -170,6 +184,8 @@ int main(int argc, char **argv)
             strength = (float)atof(argv[++i]);
         } else if (strcmp(argv[i], "--touch") == 0 && i + 1 < argc) {
             touch_dev = argv[++i];
+        } else if (strcmp(argv[i], "--dumpdir") == 0 && i + 1 < argc) {
+            dump_dir = argv[++i];
         } else {
             run_sec = atoi(argv[i]);
         }
@@ -179,6 +195,8 @@ int main(int argc, char **argv)
     if (strength > 1.0f) strength = 1.0f;
     cap_cfg.sensor_index = sensor;
     cap_cfg.mode = CAPTURE_MODE_LINEAR;
+    lut_bridge_default_cfg(&bridge_cfg);
+    bridge_cfg.strength = strength;
     signal(SIGINT, on_signal);
     signal(SIGTERM, on_signal);
 
@@ -217,7 +235,7 @@ int main(int argc, char **argv)
         if (infer_init(&cfg) != 0) goto cleanup;
     }
     infer_up = 1;
-    (void)isp_gamma_apply_tone(ISP_TONE_BYPASS, 0.0f);
+    (void)isp_set_clut(ISP_BLOCK_OFF, 1024, 1024, 1024);
 
     touch_fd = open(touch_dev, O_RDONLY | O_NONBLOCK);
     if (touch_fd >= 0) {
@@ -232,9 +250,9 @@ int main(int argc, char **argv)
         if (touch_fd >= 0 && touch_pressed(touch_fd)) {
             model_on = !model_on;
             if (model_on && have_lut) {
-                (void)isp_gamma_apply_curve(model_curve, PIPELINE_COTF_LUT_DIM, strength);
+                (void)isp_set_clut(ISP_BLOCK_AUTO, 1024, 1024, 1024);
             } else {
-                (void)isp_gamma_apply_tone(ISP_TONE_BYPASS, 0.0f);
+                (void)isp_set_clut(ISP_BLOCK_OFF, 1024, 1024, 1024);
             }
             LOG_INFO(">>> %s", model_on ? "MODEL ON" : "MODEL OFF：原始相机图");
         }
@@ -245,6 +263,27 @@ int main(int argc, char **argv)
         if (display_send_frame(&display_frame, -1) != 0) {
             (void)vpss_release_frame(0, PIPELINE_VPSS_CHN_DISPLAY, &display_frame);
             goto cleanup;
+        }
+        if (dump_countdown > 0 && --dump_countdown == 0 && dump_dir != NULL) {
+            char path[256];
+            if (dump_phase == 1) {
+                snprintf(path, sizeof(path), "%s/model_on_before.nv21", dump_dir);
+                (void)dump_nv21_frame(&display_frame, path);
+                (void)isp_set_clut(ISP_BLOCK_OFF, 1024, 1024, 1024);
+                dump_phase = 2;
+                dump_countdown = 3;
+            } else if (dump_phase == 2) {
+                snprintf(path, sizeof(path), "%s/model_off.nv21", dump_dir);
+                (void)dump_nv21_frame(&display_frame, path);
+                (void)isp_set_clut(ISP_BLOCK_AUTO, 1024, 1024, 1024);
+                dump_phase = 3;
+                dump_countdown = 3;
+            } else if (dump_phase == 3) {
+                snprintf(path, sizeof(path), "%s/model_on_after.nv21", dump_dir);
+                (void)dump_nv21_frame(&display_frame, path);
+                dump_phase = 4;
+                LOG_INFO("dump sequence complete");
+            }
         }
         (void)vpss_release_frame(0, PIPELINE_VPSS_CHN_DISPLAY, &display_frame);
         frames++;
@@ -258,15 +297,37 @@ int main(int argc, char **argv)
             }
             if (infer_run_nv21(&control_frame, raw_lut, PIPELINE_COTF_LUT_FLOAT_COUNT,
                                &timing) == 0 &&
-                extract_gray_curve(raw_lut, model_curve, &raw_min, &raw_max, &raw_mean,
-                                   &mean_delta) == 0) {
+                inspect_lut(raw_lut, &raw_min, &raw_max, &raw_mean, &mean_delta) == 0 &&
+                lut_bridge_pack(&bridge_cfg, raw_lut, PIPELINE_COTF_LUT_FLOAT_COUNT,
+                                packed_lut, PIPELINE_ISP_CLUT_NODE_COUNT) == 0 &&
+                isp_load_clut_lut(packed_lut, PIPELINE_ISP_CLUT_NODE_COUNT) == 0) {
                 have_lut = 1;
                 infer_ok++;
                 updates++;
                 exec_sum += timing.execute_ms;
                 if (timing.execute_ms > exec_max) exec_max = timing.execute_ms;
                 if (model_on) {
-                    (void)isp_gamma_apply_curve(model_curve, PIPELINE_COTF_LUT_DIM, strength);
+                    (void)isp_set_clut(ISP_BLOCK_AUTO, 1024, 1024, 1024);
+                }
+                if (dump_dir != NULL && !dump_saved_lut) {
+                    char raw_path[256], packed_path[256];
+                    FILE *fp;
+                    snprintf(raw_path, sizeof(raw_path), "%s/model_raw.f32", dump_dir);
+                    snprintf(packed_path, sizeof(packed_path), "%s/model_packed.u32", dump_dir);
+                    fp = fopen(raw_path, "wb");
+                    if (fp != NULL) {
+                        (void)fwrite(raw_lut, sizeof(float), PIPELINE_COTF_LUT_FLOAT_COUNT, fp);
+                        fclose(fp);
+                    }
+                    fp = fopen(packed_path, "wb");
+                    if (fp != NULL) {
+                        (void)fwrite(packed_lut, sizeof(unsigned int),
+                                     PIPELINE_ISP_CLUT_NODE_COUNT, fp);
+                        fclose(fp);
+                    }
+                    dump_saved_lut = 1;
+                    dump_phase = 1;
+                    dump_countdown = 3;
                 }
                 LOG_INFO("[model] update=%u exec=%.2fms raw[min=%.3f max=%.3f mean=%.3f] "
                          "identity_delta=%.3f strength=%.2f",
@@ -274,7 +335,7 @@ int main(int argc, char **argv)
                          strength);
             } else {
                 infer_fail++;
-                LOG_WARN("[model] inference/safety/Gamma update rejected; keeping previous curve");
+                LOG_WARN("[model] inference/safety/CLUT update rejected; keeping previous LUT");
             }
             (void)vpss_release_frame(0, PIPELINE_VPSS_CHN_CONTROL, &control_frame);
         }
@@ -291,7 +352,7 @@ int main(int argc, char **argv)
     rc = 0;
 
 cleanup:
-    if (cap_up) (void)isp_gamma_apply_tone(ISP_TONE_BYPASS, 0.0f);
+    if (cap_up) (void)isp_set_clut(ISP_BLOCK_OFF, 1024, 1024, 1024);
     if (touch_fd >= 0) close(touch_fd);
     if (infer_up) (void)infer_deinit();
     if (display_up) CHECK_RET(display_deinit());

@@ -190,25 +190,32 @@ ONNX、裸 OM、NV21+AIPP OM 的输出在 FP16 误差范围内一致，AIPP 本�
 
 ### 板端持续预览（2026-06-20）
 
-新增 `test_paramnet_live`，持续运行：
+`test_paramnet_live` 已在 17v2 标定完成后切换为完整 RGB CLUT 持续运行：
 
 ```text
-OS08A20 → ISP(+模型 Gamma) → VPSS chn0 → HDMI
+OS08A20 → ISP(+模型 RGB CLUT) → VPSS chn0 → HDMI
                     └→ VPSS chn2 256x144 → AIPP → param-net
-                       → LUT 灰轴 → 单调/端点安全处理 → ISP Gamma
+                       → 17v2 安全打包 → identity 强度混合 → ISP CLUT
 ```
 
 - 默认每 30 帧刷新一次，模型 NPU exec 稳态约 `1.04–1.14ms`；
-- 默认强度 `0.25`，把模型灰轴曲线叠到 ISP 上电默认 Gamma，避免突然出现激进画质；
-- 点击触摸屏在 `MODEL ON` 与默认 Gamma 原图之间切换；
-- SIGINT/SIGTERM、时限结束或错误退出都会恢复默认 Gamma 并逆序清理媒体链；
-- 15 秒板端冒烟为 453 帧、约 `30.2fps`，15/15 次更新成功、0 次失败。
+- 默认强度 `0.25`，将模型完整 RGB LUT 与 identity 混合，避免突然出现激进画质；
+- 点击触摸屏在 `MODEL ON` 与 CLUT OFF 原图之间切换；
+- SIGINT/SIGTERM、时限结束或错误退出都会关闭 CLUT 并逆序清理媒体链；
+- RGB 动态闭环 20 秒板端冒烟为 604 帧、约 `30.2fps`，20/20 次更新成功、0 次失败。
 
 后续结合 ReleaseDoc、PQTools 模板和 `algClutcompLib.dll` 的 `clut_lut_print_17v2`，确认 5508
 存储不是 `17×18×18` 边界填充，而是 17³ 逻辑点按三轴奇偶拆为 8 个 bank，再以 4 路交织输出。
 板端 36 组轴序×位序 sweep 确认坐标轴为 RGB，位域为 R 高/G 中/B 低；正确 identity 的相邻
-OFF/ON NV21 MAE 为 `1.025`，UV MAE 为 `0.116`，此前伪色消失。持续预览仍保留较保守的 Gamma
-灰轴路径；完整 RGB LUT 动态写回将在增加范围、单调性和刷新事务保护后接入。
+OFF/ON NV21 MAE 为 `1.025`，UV MAE 为 `0.116`，此前伪色消失。板端 `lut_bridge.c` 现执行有限值/
+范围检查、identity 强度混合和 17v2 打包；失败时保留上一张有效 LUT。
+
+RGB 动态预览仍是实验路径，不是最终画质结论。强光场景抓帧显示：CLUT OFF 时已有 `12.54%`
+像素 `Y>=250`，细节在 CLUT 前已经裁掉；CLUT ON 后升至 `15.06%`，同时均值亮度从 `147.7`
+降到 `96.3`。模型白点经 25% identity 混合后仍约 `(0.982,0.982,0.986)`，不足以形成高光肩部；
+且 chn2 位于 CLUT 后，会让模型读取自身增强结果并产生轻微反馈振荡。因此当前长时展示仍回退到
+稳定的 Gamma 灰轴路径；完整 RGB 路径后续需增加 AE/DRC 高光控制、白点/原色端点护栏，并解决
+pre/post-CLUT 控制输入隔离。
 
 纯计算基准（AMP，预热后 50 step；不含磁盘解码、验证和 checkpoint）：
 
