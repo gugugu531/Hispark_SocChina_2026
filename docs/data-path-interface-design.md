@@ -2,7 +2,8 @@
 
 > 状态快照：2026-06-20。本文保留阶段 C 的模块边界和帧所有权契约；具体 SDK 调用以实现和板端实测为准。
 > 当前实现差异：display + 规则 control→Gamma 已进生产 `main.c` 并板端 30fps 跑通；ACL 推理已独立验证；
-> 正式权重、chn2+AIPP、CLUT 17v2 identity 均已板端验证。尚未完成的是生产 NN→Gamma/DRC/CLUT 安全参数桥。
+> 正式权重、chn2+AIPP、CLUT 17v2 identity 和 C bridge 均已板端验证，RGB 动态预览已跑通。
+> 尚未完成的是生产 control worker 接线、高光/端点护栏、降级回退和闭环画质验收。
 > **命名说明**：文中「CoTF」指受官方 CoTF 启发、只保留「预测 3D-LUT + ISP 硬件施加」的子集，**非官方 CoTF**
 > （协同变换/自适应采样/注意力融合等红名单部件已丢弃，画质 ≈ 全局 3D-LUT 级）。详见
 > [architecture.md §4.1](architecture.md) 与 [../models/cotf-route-verification.md](../models/cotf-route-verification.md)。
@@ -172,13 +173,13 @@ control worker 默认每 3 帧执行一次控制轮询，但只有 `control_shou
 
 ## 9. CLUT 上板验证门
 
-训练模型接入前必须依次通过：
+训练模型接入的验证门及当前状态：
 
-1. Identity LUT：开关 CLUT 后画面颜色和灰阶无明显变化。
-2. 诊断 LUT：分别改变 R/G/B 和各 mesh 轴，确认通道位序、节点坐标和遍历顺序。
-3. 热刷新：在 identity/诊断 LUT 间循环，确认无闪屏、撕裂和 ISP 错误。
-4. 固定模型 LUT：加载离线生成的已知 LUT，确认 host 与板端 bridge 一致。
-5. 动态模型 LUT：最后接入 `infer_run_nv21` 和刷新策略。
+1. ✅ Identity LUT：开关 CLUT 后无历史伪色；相邻 OFF/ON MAE 1.025、UV MAE 0.116。
+2. ✅ 轴序/位序诊断：36 组 sweep 确认 RGB 轴序、R高/G中/B低与 17v2 交织。
+3. 🟡 热刷新：20 秒动态预览 20/20 更新成功、约 30.2fps；长期 flicker/刷新 p95 待测。
+4. 🟡 固定模型 LUT：Python/C identity 已对齐；仍需多组随机 LUT 逐项对拍。
+5. 🟡 动态模型 LUT：已接 `infer_run_nv21` 实验预览；待生产 worker、降级和画质护栏。
 
 第 1–3 步失败时只修改 `lut_bridge_cfg_t`/桥接实现，不改模型输出契约。
 
@@ -199,8 +200,11 @@ control worker 默认每 3 帧执行一次控制轮询，但只有 `control_shou
 
 ## 11. 尚未关闭的设计问题
 
-- CLUT 逻辑网格和 17v2 存储已确认；Python packer 已通过 identity、轴序和位序板端门禁。
-  C 生产 bridge 仍需接入范围检查、失败保留旧表和低频刷新事务。
+- CLUT 逻辑网格和 17v2 存储已确认；Python/C bridge 已实现有限值、范围检查和 identity
+  强度混合，并通过 identity/轴序/位序门禁。仍需高光/端点/变化量护栏、随机 LUT 对拍、
+  失败保旧参数和生产低频刷新事务。
+- chn2 位于 post-CLUT 路径，动态模型会读取自身增强结果；需解决输入隔离或加入迟滞、
+  时间滤波与收敛判定。
 - ACL 是否能安全直接导入 VPSS/VB 物理地址尚未验证；当前基线是缩略图 copy。
 - ISP CLUT 主线不能直接提供严格同帧原图/增强图分屏；需要额外 ISP/旁路能力或整图备选。
 - RTSP server 复用厂商 sample 还是引入轻量实现尚未选型。

@@ -30,8 +30,9 @@
 | CoTF-inspired 参数网络 + ISP 参数块 | LCDP 正式训练、256x144+AIPP 推理和硬件施加端已验证 | 正式 OM 30/30，NPU exec 平均 `1.13ms`；主推全分辨率实时路线 |
 | Zero-DCE Lite / SCI / MSEC | 性能对照 | 用于证明整图输出的全分辨率访存瓶颈，不作为当前主线 |
 
-硬件施加端、正式训练权重和 VPSS chn2+AIPP ACL 推理已分别在板端验证；当前开放项是把推理
-接入生产控制线程，以及按 Gamma/DRC/CLUT 的用途建立安全参数桥。详细状态见
+硬件施加端、正式训练权重、VPSS chn2+AIPP ACL 推理和 17v2 C bridge 已分别在板端验证；
+完整 RGB CLUT 实验预览也已跑通。当前开放项是把推理/bridge 接入生产控制线程，并补齐
+Gamma/DRC/CLUT 用途分流、高光/端点护栏、失败回退和闭环画质验收。详细状态见
 [`cotf-route-verification.md`](cotf-route-verification.md) 与
 [`param-net-training.md`](param-net-training.md)。
 
@@ -117,8 +118,9 @@ python -m models.tools.cotf_make_lut
 训练细节、数据约定、耗时评估与部署边界见
 [`param-net-training.md`](param-net-training.md)。
 
-当前测试基线为 27 项：ExpoCurveNet 11 项，CoTF LUT 打包 9 项，param-net
-训练/配置/进度/恢复 7 项。
+当前模型侧 pytest 基线为 28 项：ExpoCurveNet 11 项，CoTF LUT 打包 10 项，param-net
+训练/配置/进度/恢复 7 项。板端 CMake/CTest 另含 `test_lut_bridge`、`test_model_parity`、
+`test_clut_sweep` 和实时驱动测试。
 
 ## 生成物
 

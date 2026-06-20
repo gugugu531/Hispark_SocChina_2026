@@ -101,7 +101,7 @@ ISP 硬件 CLUT 全分辨率施加（零 NPU）」**。完整验证与代码见 
 - ✅ NN 端实测：param-net 出 LUT，板端 ~1ms（缩略图）/ ~5ms（全分辨率），干净落 AICore。
 - ✅ "NPU 做 LUT 施加"排除：3D-LUT 三线性 = grid_sample，连 ONNX 都导不出 → 必须走 ISP CLUT 硬件。
 - ✅ 硬件 CLUT 实证：`ss_mpi_isp_set_clut_coeff`，5508 节点（u32=3×10bit），板端 libss_isp.so 真实导出。
-- ✅ 代码集成：host 桥（`models/tools/cotf_lut_pack.py` / `models/tools/cotf_make_lut.py`，9 单测）+
+- ✅ 代码集成：host 桥（`models/tools/cotf_lut_pack.py` / `models/tools/cotf_make_lut.py`，10 单测）+
   板端 API（`isp_set_clut`/
   `isp_load_clut_lut`，编译链接验证）+ 控制策略（`control_should_refresh_lut`，主机单测）。
 - ✅ 流水线优势：NN 与施加在不同硬件块，LUT 低频刷新，**模型移出每帧关键路径**，NPU 占用 ~3–15%。
@@ -136,7 +136,8 @@ ISP 硬件 CLUT 全分辨率施加（零 NPU）」**。完整验证与代码见 
 1. ✅ `main.c` 已接管 SYS/VB 初始化与整链编排，迁出测试驱动：**socchina_app 板端跑通**
    （显示线程 30.5fps + 控制线程，SIGINT 优雅退出，2026-06-19）。
 2. ✅ `capture.c`：线性模式和 WDR 2to1 均已点亮，板端 30fps。
-3. ✅ `vpss.c`：chn0 直送 display 已实测；chn1/chn2 待整链启用。
+3. ✅ `vpss.c`：chn0 直送 display 已实测；chn2 已用于正式 param-net+AIPP 推理和 RGB CLUT
+   实验预览；chn1 留给 RTSP。
 4. ✅ 冒烟：实时相机画面上屏 30.5 fps（`socchina_app` / `test_capture --display`）；§6 点 5 flicker 观感待目视。
 5. ✅ 收尾：`deploy_board.sh` / `run_board.sh` 已补（2026-06-19）。
 
@@ -159,17 +160,20 @@ ISP 硬件 CLUT 全分辨率施加（零 NPU）」**。完整验证与代码见 
 1. ✅ 相机链硬件施加端已完成（CLUT 30fps + Gamma 31.2fps）；CLUT 17v2 identity 已通过。
 2. ✅ `infer.c`：正式 LCDP best OM 已用 VPSS chn2 256x144 NV21+AIPP 板端 30/30，
    exec 平均 1.13ms；固定输入 checkpoint→ONNX→裸 OM→AIPP OM 数值对拍通过。余项归入第 3 项安全桥。
-3. `lut_bridge.c`：板端把 NN 参数转 ISP 块输入（色调→Gamma 表；色彩 3D→CLUT 17³ 打包）。
+3. 🟡 `lut_bridge.c`：17v2 RGB 打包、有限值/范围检查和 identity 强度混合已实现并板端预览；
+   余：高光肩部、白点/原色端点、单调性/最大变化量护栏，以及生产刷新事务接线。
 4. ✅ AE 统计 + `control_should_refresh_lut` + 色调热刷新已接入低频 control worker（`main.c` 控制线程，2026-06-19）。
 5. ✅ `main.c` 已建立 display + control 双线程、逆序回滚与 SIGINT 优雅退出（可选 stream 线程后续加）。
 6. 🟡 已测显示主链 30.5fps + 控制线程低频刷新；Gamma 刷新耗时/热刷稳定性细测与 flicker 目视待补。
 
 ### 阶段 D — 控制大脑与画质
 
-1. 实现 NN→Gamma/DRC/CLUT 安全参数桥和动态闭环；现有规则判决继续作为回退。
-2. 用 LCDP 预训练并做 OS08A20 微调与画质验证（≥20–50 张代表性相机帧）。
-3. 完成 OS08A20 WDR 的强逆光、运动鬼影和长时稳定性验证。
-4. 阈值标定（control.c 注释已标注初版经验值待标定）。
+1. 把已验证的 chn2 infer + bridge 接入生产 control worker，完成失败保旧参数、
+   `PIPELINE_DEGRADED` 和规则 Gamma 回退。
+2. 完善 NN→Gamma/DRC/CLUT 用途分流、高光/端点护栏和 post-CLUT 反馈控制。
+3. 用 LCDP 预训练权重做 OS08A20 微调与画质验证（≥20–50 张代表性相机帧）。
+4. 完成 OS08A20 WDR 的强逆光、运动鬼影和长时稳定性验证。
+5. 阈值标定（control.c 注释已标注初版经验值待标定）。
 
 ### 阶段 E — 串流与收尾
 
@@ -183,7 +187,7 @@ ISP 硬件 CLUT 全分辨率施加（零 NPU）」**。完整验证与代码见 
 | --- | --- |
 | M1（阶段 A） | ✅ 相机实时画面上屏 30.5fps；部署/启动脚本已补（2026-06-19） |
 | M2（阶段 B） | OM 板端实测耗时出数,Config-R 可行性有结论 |
-| M3（阶段 C） | CoTF 相机链联机生效（🟡 socchina_app 整链 30.5fps + 场景自适应 Gamma 双线程已跑通 2026-06-19；余 infer.c NN + 刷新耗时分解） |
+| M3（阶段 C） | 🟡 类 CoTF 初步闭环已完成：正式 NN+AIPP、17v2 bridge、RGB 动态预览均联机；余生产 worker 接线、刷新 p95 和降级验收 |
 | M4（阶段 D） | 场景自适应生效,画质验证通过 |
 | M5（阶段 E） | RTSP 远程可看,拍照路径可用,可交付演示 |
 
