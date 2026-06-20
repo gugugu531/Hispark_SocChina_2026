@@ -16,8 +16,8 @@ OS08A20 -> VI -> ISP(WDR/3DNR/DRC/Gamma/CLUT) -> VPSS -> VO/HDMI
                                              -> VENC/RTSP
 
 低频控制旁路:
-VPSS chn2 缩略图 -> AIPP -> CoTF-inspired param-net -> 安全参数桥 -> ISP Gamma/DRC/CLUT
-ISP AE 统计 ----------------------------------------------> 场景判决/刷新控制
+VPSS chn2 缩略图 -> AIPP -> CoTF-inspired param-net -> 安全 CLUT 桥 -> ISP CLUT
+ISP AE 统计 ----------------------------------------------> 规则 Gamma/刷新控制
 ```
 
 设计要点：
@@ -26,8 +26,9 @@ ISP AE 统计 ----------------------------------------------> 场景判决/刷�
 - 当前生产支持 **AE 统计/规则判决 → ISP Gamma** 兜底，以及
   `chn2 → AIPP → CoTF-inspired param-net → 安全 bridge → ISP CLUT` 可选闭环。
 - NPU 与 CPU LUT 打包位于低频控制旁路；主路径目标是零 CPU/NPU 全分辨率逐像素搬运。
-- Config-R 目标为 1024x600 显示 30fps；整图 `768x432 shared niter8` 仅保留为备选。
-- Config-Q 用于拍照或低帧率高画质整图增强。
+- Config-R 是唯一产品运行配置，目标为 1024x600 显示 30fps。
+- NN 正式契约只输出 RGB 17³ CLUT；Gamma 由 AE 规则控制，DRC/LDCI 由 ISP 策略管理。
+- Config-Q 与整图 ExpoCurveNet 运行路径已明确舍弃，只保留历史实验和性能结论。
 
 ## 先读这些
 
@@ -55,7 +56,7 @@ ISP AE 统计 ----------------------------------------------> 场景判决/刷�
 模型代码按职责组织为 `models/{networks,exporters,tools,configs,tests,weights}`，Python 入口统一从仓库根目录
 使用 `python -m models.<子包>.<模块>`。
 
-- `src/` 平铺，每个数据通路阶段一个 `.c`（`capture/isp/vpss/preproc/infer/postproc/compose/display/stream/control`），`main.c` 为主程序入口。
+- `src/` 平铺，每个数据通路阶段一个 `.c`（`capture/isp/vpss/infer/lut_bridge/display/stream/control/pipeline`），`main.c` 为主程序入口。
 - `src/*.c`（除 `main.c`）编成静态库 `socchina`，主程序与测试共用。
 - `tests/test_*.c` 每个一个测试入口，CMake glob 自动收集，无需手动登记。
 - 构建产物、模型权重、采集数据、SDK/工具链一律不入库（见根 `.gitignore`）。

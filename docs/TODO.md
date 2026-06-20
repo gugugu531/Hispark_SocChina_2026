@@ -1,9 +1,10 @@
 # TODO — 未完成部分与开发规划
 
-> 状态快照日期：2026-06-20。阶段 A/B 已完成，硬件施加端与规则控制→Gamma 生产整链已板端
+> 状态快照日期：2026-06-21。阶段 A/B 已完成，硬件施加端与规则控制→Gamma 生产整链已板端
 > 30fps 跑通；CLUT 17v2 几何已由厂商资料和板端 sweep 确认（17³、8 bank、4 路交织）。param-net 的训练、
 > 推荐 YAML、ETA/断点恢复、LCDP 正式权重和 256x144+AIPP 板端推理已完成。当前主线剩余：
-> NN→Gamma/DRC/CLUT 安全参数桥与生产 control worker 接线已完成，并通过 20 秒板端生产冒烟：
+> NN→RGB CLUT 安全桥与生产 control worker 接线已完成；Gamma 由 AE 规则控制，DRC/LDCI
+> 由 ISP 策略管理。该契约不再规划 NN 多头 Gamma/DRC 输出。20 秒板端生产冒烟：
 > 3 次 NN+CLUT 更新、推理总耗时 2.40–2.71ms、RTSP 451 帧/0 drops、退出清理正常。剩长时 p95
 > 和动态闭环画质验证。RTSP 的
 > VENC/协议实现、生产线程接线、RTSP+HDMI 并行验收和 systemd 开机自启动均已完成：
@@ -28,17 +29,16 @@
 | 通路级 | 模块文件 | 状态 | 说明 |
 | --- | --- | --- | --- |
 | 1 采集 | `capture.c` | ✅ 已完成 | linear 与 WDR 2to1 均板端 30fps 实测；运行时帧率/镜像/翻转可调 |
-| 2–4 ISP | `isp.c` | ✅ 基本完成 | Gamma/CLUT 热刷新已板端联机；CLUT 17v2 identity 已通过。余：DRC/局部块画质标定和动态 NN 参数安全写回 |
+| 2–4 ISP | `isp.c` | ✅ 基本完成 | Gamma/CLUT 热刷新已板端联机；CLUT 17v2 identity 已通过。余：DRC/LDCI 局部块画质标定 |
 | 5 分发缩放 | `vpss.c` | ✅ 已完成 | chn0 1024x600 已实测；chn2 256x144 已在正式 param-net 推理冒烟中启用；chn1 留给 RTSP |
 | 6 预处理 | （融入 OM 的 AIPP） | ✅ 板端验证 | `aipp_nv21_256x144.cfg` 已随正式 OM 上板，输入 55296B NV21，30/30 成功 |
 | 7 推理 | `infer.c` | ✅ 生产接线+冒烟 | LCDP best epoch 167 正式 OM；生产 control worker 20 秒冒烟 3/3 更新，推理总耗时 2.40–2.71ms；ACL context 跨线程绑定已修，运行时错误安全停链；余 p95 长测 |
 | 8 参数桥 | `lut_bridge.c` | ✅ P0 安全桥 | 17v2 打包、有限值/范围、identity 偏移、高光增益、立方体端点、主轴单调性和逐次最大步长护栏已接生产线程；高裁剪场景旁路 CLUT。余动态画质标定 |
-| 9 后处理/合成 | `postproc.c` / `compose.c` | ⏸ 备选路线 | 仅整图 ExpoCurveNet 分屏演示需要，非 CoTF 主路径依赖 |
 | 10a 显示 | `display.c` | ✅ 已完成 | 板端冒烟 PASS，启动杂线已修（黑场预帧）；flicker 观感需现场目视确认 |
 | 10b 串流 | `stream.c` | ✅ 已完成 | chn1→VENC H.264 CBR、单客户端 RTSP/RTP over TCP、断线重连和生产 stream worker 已实现；实测 1024x576 约 30.1fps、2954.5kbps、两次 10s GStreamer 重连成功、VENC 零积压；RTSP+HDMI 并行时显示约 30.1–30.5fps、stream drops=0 |
 | 11 控制 | `control.c` / `main.c` | ✅ P0 生产闭环 | AE→规则 Gamma 与 chn2→NN→bridge→CLUT 已接同一 worker；失败保旧 LUT，连续 3 次失败进入 sticky DEGRADED；post-CLUT 反馈加入 EMA、3 次确认和 10 周期冷却 |
-| — 共享 | `pipeline.h` / `pipeline.c` | ✅ 契约完成 | 通道、尺寸、配置默认值/校验、状态、错误码和指标已固定；ACL/SMMU 致命退出码为 70 |
-| — 入口 | `main.c` | ✅ 生产整链 | SYS/VB + capture/vpss/display/stream/control/NN 生命周期已接通；支持 linear/WDR 2to1 与目标帧率，SIGINT/SIGTERM 逆序清理 |
+| — 共享 | `pipeline.h` / `pipeline.c` | ✅ 契约完成 | 通道、尺寸、配置默认值/校验、状态、错误码和 `pipeline_metrics_t` 已固定；ACL/SMMU 致命退出码为 70 |
+| — 入口 | `main.c` | ✅ 生产整链 | SYS/VB + capture/vpss/display/stream/control/NN 生命周期已接通；统一汇总帧数、drop/timeout、控制事务、瞬态/致命错误、降级与 p95；支持 linear/WDR 2to1 与目标帧率 |
 
 ### 2.2 模型侧（`models/`）
 
@@ -47,13 +47,11 @@
   （干净落 AICore，无 AICPU/Cast）+ **板端实测耗时**（见 `models/expo-curve-network.md`）。
 - ✅ AIPP 配置（`aipp_nv21_1024x576.cfg` 与 `aipp_nv21_256x144.cfg`，NV21/rbuv_swap//255）
   + ATC 转 FP16 OM；256x144 配置已随正式权重板端验证。
-- 🟡 **结论**：1024x576 全分辨率超 33ms（niter8=94.9ms，瓶颈是全分辨率访存）；实时档应取 `768x432+共享曲线`
-  （27ms）或 `640x360`。横评 Zero-DCE Lite/SCI/MSEC/CoTF 后，**唯一能在 1024x576 真实时的是 CoTF 路线**
-  （NN 出 LUT ~5ms + ISP 硬件施加，见 `models/cotf-route-verification.md`）。
+- ✅ **路线收敛**：1024x576 全分辨率输出受访存限制；ExpoCurveNet 整图路径、Config-Q、
+  `postproc/compose` 和分屏旁路已舍弃。产品只保留 CoTF-inspired CLUT 路线。
 - ✅ param-net 已用 LCDP 1415/100/218 对完成 200 epoch 正式训练；best epoch 167，
   val/test PSNR 为 19.7247/20.4813dB，输入 test 基线 14.0203dB。checkpoint→FP16 ONNX→
-  256x144+AIPP OM→板端 30/30 推理完成，见 `models/param-net-training.md`。Config-Q
-  （高画质 1024x640 级）仍未产出。
+  256x144+AIPP OM→板端 30/30 推理完成，见 `models/param-net-training.md`。
 
 ### 2.3 脚本与工程
 
@@ -74,8 +72,7 @@
 1. ✅ OM 结构验证（2026-06-14，`models/expo-curve-network.md`）：曲线网络干净落 AICore（无 AICPU/Cast）。
    但 **1024x576 全分辨率超 33ms 预算**（niter=8 实测 94.9ms，即便 niter=1 仍 38.9ms）；瓶颈是全分辨率
    访存（曲线施加 + ConvTranspose + TransData），非 backbone（砍 filters 反而变慢）。实时档建议降到
-   `640x360`/`768x432` + 共享曲线（`640x360 niter8 共享 = 19.5ms`）。整图路线降为备选，
-   Config-R 主线改为 CoTF + ISP CLUT；1024x576 整图输出留 Config-Q。
+   `640x360`/`768x432` + 共享曲线才可能进入预算。该结果已用于关闭整图产品路线。
 2. ✅ AIPP 全分辨率 CSC/归一开销（2026-06-14）：实测 **≈0ms**（1024x576 挂/不挂 AIPP 同速，差值噪声内），
    预处理可零开销融入 OM 前端，直接吃 VPSS chn1 的 NV21。
 3. ✅ CoTF CLUT/Gamma 相机链加载和热刷新：**相机→ISP+CLUT→HDMI 实时整链 30fps 联机点亮、
@@ -84,7 +81,7 @@
    31.2fps 实测。仍开放：动态 NN 参数刷新率、p95、闭环稳定性和 flicker 现场目视。
 4. ✅ `ss_mpi_isp_get_ae_stats` 低频读取验证（2026-06-11）：`isp_get_luma_stats` 归约
    1024-bin 直方图为 mean/clip%，直接喂 `control_decide`，判决与实际场景相符。
-5. 🟡 VGS+VO 替代 GFBG 是否无 flicker：链路侧冒烟 PASS，**面板观感需现场目视确认**。
+5. 🟡 VO 视频层链路冒烟 PASS，**面板 flicker 观感需现场目视确认**。
 6. 🟡 OS08A20 WDR 2to1 实测（2026-06-11）初步**正面**：30fps 满帧稳定，同场景暗部裁剪
    36.5%→5.3%、高光 5.7%→1.6%，灯管轮廓 linear 过曝白斑→WDR 清晰可辨。
    长短曝光比旋钮已调通（auto/4x/32x 趋势正确，32x 高光裁剪 0.8%）；运行时切帧率
@@ -130,9 +127,9 @@ ISP 硬件 CLUT 全分辨率施加（零 NPU）」**。完整验证与代码见 
 - ❌ **LUT 刷新率标定**：`control_should_refresh_lut` 的间隔/阈值（初版经验值）按实测场景适应延迟标定。
 - 🟡 **flicker 观感**：整链稳定无 MPI 错，热刷 LUT 的 flicker 观感需现场目视终判。
 - ❌ **画质补偿（ISP 局部块）**：用 LDCI/DRC/SHARPEN/Dither 补全局 LUT 的局部对比/细节损失（**不**加全分辨率细节 NN，会撞访存地板）。
-- ❌ **余量 NPU 感知→控制**：主 NNN ~85%+ 闲 + SVP_NNN 整颗闲，跑场景分类/人脸测光等喂 `control.c`（复用 ModelZoo OM，非像素任务）。
+- ⏸ **余量 NPU 感知→控制**：场景分类、人脸测光等属于后续增强，不影响当前功能完整性。
 
-技术路线分级（主推 CoTF-LUT / 备选 曲线网络 768x432 / 兜底 Zero-DCE 单向）与待测项详见
+产品路线、已关闭整图路线和 Zero-DCE 兜底说明详见
 [model-route-summary.md](model-route-summary.md)。
 
 ## 3. 开发规划
@@ -163,7 +160,7 @@ ISP 硬件 CLUT 全分辨率施加（零 NPU）」**。完整验证与代码见 
 
 ### 阶段 C — 全链路打通（A+B 汇合）
 
-目标：相机 → ISP CLUT 增强 → 全屏显示的实时演示雏形；严格同帧原图/增强分屏不属于 M3。
+目标：相机 → ISP CLUT 增强 → 全屏显示的实时演示；严格同帧原图/增强分屏已明确不在产品范围。
 
 接口、所有权和验收条件统一按 [data-path-interface-design.md](data-path-interface-design.md) 执行。
 
@@ -180,7 +177,8 @@ ISP 硬件 CLUT 全分辨率施加（零 NPU）」**。完整验证与代码见 
 
 1. ✅ 已把 chn2 infer + bridge 接入生产 control worker，完成失败保旧参数、
    sticky `PIPELINE_DEGRADED`、规则 Gamma 回退和 ACL 致命错误停链。
-2. 🟡 已完成 Gamma/DRC/CLUT 用途分流及高光/端点/单调/最大步长基础护栏；
+2. 🟡 已完成 NN→CLUT、AE 规则→Gamma、ISP 策略→DRC/LDCI 的职责分流，以及
+   高光/端点/单调/最大步长基础护栏；
    post-CLUT 反馈已加入 EMA/持续确认/冷却。当前场景强制 RGB CLUT 画质失败，生产高光门控必须保留。
 3. 🟡 已完成单场景 21 帧 param-net + 7 组 Gamma 公平 A/B：Gamma 0.25 当前场景通过，
    强制 RGB CLUT 不通过；余 ≥5 类、20–50 张独立场景最终验收与 OS08A20 微调。
@@ -191,8 +189,14 @@ ISP 硬件 CLUT 全分辨率施加（零 NPU）」**。完整验证与代码见 
 
 1. ✅ `stream.c`：VENC H.264 + 自带轻量 RTSP/RTP over TCP 已完成纯串流与 HDMI 并行验收；
    无客户端持续 drain、连续接收、断线重连、退出释放和 systemd 开机恢复均通过。
-2. Config-Q 拍照高画质路径。
-3. 文档收尾、LICENSE、演示脚本。
+2. 文档收尾、LICENSE、演示脚本。
+
+### 后续交互模块（不阻塞当前数据通路）
+
+1. 接入 `/dev/input/event0`，提供增强开关、Linear/WDR 模式选择和当前状态展示。
+2. 展示 `RUNNING/DEGRADED/FAILED`、NN 是否启用、RTSP/HDMI 状态和关键流水线指标。
+3. 交互操作通过受控配置/服务接口生效，不允许直接跨线程修改 ISP/VPSS 资源。
+4. 不提供 Config-Q 抓拍、整图模型或严格同帧原图/增强图分屏。
 
 ### 里程碑判据
 
@@ -202,7 +206,7 @@ ISP 硬件 CLUT 全分辨率施加（零 NPU）」**。完整验证与代码见 
 | M2（阶段 B） | OM 板端实测耗时出数,Config-R 可行性有结论 |
 | M3（阶段 C） | 🟡 生产闭环、降级回退与反馈抑制已完成并短测通过；余 10 分钟正式验收、动态画质和现场 flicker |
 | M4（阶段 D） | 场景自适应生效,画质验证通过 |
-| M5（阶段 E） | RTSP 远程可看,拍照路径可用,可交付演示 |
+| M5（阶段 E） | RTSP 远程可看，配置/健康检查完整，可交付全屏增强演示 |
 
 ## 4. 风险与依赖提示
 

@@ -27,7 +27,7 @@
 | 内存行为 | 稳态无逐帧/逐次刷新 `malloc`，无借用帧泄漏 |
 | 故障行为 | 推理或 CLUT 刷新失败时保留旧 LUT，显示主链继续运行 |
 
-这里的“30 fps”指相机帧链，不是 HDMI 的 60 Hz 扫描刷新率。M3 不要求严格同帧的原图/增强图分屏：
+这里的“30 fps”指相机帧链，不是 HDMI 的 60 Hz 扫描刷新率。产品不提供严格同帧原图/增强图分屏；
 ISP Gamma/DRC/CLUT 位于公共 ISP 输出上，同一 ISP 输出天然都是已增强帧。
 
 ## 2. 固定通道配置
@@ -37,12 +37,12 @@ Config-R 使用一个 VPSS 组（`grp0`）和三个固定角色通道：
 | 通道 | 尺寸/格式 | 所有者 | 用途 | 建议 depth |
 | --- | --- | --- | --- | --- |
 | `chn0` | 1024x600 NV21，无压缩 | display worker | 本地 HDMI 显示 | 2 |
-| `chn1` | 1024x576 NV21，无压缩 | stream worker | VENC/RTSP；整图模型备选可互斥复用 | 2 |
+| `chn1` | 1024x576 NV21，无压缩 | stream worker | VENC/RTSP | 2 |
 | `chn2` | 256x144 NV21，无压缩 | control worker | CoTF AIPP/ACL 输入 | 1 |
 
 约束：
 
-- Config-R 中 `chn1` 默认可关闭；启用串流后不得再由整图模型线程取帧。
+- Config-R 中 `chn1` 默认可关闭；启用后由 stream worker 独占。
 - 每个通道只有一个取帧所有者。禁止一个 VPSS 借用帧在多个线程之间扇出。
 - 若未来需要同一帧供多个消费者，优先增加硬件绑定/额外通道；不得只复制
   `ot_video_frame_info` 结构后分别归还。
@@ -54,12 +54,12 @@ Config-R 使用一个 VPSS 组（`grp0`）和三个固定角色通道：
 
 | 模块 | 输入 | 输出/副作用 | 不负责 |
 | --- | --- | --- | --- |
-| `main/pipeline` | `pipeline_config_t`、退出信号 | 配置默认值/校验、SYS/VB 与模块生命周期、线程创建/回收、汇总指标 | 图像算法和 SDK 细节 |
+| `main/pipeline` | `pipeline_config_t`、退出信号 | 配置默认值/校验、SYS/VB 与模块生命周期、线程创建/回收、`pipeline_metrics_t` 汇总 | 图像算法和 SDK 细节 |
 | `capture` | sensor/WDR 配置 | VI/ISP 启停、VI→VPSS 绑定 | VPSS 取帧 |
 | `vpss` | 三通道配置 | 借出/归还 SDK 帧 | 跨线程队列 |
 | `display` | `chn0` 借用帧 | VO/HDMI 送显 | 归还 VPSS 帧 |
 | `infer` | `chn2` NV21 借用帧 | 调用者提供的 float 参数 | 决策、ISP 写入、保留输入帧 |
-| `lut_bridge` | NN 参数 | Gamma/DRC/CLUT 安全输入 | ISP 调用、动态分配 |
+| `lut_bridge` | NN RGB 17³ LUT | ISP packed CLUT | ISP 调用、Gamma/DRC、动态分配 |
 | `control` | AE 统计、历史状态 | 模式和是否刷新 LUT 的纯逻辑决策 | 取帧、推理、线程 |
 | `isp` | ISP 参数和 packed LUT | 读取统计、更新 Gamma/DRC/dehaze/CLUT | 刷新策略 |
 | `stream` | `chn1` 借用帧 | VENC H.264 + RTSP | 与其他消费者共享帧 |
@@ -108,7 +108,7 @@ control worker 默认每 3 帧执行一次控制轮询，但只有 `control_shou
 5. `infer_run_nv21` 同步输出 14,739 个 float。
 6. 无论推理成功与否，立即归还 `chn2` 帧。
 7. 成功时由安全参数桥做有限值检查、clamp、单调/变化量护栏和格式转换。
-8. 按用途更新 Gamma/DRC/CLUT；当前 17³ 输出对应颜色 CLUT，曝光生产路径优先 Gamma/DRC。
+8. 写入 ISP CLUT。Gamma 由 AE 规则独立更新，DRC/LDCI 由 ISP 自动或配置策略管理。
 9. 仅在 ISP 写入成功后提交“当前参数版本”和成功时间；失败时保留旧参数并回退规则控制。
 
 当前模型输出布局固定为 `[RGB][R][G][B]`，B 轴最快，共 `3 * 17^3 = 14,739` 个 float。
@@ -168,8 +168,12 @@ control worker 默认每 3 帧执行一次控制轮询，但只有 `control_shou
 | ACL SMMU/CMDQ timeout | 视为致命运行时错误，停止整链；板卡干净重启后恢复 |
 | display/VO 致命错误 | 进入 `PIPELINE_FAILED` 并按逆序退出 |
 
-建议每秒输出一行稳定指标：状态、display/stream 帧数、VPSS timeout、LUT 请求/成功/失败、最近和最大
-推理耗时、最近和最大 CLUT 写入耗时。日志不得逐帧打印。
+生产入口统一使用 `pipeline_metrics_t` 汇总：状态、display/stream 帧数和 drops、帧 timeout、
+LUT 请求/成功/失败、瞬态/致命错误、降级次数，以及推理/完整事务的 last/max/p95。运行期原子计数
+在退出时生成唯一快照，日志不得逐帧打印。
+
+2026-06-21 板端 20 秒回归：display/stream 均 543 帧、30.16fps，0 drops/timeout/transient/fatal，
+5/5 LUT 更新，推理 p95 1.35ms、完整事务 p95 4.35ms；既有 P1 验收脚本可直接解析统一摘要。
 
 生产程序对 ACL/SMMU 致命错误返回 70；systemd 将 70 列为 `RestartPreventExitStatus`，避免坏上下文
 上的无限重启。配置错误返回 2，同样等待运维修正后显式 restart。其它启动期瞬态失败保留自动重试。
@@ -209,9 +213,8 @@ control worker 默认每 3 帧执行一次控制轮询，但只有 `control_shou
 - chn2 位于 post-CLUT 路径，动态模型会读取自身增强结果。当前已加入 1/4 EMA、连续 3 次变化确认、
   刷新后 10 个控制周期冷却和 packed LUT 最大步长；仍需用动态场景验证收敛参数。
 - ACL 是否能安全直接导入 VPSS/VB 物理地址尚未验证；当前基线是缩略图 copy。
-- ISP CLUT 主线不能直接提供严格同帧原图/增强图分屏；需要额外 ISP/旁路能力或整图备选。
+- 严格同帧原图/增强图分屏、Config-Q 与整图模型旁路已明确不在产品范围。
 - RTSP server 已选仓库内轻量实现：单客户端、RTP/RTSP over TCP interleaved、无第三方运行依赖；
   厂商 MPP sample 仅提供 VENC/落文件代码，没有可小范围复用的 RTSP server。实现已通过主机协议
   单测、SDK Release 交叉编译、纯串流播放/重连/资源验收和 HDMI 并行门禁；并行显示约
   30.1–30.5fps、stream drops=0，systemd 开机自动恢复也已通过。
-- `chn1` 若用于整图模型备选，必须在配置层禁用 stream，第一版不做动态抢占。

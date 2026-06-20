@@ -5,7 +5,8 @@
 - 任务：**实时双向曝光校正**——既拉亮暗部，也抑制高光过曝（而非单向拉亮）。
 - 过曝是 sensor 像素阱饱和导致的**不可逆**信息丢失，正解是**拍摄端预防（WDR/曝光控制）**，而非末端补救。
 - 关键设计：**多帧降噪交给 ISP 硬件（3DNR/HNR）**；NN 读取低分辨率缩略图并预测低频参数，
-  ISP Gamma/DRC/CLUT 对全分辨率帧施加。这样规避多帧融合鬼影和整图模型的访存瓶颈。
+  只预测 RGB 17³ CLUT；ISP CLUT 对全分辨率帧施加。Gamma 由 AE 规则控制，DRC/LDCI
+  由 ISP 自动或配置策略管理。这样规避多帧融合鬼影和整图模型的访存瓶颈。
 - 主路径不做 CPU 或 NPU 全分辨率逐像素搬运。NPU 与少量 CPU LUT 打包仅在低频控制旁路工作。
 
 ## 2. 端到端数据通路
@@ -20,18 +21,15 @@ OS08A20 -> VI -> ISP
 
 控制旁路（低频或场景变化时）：
 
-ISP AE 统计 ---------------------------> control_decide
-VPSS chn2 256x144 NV21 -> AIPP -> CoTF-inspired param-net -> 安全参数桥
-       -> 全局曝光/色调: ISP Gamma；动态范围: DRC；颜色: 17³ CLUT
+ISP AE 统计 -> 规则 Gamma
+VPSS chn2 256x144 NV21 -> AIPP -> CoTF-inspired param-net -> 安全 CLUT 桥
+       -> 颜色: ISP 17³ CLUT
        -> control_should_refresh_lut 控制刷新频率
-
-整图增强备选：
-
-VPSS chn1 -> AIPP -> ExpoCurveNet 768x432 -> 后处理 -> VGS/VO
+ISP DRC/LDCI ------------------------------------> ISP 自动/配置策略
 ```
 
-ISP 参数块位于公共图像链内，因此同一 ISP 输出天然是“已增强帧”。如果演示必须同时显示严格同帧的
-原图/增强图，需要额外的旁路能力或使用整图增强备选；当前主线优先支持全屏增强和增强开关切换。
+ISP 参数块位于公共图像链内，因此同一 ISP 输出天然是“已增强帧”。产品范围为全屏增强与增强开关，
+不实现严格同帧原图/增强图分屏，也不实现整图模型旁路。
 
 ## 3. 逐级明细
 
@@ -43,39 +41,40 @@ ISP 参数块位于公共图像链内，因此同一 ISP 输出天然是“已�
 | 4 | 色调与 LUT 施加 | ISP dehaze/LTM/DRC/Gamma/CLUT | RAW/RGB/YUV | YVU420SP | 每帧施加当前参数 | 0 |
 | 5 | 分发缩放 | VPSS | NV21 全幅 | chn0/chn1/chn2 | 1024x600 显示 + 1024x576 串流 + 256x144 控制缩略图 | 0 |
 | 6 | 参数网预处理 | AIPP（融入 OM） | chn2 NV21 | NCHW FP16 RGB /255 | CSC+归一+布局 | NNN，低频 |
-| 7 | 参数预测 | NNN/ACL OM | 256x144 FP16 | 17³ LUT/色调参数 | CoTF-inspired param-net | NNN，缩略图 benchmark 约 0.8ms/次 |
-| 8 | 安全参数桥 | CPU 轻量 | NN 参数 | Gamma/DRC/CLUT 输入 | clamp、正则检查、格式转换 | 0 |
+| 7 | 参数预测 | NNN/ACL OM | 256x144 FP16 | RGB 17³ LUT | CoTF-inspired param-net | NNN，缩略图 benchmark 约 0.8ms/次 |
+| 8 | 安全 CLUT 桥 | CPU 轻量 | RGB 17³ LUT | ISP packed CLUT | clamp、端点/单调/步长检查、17v2 格式转换 | 0 |
 | 9 | 参数刷新 | CPU→ISP | 安全参数 | ISP 参数块 | 限流/迟滞后热刷新 | 0 |
 | 10a | 本地显示 | VO→HDMI | chn0 NV21 | 1024x600 DVI | 零拷贝送显 | 0 |
 | 10b | 远程串流 | VENC→RTSP | NV21 | H.264 | 硬件编码+推流 | 0 |
 | 11 | 控制 | CPU | ISP统计 | ISP参数+刷新决策 | 场景判决+迟滞 | 0 |
 
-## 4. 两套运行配置
+## 4. 唯一产品运行配置
 
 - **Config-R（实时 30fps，主线）**：低频参数网络读取 VPSS 缩略图；ISP Gamma/DRC/CLUT
-  对每帧全分辨率施加。规则判决→Gamma 与正式 NN、chn2+AIPP、17v2 bridge 已接入生产
+  对每帧全分辨率施加。正式契约为 **NN→CLUT、AE 规则→Gamma、ISP 策略→DRC/LDCI**。
+  规则判决→Gamma 与正式 NN、chn2+AIPP、17v2 bridge 已接入生产
   control worker；连续失败降级回退和 post-CLUT 基础反馈抑制已实现。生产配置可选择
   linear/WDR 2to1 与目标帧率，待正式画质与长时验收。
-- **Config-R 备选**：`768x432 + 共享曲线 niter8` 整图 OM，单次执行约 `27.2ms`；适合快速演示，
-  但仍需为整链开销留预算，且 NPU 每帧参与。
-- **Config-Q（拍照/低帧，高画质）**：更大输入（如 1024x640）、更多迭代、可叠加多帧堆栈；约 100ms 量级，用于按键抓拍增强。
-- **兜底路线**：若双向方案在画质/工期上均不达预期，退回探索层已板端实测的 **Zero-DCE Lite**（单向提亮，须配强光场景门控）。技术路线分级（主推/备选/兜底）见 [model-route-summary.md](model-route-summary.md)。
+- **兜底路线**：若双向方案在画质/工期上均不达预期，退回探索层已板端实测的
+  **Zero-DCE Lite**（单向提亮，须配强光场景门控）。产品路线与已关闭路线见
+  [model-route-summary.md](model-route-summary.md)。
 
-### 4.1 两条候选模型路线（曲线网络 vs 受 CoTF 启发的 LUT 路线）
+### 4.1 已关闭的整图路线
 
-> **命名说明**：本仓库所称「CoTF 路线」只移植了官方 CoTF（`CoNet`）中「预测 3D-LUT」这一子组件（该子组件本身借自
-> Image-Adaptive-3DLUT / SepLUT），并把施加卸给 ISP 硬件。官方 CoTF 的命名贡献——协同变换、自适应采样、注意力
-> 融合——因落在 NNN 红名单已**全部丢弃**，故画质 ≈ 全局 3D-LUT 级，**不等于官方 CoTF**。对照详见
-> [../models/cotf-route-verification.md](../models/cotf-route-verification.md) 与 [model-route-summary.md](model-route-summary.md)。
-> 硬件施加、LCDP 正式权重、256x144+AIPP ACL 推理和 C 17v2 bridge 已接入生产线程；
-> 高光/端点/单调/最大步长护栏和失败降级已完成，闭环画质与长期稳定性待验收。
+本仓库所称「CoTF 路线」只移植了官方 CoTF（`CoNet`）中「预测 3D-LUT」这一子组件（该子组件本身借自
+Image-Adaptive-3DLUT / SepLUT），并把施加卸给 ISP 硬件。官方 CoTF 的协同变换、自适应采样和注意力
+融合因落在 NNN 红名单已全部丢弃，故画质约等于全局 3D-LUT 级，不等于官方 CoTF。对照详见
+[../models/cotf-route-verification.md](../models/cotf-route-verification.md) 与
+[model-route-summary.md](model-route-summary.md)。
 
-横评 5 个架构后确认，「输出整图」的模型在 1024x576 都撞**全分辨率访存的像素线性地板**（与参数量无关）。两条路线：
+横评 5 个架构后确认，「输出整图」的模型在 1024x576 都撞**全分辨率访存的像素线性地板**。
+ExpoCurveNet、Config-Q、`postproc/compose` 与整图分屏路径已明确舍弃，不属于产品待开发范围。
+相关模型和测速数据只作为路线决策证据保留。
 
-| 路线 | NN 做什么 | 全分辨率施加 | NPU 占用 | 1024x576 实时 | 适用 |
-| --- | --- | --- | --- | --- | --- |
-| **曲线网络（本仓库 ExpoCurveNet）** | /4 backbone 出曲线 + **全分辨率逐像素施加** | 在 NPU | ~100%（每帧 gating） | ❌（768x432 可，27ms） | 快速上线、实现简单 |
-| **CoTF（NN 出 LUT + ISP 施加）** | 低分辨率出 3D-LUT（~1–5ms） | **ISP 硬件 CLUT**（零 NPU） | ~3–15%（低频刷 LUT） | ✅（NN 移出每帧路径） | 全分辨率真实时、释放 NPU |
+| 路线 | NN 做什么 | 全分辨率施加 | 结论 |
+| --- | --- | --- | --- |
+| ExpoCurveNet 整图输出 | 全分辨率逐像素增强 | NPU | **舍弃**：不实现产品路径 |
+| CoTF-inspired CLUT | 低分辨率出 3D-LUT（~1–5ms） | ISP 硬件 CLUT | **唯一产品路线** |
 
 硬件 CLUT/Gamma 施加、ACL 推理和 30fps 主链均已分别验证。CLUT 几何已由厂商资料和板端 sweep
 确认：17³ 逻辑节点按三轴奇偶拆为 8 个 bank，并以 4 路交织写入 5508 项；RGB 轴序和
@@ -83,11 +82,11 @@ R高/G中/B低位序的 identity 门禁已通过。生产参数桥与失败降�
 
 ## 5. 模块与代码映射
 
-板端代码平铺在 `board/src/`。CoTF 主线需要 `capture/isp/vpss/infer/lut_bridge/control/display/stream`；
-`postproc/compose` 主要服务整图增强备选。头文件位于 `board/include/`，跨模块通道、状态和指标约定放
+板端代码平铺在 `board/src/`。产品路径使用 `capture/isp/vpss/infer/lut_bridge/control/display/stream`。
+头文件位于 `board/include/`，跨模块通道、状态和指标约定放
 `pipeline.h`；`pipeline.c` 提供配置默认值、合法性和状态名契约，`main.c` 负责硬件生命周期和线程编排。
 
-Config-R 固定 `chn0=1024x600` 显示、`chn1=1024x576` 串流/整图备选互斥复用、
+Config-R 固定 `chn0=1024x600` 显示、`chn1=1024x576` 串流、
 `chn2=256x144` CoTF 控制缩略图。模块接口、帧所有权、刷新事务和并行开发完成定义见
 [data-path-interface-design.md](data-path-interface-design.md)。
 
@@ -95,15 +94,14 @@ Config-R 固定 `chn0=1024x600` 显示、`chn1=1024x576` 串流/整图备选互�
 
 1. ✅ 已验证（2026-06-14，`models/expo-curve-network.md`）：`/4 AvgPool→backbone→ConvTranspose→全分辨率施加`
    **干净落 AICore（无 AICPU/Cast）**；但 **1024x576 超 33ms 预算**（niter=8=94.9ms，niter=1 仍 38.9ms），
-   瓶颈为全分辨率访存而非 backbone。整图增强备选需降到 `640x360`/`768x432` + 共享曲线
-   （`640x360 niter8 共享=19.5ms`）；1024x576 归 Config-Q。
+   瓶颈为全分辨率访存而非 backbone。该结果已用于关闭整图产品路线，不再继续开发。
 2. ✅ 已验证（2026-06-14）：AIPP 全分辨率 CSC/归一开销 **≈0ms**（挂/不挂同速，差值噪声内），
    预处理可零开销融入 OM 前端。
 3. 🟡 参数网主线：正式权重、chn2+AIPP、17v2 bridge、生产 control worker、降级回退和
    post-CLUT 基础反馈抑制已联机；待 10 分钟验收、动态参数标定和闭环画质评估。
 4. ~~ISP 统计读取~~ ✅ 已验证（2026-06-11）：`ss_mpi_isp_get_ae_stats` 低频读取正常，
    `isp_get_luma_stats` 归约为 mean/clip% 直接供 `control_decide`（见 `board/README.md`）。
-5. VO 视频层的现场 flicker 观感待确认；VGS 分屏仅属于整图增强备选。
+5. VO 视频层的现场 flicker 观感待确认；不再规划 VGS 分屏。
 
 设备运行完整性已经形成以下闭环：systemd 配置 schema v1 → 严格参数校验 → linear/WDR
 生产起链 → 统一状态日志与逆序释放 → 普通故障自动重试；ACL/SMMU 致命故障使用退出码 70，

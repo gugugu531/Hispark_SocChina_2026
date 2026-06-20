@@ -7,7 +7,7 @@
  *
  * Config-R 通道约定（data-path-interface-design.md）：
  *   chn0 → 1024x600 显示；
- *   chn1 → 1024x576 串流（整图模型备选与串流互斥复用）；
+ *   chn1 → 1024x576 串流；
  *   chn2 → 256x144 CoTF 控制缩略图。
  * 本模块按配置启用通道；VI ONLINE 模式下 CPU 取帧必须经 VPSS 通道
  * （chn 配置 depth>0 才能 vpss_get_frame）。

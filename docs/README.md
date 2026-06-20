@@ -3,7 +3,7 @@
 | 文档 | 说明 |
 | --- | --- |
 | `development-guide.md` | 开发规范主文档：目录约定、开发环境与依赖、CMake 构建、编码规范、模型规范、板端运行规范、Git 规范、文档规范、测试规范。 |
-| `architecture.md` | 系统架构与完整图像增强链数据通路、逐级明细、两套运行配置、已核实 SDK 接口与约束。 |
+| `architecture.md` | 系统架构与完整图像增强链数据通路、唯一产品配置、已关闭路线、已核实 SDK 接口与约束。 |
 | `data-path-interface-design.md` | Config-R 阶段 C 协作契约：通道分配、模块接口、线程/帧所有权、LUT 刷新事务、降级策略和并行开发验收。 |
 | `model-route-summary.md` | 模型路线稳定结论：整图访存瓶颈、AIPP 实测、CoTF 主线和待验证边界。 |
 | `quality-acceptance.md` | 画质验收方法、当前场景批量结果、生产回退结论与剩余场景覆盖。 |

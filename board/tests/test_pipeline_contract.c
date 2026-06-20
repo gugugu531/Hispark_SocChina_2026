@@ -29,6 +29,14 @@ int main(void)
     if (pipeline_config_validate(&cfg) != PIPELINE_ERR_INVALID) {
         return 1;
     }
+    {
+        pipeline_metrics_t metrics = {0};
+        metrics.state = PIPELINE_STATE_RUNNING;
+        metrics.lut_requests = 1;
+        if (metrics.state != PIPELINE_STATE_RUNNING || metrics.lut_requests != 1) {
+            return 1;
+        }
+    }
     printf("pipeline contract OK\n");
     return 0;
 }

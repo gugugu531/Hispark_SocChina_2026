@@ -26,13 +26,13 @@
 
 | 路线 | 状态 | 板端结论 |
 | --- | --- | --- |
-| ExpoCurveNet 整图输出 | 已完成结构和性能去风险，尚未认真训练 | `768x432 shared niter8 ≈27.2ms`；`1024x576` 不满足 33ms |
+| ExpoCurveNet 整图输出 | 已完成结构和性能去风险，产品路线已关闭 | 只保留实验与性能结论，不再训练或接入板端 |
 | CoTF-inspired 参数网络 + ISP 参数块 | LCDP 正式训练、256x144+AIPP 推理和硬件施加端已验证 | 正式 OM 30/30，NPU exec 平均 `1.13ms`；主推全分辨率实时路线 |
 | Zero-DCE Lite / SCI / MSEC | 性能对照 | 用于证明整图输出的全分辨率访存瓶颈，不作为当前主线 |
 
-硬件施加端、正式训练权重、VPSS chn2+AIPP ACL 推理和 17v2 C bridge 已分别在板端验证；
-完整 RGB CLUT 实验预览也已跑通。当前开放项是把推理/bridge 接入生产控制线程，并补齐
-Gamma/DRC/CLUT 用途分流、高光/端点护栏、失败回退和闭环画质验收。详细状态见
+硬件施加端、正式训练权重、VPSS chn2+AIPP ACL 推理、17v2 C bridge 和生产控制线程均已联机。
+正式契约为 NN 只输出 RGB 17³ CLUT，Gamma 由 AE 规则控制，DRC/LDCI 由 ISP 策略管理。
+当前开放项是多场景闭环画质验收。详细状态见
 [`cotf-route-verification.md`](cotf-route-verification.md) 与
 [`param-net-training.md`](param-net-training.md)。
 

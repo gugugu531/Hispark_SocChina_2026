@@ -34,14 +34,14 @@ models/ ── networks/ · exporters/ · tools/ · configs/ · tests/ · weight
 board/ ── CMakeLists.txt · cmake/ · include/ · src/ · tests/
 ```
 
-- `src/` 平铺，每个功能一个 `.c`，命名用数据通路语义（`capture.c/isp.c/vpss.c/infer.c/postproc.c/compose.c/display.c/stream.c/control.c`），`main.c` 为主程序入口；
+- `src/` 平铺，每个功能一个 `.c`，命名用数据通路语义（`capture.c/isp.c/vpss.c/infer.c/lut_bridge.c/display.c/stream.c/control.c/pipeline.c`），`main.c` 为主程序入口；
 - `include/` 放头文件；跨模块共享的帧结构/枚举放 `pipeline.h`；
 - `tests/test_*.c` 每个一个测试入口；
 - 新增功能直接加文件，CMake 自动收集（glob）。起步不预建空文件。
 
 ## 2. 命名约定
 
-- C/C++ 文件：小写下划线，按模块前缀，如 `isp_dehaze.c`、`infer_acl.c`、`compose_vgs.c`。
+- C/C++ 文件：小写下划线，按模块前缀，如 `isp_dehaze.c`、`infer_acl.c`、`lut_bridge.c`。
 - 函数：模块前缀 + 动作，如 `Isp_SetDehaze()`、`Infer_Run()`。
 - 宏/常量：全大写下划线。
 - 分辨率/配置标识统一写法：`1024x576`、`640x320`（宽 x 高）。

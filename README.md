@@ -15,8 +15,9 @@ OS08A20 -> VI -> ISP(WDR/降噪/DRC/Gamma/CLUT) -> VPSS -> VO/HDMI
                                               -> VENC/RTSP
 
 低频控制旁路：
-VPSS 缩略图 -> AIPP -> CoTF-inspired param-net -> 安全参数桥 -> ISP Gamma/DRC/CLUT
-ISP AE 统计 -------------------------------------> 场景判决与刷新控制
+VPSS 缩略图 -> AIPP -> CoTF-inspired param-net -> 安全 CLUT 桥 -> ISP CLUT
+ISP AE 统计 -> 场景判决 -> 规则 Gamma
+ISP DRC/LDCI ------------------------------------> ISP 自动/配置策略
 ```
 
 当前生产程序已用规则判决驱动 ISP Gamma 在板端 30fps 跑通；LCDP param-net 正式训练、
@@ -26,6 +27,8 @@ ISP AE 统计 -------------------------------------> 场景判决与刷新控制
 生产入口并完成纯串流板端验收：1024x576@30、约 3Mbps、断线重连和退出清理正常。
 NN/bridge 已接入生产控制线程：启用模型时使用 chn2+AIPP 推理，经安全 bridge 限幅后刷新
 ISP CLUT；连续三次普通刷新失败会关闭 CLUT 并回退规则 Gamma，ACL 运行时致命错误则安全停链。
+正式参数契约已收敛为：NN 只输出 RGB 17³ CLUT；Gamma 由 AE 规则控制，DRC/LDCI 由 ISP 策略管理，
+不再规划 NN 多头 Gamma/DRC 输出。
 生产配置已支持 linear/WDR 2to1 与目标帧率选择；配置 schema、设备健康检查和 ACL 致命退出码
 已接入 systemd，坏掉的 NPU/SMMU 上下文不会触发无意义的自动重启风暴。
 2026-06-20 板端 20 秒生产冒烟完成 3 次刷新，推理总耗时 `2.40–2.71ms`，RTSP 451 帧、

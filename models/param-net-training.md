@@ -168,7 +168,7 @@ elapsed=12m30s eta=3h15m20s finish=2026-06-20 02:35:10 CST
 | 稳态样本 | 约 `0.93–1.07 ms` |
 
 该结果确认正式权重、AIPP 和 chn2 输入链可在板端运行；尚未确认的是 NN 输出经
-Gamma/DRC/CLUT 安全参数桥后的动态闭环画质，而不是模型加载或推理可行性。
+RGB CLUT 安全桥后的动态闭环画质。Gamma/DRC 不属于模型输出。
 
 ### checkpoint → ONNX → OM 数值一致性（2026-06-20）
 

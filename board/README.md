@@ -159,7 +159,7 @@ ssh "${BOARD}" '/root/socchina-2026/test_cotf_live 4 --probe'
 ### vpss — 多路硬件缩放分发（数据通路第 5 级）
 
 接口见 `include/vpss.h`：`vpss_init` / `vpss_get_frame` / `vpss_release_frame` / `vpss_deinit`。
-按 Config-R 约定 chn0=1024x600 显示 / chn1=1024x576 串流（与整图模型备选互斥）/
+按 Config-R 约定 chn0=1024x600 显示 / chn1=1024x576 串流 /
 chn2=256x144 CoTF 控制缩略图，NV21 无压缩输出；`depth>0` 的通道可 CPU 取帧，帧结构与
 `display_send_frame` 直接兼容。取帧方必须在同一线程向同一 grp/chn 恰好归还一次。
 当前实现一次支持一个组（管线仅用 grp0）。
@@ -223,6 +223,9 @@ BOARD=hispark-remote scripts/validate_board_p1.sh 30
   6/6 次更新成功。当时记录的推理 total p95 为 `2.86ms`，完整事务 p95 `4.86ms`。
 - 中断的约 174 秒测试得到显示 `30.05fps`、stream `5224` 帧、`0 drops`、31/31 更新；
   推理 p95 `3.50ms`、事务 p95 `5.43ms`。该测试未跑满 10 分钟，不计为正式长测通过。
+- 2026-06-21 统一 `pipeline_metrics_t` 后 20 秒回归：display/stream 均 `543` 帧、
+  `30.16fps`、0 drops/timeout/transient/fatal，5/5 LUT 更新；推理 p95 `1.35ms`、
+  完整事务 p95 `4.35ms`。既有 P1 解析与门限保持兼容。
 
 解读：
 

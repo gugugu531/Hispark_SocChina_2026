@@ -10,7 +10,7 @@
 
 typedef enum {
     PIPELINE_VPSS_CHN_DISPLAY = 0, /* 1024x600，本地显示 */
-    PIPELINE_VPSS_CHN_STREAM = 1,  /* 1024x576，RTSP；整图模型备选复用此通道 */
+    PIPELINE_VPSS_CHN_STREAM = 1,  /* 1024x576，RTSP */
     PIPELINE_VPSS_CHN_CONTROL = 2, /* 256x144，CoTF 参数网络 */
     PIPELINE_VPSS_CHN_COUNT = 3
 } pipeline_vpss_channel_t;
@@ -74,6 +74,7 @@ typedef struct {
 } pipeline_config_t;
 
 typedef struct {
+    pipeline_state_t state;
     uint64_t display_frames;
     uint64_t display_drops;
     uint64_t stream_frames;
@@ -86,13 +87,17 @@ typedef struct {
     uint64_t lut_failures;
     uint64_t transient_errors;
     uint64_t fatal_errors;
+    uint64_t degraded_events;
     float display_fps;
     float infer_last_ms;
     float infer_max_ms;
-    float lut_pack_last_ms;
-    float lut_pack_max_ms;
-    float lut_apply_last_ms;
-    float lut_apply_max_ms;
+    float infer_total_last_ms;
+    float infer_total_max_ms;
+    float transaction_last_ms;
+    float transaction_max_ms;
+    float infer_p95_ms;
+    float transaction_p95_ms;
+    unsigned timing_samples;
 } pipeline_metrics_t;
 
 void pipeline_config_defaults(pipeline_config_t *cfg);

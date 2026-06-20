@@ -49,19 +49,22 @@
 #define APP_TIMING_SAMPLES      256u
 
 static volatile sig_atomic_t g_stop = 0;
-static atomic_uint_fast64_t g_stream_frames;
-static atomic_uint_fast64_t g_stream_drops;
 
 typedef struct {
-    float strength;
-    float high_clip_guard;
-    int nn_enabled;
-    int fatal_error;
-    control_health_t health;
-    uint64_t polls;
-    uint64_t infer_runs;
-    uint64_t lut_updates;
-    uint64_t lut_failures;
+    atomic_int state;
+    atomic_uint_fast64_t display_frames;
+    atomic_uint_fast64_t display_drops;
+    atomic_uint_fast64_t stream_frames;
+    atomic_uint_fast64_t stream_drops;
+    atomic_uint_fast64_t control_polls;
+    atomic_uint_fast64_t frame_timeouts;
+    atomic_uint_fast64_t infer_runs;
+    atomic_uint_fast64_t lut_requests;
+    atomic_uint_fast64_t lut_updates;
+    atomic_uint_fast64_t lut_failures;
+    atomic_uint_fast64_t transient_errors;
+    atomic_uint_fast64_t fatal_errors;
+    atomic_uint_fast64_t degraded_events;
     float infer_last_ms;
     float infer_max_ms;
     float infer_total_last_ms;
@@ -71,7 +74,59 @@ typedef struct {
     float infer_samples[APP_TIMING_SAMPLES];
     float transaction_samples[APP_TIMING_SAMPLES];
     unsigned timing_samples;
+} app_runtime_metrics_t;
+
+typedef struct {
+    float strength;
+    float high_clip_guard;
+    int nn_enabled;
+    int fatal_error;
+    control_health_t health;
+    app_runtime_metrics_t *metrics;
 } app_control_ctx_t;
+
+static float percentile95(const float *samples, unsigned count);
+
+static void metrics_set_state(app_runtime_metrics_t *metrics, pipeline_state_t state)
+{
+    atomic_store(&metrics->state, state);
+    LOG_INFO("pipeline lifecycle state=%s", pipeline_state_name(state));
+}
+
+static void metrics_snapshot(const app_runtime_metrics_t *runtime, long elapsed_ms,
+                             pipeline_metrics_t *out)
+{
+    unsigned sample_count;
+
+    memset(out, 0, sizeof(*out));
+    out->state = (pipeline_state_t)atomic_load(&runtime->state);
+    out->display_frames = atomic_load(&runtime->display_frames);
+    out->display_drops = atomic_load(&runtime->display_drops);
+    out->stream_frames = atomic_load(&runtime->stream_frames);
+    out->stream_drops = atomic_load(&runtime->stream_drops);
+    out->control_polls = atomic_load(&runtime->control_polls);
+    out->frame_timeouts = atomic_load(&runtime->frame_timeouts);
+    out->infer_runs = atomic_load(&runtime->infer_runs);
+    out->lut_requests = atomic_load(&runtime->lut_requests);
+    out->lut_updates = atomic_load(&runtime->lut_updates);
+    out->lut_failures = atomic_load(&runtime->lut_failures);
+    out->transient_errors = atomic_load(&runtime->transient_errors);
+    out->fatal_errors = atomic_load(&runtime->fatal_errors);
+    out->degraded_events = atomic_load(&runtime->degraded_events);
+    out->display_fps =
+        (elapsed_ms > 0) ? (float)(out->display_frames * 1000.0 / elapsed_ms) : 0.0f;
+    out->infer_last_ms = runtime->infer_last_ms;
+    out->infer_max_ms = runtime->infer_max_ms;
+    out->infer_total_last_ms = runtime->infer_total_last_ms;
+    out->infer_total_max_ms = runtime->infer_total_max_ms;
+    out->transaction_last_ms = runtime->transaction_last_ms;
+    out->transaction_max_ms = runtime->transaction_max_ms;
+    sample_count = runtime->timing_samples < APP_TIMING_SAMPLES ? runtime->timing_samples
+                                                                : APP_TIMING_SAMPLES;
+    out->timing_samples = sample_count;
+    out->infer_p95_ms = percentile95(runtime->infer_samples, sample_count);
+    out->transaction_p95_ms = percentile95(runtime->transaction_samples, sample_count);
+}
 
 static void on_sig(int s) {
     (void) s;
@@ -151,6 +206,7 @@ static const char* mode_name(expo_mode_t m) {
  */
 static void* control_worker(void* arg) {
     app_control_ctx_t *ctx = (app_control_ctx_t *)arg;
+    app_runtime_metrics_t *metrics = ctx->metrics;
     luma_stats_t raw_stats, cur;
     control_feedback_t feedback;
     static float raw_lut[PIPELINE_COTF_LUT_FLOAT_COUNT];
@@ -172,8 +228,9 @@ static void* control_worker(void* arg) {
         int refresh;
 
         usleep(APP_CTRL_PERIOD_MS * 1000);
-        ctx->polls++;
+        atomic_fetch_add(&metrics->control_polls, 1);
         if (isp_get_luma_stats(&raw_stats) != 0) {
+            atomic_fetch_add(&metrics->transient_errors, 1);
             continue;
         }
         refresh = control_feedback_observe(&feedback, &raw_stats, &cur);
@@ -185,6 +242,7 @@ static void* control_worker(void* arg) {
         /* Gamma/DRC/CLUT 按用途分流：当前模型只产 RGB 3D-LUT；曝光色调仍由规则 Gamma 负责。
          * DRC 保持 ISP 自动配置，避免用 RGB LUT 冒充动态范围局部参数。 */
         if (isp_gamma_apply_tone(mode_to_tone(mode), ctx->strength) != 0) {
+            atomic_fetch_add(&metrics->transient_errors, 1);
             LOG_WARN("[ctrl] gamma update rejected; keeping previous ISP parameters");
             continue;
         }
@@ -210,26 +268,30 @@ static void* control_worker(void* arg) {
             int infer_rc = PIPELINE_ERR_IO;
             int transaction_ok = 0;
 
+            atomic_fetch_add(&metrics->lut_requests, 1);
             if (vpss_get_frame(PIPELINE_VPSS_GRP, PIPELINE_VPSS_CHN_CONTROL, &control_frame,
                                APP_CONTROL_TIMEOUT_MS) == 0) {
                 got_frame = 1;
                 infer_rc = infer_run_nv21(&control_frame, raw_lut,
                                           PIPELINE_COTF_LUT_FLOAT_COUNT, &timing);
-                ctx->infer_runs++;
-                ctx->infer_last_ms = timing.execute_ms;
-                if (timing.execute_ms > ctx->infer_max_ms) {
-                    ctx->infer_max_ms = timing.execute_ms;
+                atomic_fetch_add(&metrics->infer_runs, 1);
+                metrics->infer_last_ms = timing.execute_ms;
+                if (timing.execute_ms > metrics->infer_max_ms) {
+                    metrics->infer_max_ms = timing.execute_ms;
                 }
-                ctx->infer_total_last_ms = timing.total_ms;
-                if (timing.total_ms > ctx->infer_total_max_ms) {
-                    ctx->infer_total_max_ms = timing.total_ms;
+                metrics->infer_total_last_ms = timing.total_ms;
+                if (timing.total_ms > metrics->infer_total_max_ms) {
+                    metrics->infer_total_max_ms = timing.total_ms;
                 }
                 if (vpss_release_frame(PIPELINE_VPSS_GRP, PIPELINE_VPSS_CHN_CONTROL,
                                        &control_frame) != 0) {
                     LOG_ERR("[ctrl] failed to release chn2 frame");
+                    atomic_fetch_add(&metrics->transient_errors, 1);
                     infer_rc = PIPELINE_ERR_IO;
                 }
                 got_frame = 0;
+            } else {
+                atomic_fetch_add(&metrics->frame_timeouts, 1);
             }
             if (got_frame) {
                 (void)vpss_release_frame(PIPELINE_VPSS_GRP, PIPELINE_VPSS_CHN_CONTROL,
@@ -238,6 +300,8 @@ static void* control_worker(void* arg) {
             if (infer_rc == PIPELINE_ERR_RUNTIME) {
                 LOG_ERR("[ctrl] fatal ACL runtime failure; stopping pipeline for clean recovery");
                 ctx->fatal_error = 1;
+                atomic_fetch_add(&metrics->fatal_errors, 1);
+                metrics_set_state(metrics, PIPELINE_STATE_FAILED);
                 g_stop = 1;
                 break;
             }
@@ -256,32 +320,36 @@ static void* control_worker(void* arg) {
 
             if (transaction_ok) {
                 float transaction_ms = (now_us() - transaction_start_us) / 1000.0f;
-                unsigned sample_index = ctx->timing_samples % APP_TIMING_SAMPLES;
+                unsigned sample_index = metrics->timing_samples % APP_TIMING_SAMPLES;
 
                 (void)control_health_record(&ctx->health, 1, APP_NN_FAILURE_LIMIT);
-                ctx->lut_updates++;
-                ctx->transaction_last_ms = transaction_ms;
-                if (transaction_ms > ctx->transaction_max_ms) {
-                    ctx->transaction_max_ms = transaction_ms;
+                atomic_fetch_add(&metrics->lut_updates, 1);
+                metrics->transaction_last_ms = transaction_ms;
+                if (transaction_ms > metrics->transaction_max_ms) {
+                    metrics->transaction_max_ms = transaction_ms;
                 }
-                ctx->infer_samples[sample_index] = timing.execute_ms;
-                ctx->transaction_samples[sample_index] = transaction_ms;
-                ctx->timing_samples++;
+                metrics->infer_samples[sample_index] = timing.execute_ms;
+                metrics->transaction_samples[sample_index] = transaction_ms;
+                metrics->timing_samples++;
                 memcpy(previous_lut, packed_lut, sizeof(previous_lut));
                 have_previous_lut = 1;
                 control_feedback_commit(&feedback);
                 LOG_INFO("[ctrl] NN+CLUT v%llu -> %s luma=%.1f low=%.1f%% high=%.1f%% "
                          "exec=%.2fms infer_total=%.2fms transaction=%.2fms",
-                         (unsigned long long)ctx->lut_updates, mode_name(mode), cur.mean_luma,
+                         (unsigned long long)atomic_load(&metrics->lut_updates), mode_name(mode),
+                         cur.mean_luma,
                          cur.clip_low_pct, cur.clip_high_pct, timing.execute_ms, timing.total_ms,
                          transaction_ms);
                 continue;
             }
 
-            ctx->lut_failures++;
+            atomic_fetch_add(&metrics->lut_failures, 1);
+            atomic_fetch_add(&metrics->transient_errors, 1);
             if (control_health_record(&ctx->health, 0, APP_NN_FAILURE_LIMIT)) {
                 (void)isp_set_clut(ISP_BLOCK_OFF, APP_CLUT_UNITY_GAIN, APP_CLUT_UNITY_GAIN,
                                    APP_CLUT_UNITY_GAIN);
+                atomic_fetch_add(&metrics->degraded_events, 1);
+                metrics_set_state(metrics, PIPELINE_STATE_DEGRADED);
                 LOG_ERR("[ctrl] NN control degraded after %u consecutive failures; "
                         "fallback=rule Gamma",
                         ctx->health.consecutive_failures);
@@ -308,21 +376,24 @@ static void* control_worker(void* arg) {
 }
 
 static void* stream_worker(void* arg) {
+    app_runtime_metrics_t *metrics = (app_runtime_metrics_t *)arg;
     ot_video_frame_info frame;
-    (void) arg;
 
     while (!g_stop) {
         if (vpss_get_frame(PIPELINE_VPSS_GRP, PIPELINE_VPSS_CHN_STREAM, &frame, 200) != 0) {
-            atomic_fetch_add(&g_stream_drops, 1);
+            atomic_fetch_add(&metrics->stream_drops, 1);
+            atomic_fetch_add(&metrics->frame_timeouts, 1);
             continue;
         }
         if (stream_send_frame(&frame, 0) == 0) {
-            atomic_fetch_add(&g_stream_frames, 1);
+            atomic_fetch_add(&metrics->stream_frames, 1);
         } else {
-            atomic_fetch_add(&g_stream_drops, 1);
+            atomic_fetch_add(&metrics->stream_drops, 1);
+            atomic_fetch_add(&metrics->transient_errors, 1);
         }
         if (vpss_release_frame(PIPELINE_VPSS_GRP, PIPELINE_VPSS_CHN_STREAM, &frame) != 0) {
-            atomic_fetch_add(&g_stream_drops, 1);
+            atomic_fetch_add(&metrics->stream_drops, 1);
+            atomic_fetch_add(&metrics->transient_errors, 1);
         }
     }
     return TD_NULL;
@@ -340,10 +411,10 @@ int main(int argc, char** argv) {
     unsigned in_w = 0, in_h = 0;
     long t0 = 0, t_last_log;
     long run_elapsed_ms = 0;
-    uint64_t frames = 0;
     pthread_t ctrl_tid, stream_tid;
     app_control_ctx_t control_ctx = {0};
-    pipeline_state_t state = PIPELINE_STATE_STOPPED;
+    app_runtime_metrics_t runtime_metrics = {0};
+    pipeline_metrics_t metrics = {0};
     ot_vb_cfg vb_cfg = {0};
     ot_pic_buf_attr buf_attr = {0};
     ot_vb_calc_cfg calc_cfg = {0};
@@ -356,8 +427,7 @@ int main(int argc, char** argv) {
 
     pipeline_config_defaults(&cfg);
     cfg.nn_high_clip_guard = APP_NN_HIGH_CLIP_GUARD;
-    state = PIPELINE_STATE_STARTING;
-    LOG_INFO("pipeline lifecycle state=%s", pipeline_state_name(state));
+    metrics_set_state(&runtime_metrics, PIPELINE_STATE_STARTING);
     for (int i = 1; i < argc; i++) {
         if (strcmp(argv[i], "--sensor") == 0 && i + 1 < argc) {
             cfg.sensor_index = atoi(argv[++i]);
@@ -408,6 +478,7 @@ int main(int argc, char** argv) {
     control_ctx.strength = cfg.tone_strength;
     control_ctx.high_clip_guard = cfg.nn_high_clip_guard;
     control_ctx.nn_enabled = enable_nn;
+    control_ctx.metrics = &runtime_metrics;
     control_health_init(&control_ctx.health);
 
     LOG_INFO("%s v%s — CoTF realtime exposure correction (sensor=%d mode=%s fps=%u "
@@ -474,6 +545,7 @@ int main(int argc, char** argv) {
             control_ctx.nn_enabled = 0;
             control_health_init(&control_ctx.health);
             control_ctx.health.degraded = 1;
+            atomic_fetch_add(&runtime_metrics.degraded_events, 1);
         } else {
             infer_up = 1;
         }
@@ -485,14 +557,16 @@ int main(int argc, char** argv) {
     }
     ctrl_up = 1;
     if (cfg.enable_stream) {
-        if (pthread_create(&stream_tid, TD_NULL, stream_worker, TD_NULL) != 0) {
+        if (pthread_create(&stream_tid, TD_NULL, stream_worker, &runtime_metrics) != 0) {
             LOG_ERR("stream thread create failed");
             goto cleanup_running;
         }
         stream_thread_up = 1;
     }
-    state = control_ctx.health.degraded ? PIPELINE_STATE_DEGRADED : PIPELINE_STATE_RUNNING;
-    LOG_INFO("running: state=%s control %ums%s%s; Ctrl-C to stop", pipeline_state_name(state),
+    metrics_set_state(&runtime_metrics, control_ctx.health.degraded ? PIPELINE_STATE_DEGRADED
+                                                                   : PIPELINE_STATE_RUNNING);
+    LOG_INFO("running: state=%s control %ums%s%s; Ctrl-C to stop",
+             pipeline_state_name((pipeline_state_t)atomic_load(&runtime_metrics.state)),
              APP_CTRL_PERIOD_MS, cfg.enable_display ? " + display" : "",
              cfg.enable_stream ? " + H.264/RTSP" : "");
 
@@ -505,29 +579,38 @@ int main(int argc, char** argv) {
             if (now_ms() - t_last_log >= 5000) {
                 if (cfg.enable_stream) {
                     LOG_INFO("stream %llu frames, %llu drops",
-                             (unsigned long long) atomic_load(&g_stream_frames),
-                             (unsigned long long) atomic_load(&g_stream_drops));
+                             (unsigned long long)atomic_load(&runtime_metrics.stream_frames),
+                             (unsigned long long)atomic_load(&runtime_metrics.stream_drops));
                 }
                 t_last_log = now_ms();
             }
             continue;
         }
         if (vpss_get_frame(0, 0, &frame, PIPELINE_FRAME_TIMEOUT_MS) != 0) {
+            atomic_fetch_add(&runtime_metrics.display_drops, 1);
+            atomic_fetch_add(&runtime_metrics.frame_timeouts, 1);
             LOG_WARN("vpss_get_frame timeout/err");
             continue;
         }
         if (display_send_frame(&frame, -1) != 0) {
             (void) vpss_release_frame(0, 0, &frame);
+            atomic_fetch_add(&runtime_metrics.display_drops, 1);
+            atomic_fetch_add(&runtime_metrics.fatal_errors, 1);
             goto cleanup_running;
         }
-        (void) vpss_release_frame(0, 0, &frame);
-        frames++;
+        if (vpss_release_frame(0, 0, &frame) != 0) {
+            atomic_fetch_add(&runtime_metrics.display_drops, 1);
+            atomic_fetch_add(&runtime_metrics.transient_errors, 1);
+        }
+        atomic_fetch_add(&runtime_metrics.display_frames, 1);
         if (now_ms() - t_last_log >= 5000) {
-            LOG_INFO("display %llu frames, %.1f fps", (unsigned long long) frames,
-                     frames * 1000.0 / (now_ms() - t0));
+            uint64_t display_frames = atomic_load(&runtime_metrics.display_frames);
+            LOG_INFO("display %llu frames, %.1f fps", (unsigned long long)display_frames,
+                     display_frames * 1000.0 / (now_ms() - t0));
             if (cfg.enable_stream) {
-                LOG_INFO("stream %llu frames, %llu drops", (unsigned long long) atomic_load(&g_stream_frames),
-                         (unsigned long long) atomic_load(&g_stream_drops));
+                LOG_INFO("stream %llu frames, %llu drops",
+                         (unsigned long long)atomic_load(&runtime_metrics.stream_frames),
+                         (unsigned long long)atomic_load(&runtime_metrics.stream_drops));
             }
             t_last_log = now_ms();
         }
@@ -538,7 +621,9 @@ int main(int argc, char** argv) {
 cleanup_running:
     g_stop = 1;
 cleanup:
-    state = control_ctx.fatal_error ? PIPELINE_STATE_FAILED : PIPELINE_STATE_STOPPING;
+    if (!control_ctx.fatal_error) {
+        metrics_set_state(&runtime_metrics, PIPELINE_STATE_STOPPING);
+    }
     if (stream_thread_up) {
         (void) pthread_join(stream_tid, TD_NULL);
     }
@@ -566,35 +651,34 @@ cleanup:
     if (sys_up) {
         sample_comm_sys_exit();
     }
-    {
-        unsigned sample_count =
-            control_ctx.timing_samples < APP_TIMING_SAMPLES ? control_ctx.timing_samples
-                                                            : APP_TIMING_SAMPLES;
-        long elapsed_ms = run_elapsed_ms;
-        double display_fps = (elapsed_ms > 0) ? frames * 1000.0 / elapsed_ms : 0.0;
-        LOG_INFO("%s exit (display=%llu/%.2ffps stream=%llu drops=%llu; ctrl polls=%llu "
-                 "infer=%llu lut=%llu fail=%llu state=%s infer_p95=%.2fms "
-                 "transaction_p95=%.2fms infer_max=%.2fms infer_total_max=%.2fms "
-                 "transaction_max=%.2fms samples=%u)",
-                 SOCCHINA_APP_NAME, (unsigned long long)frames, display_fps,
-                 (unsigned long long)atomic_load(&g_stream_frames),
-                 (unsigned long long)atomic_load(&g_stream_drops),
-                 (unsigned long long)control_ctx.polls,
-                 (unsigned long long)control_ctx.infer_runs,
-                 (unsigned long long)control_ctx.lut_updates,
-                 (unsigned long long)control_ctx.lut_failures,
-                 control_ctx.fatal_error
-                     ? pipeline_state_name(PIPELINE_STATE_FAILED)
-                     : (control_ctx.health.degraded
-                            ? pipeline_state_name(PIPELINE_STATE_DEGRADED)
-                            : pipeline_state_name(PIPELINE_STATE_STOPPED)),
-                 percentile95(control_ctx.infer_samples, sample_count),
-                 percentile95(control_ctx.transaction_samples, sample_count),
-                 control_ctx.infer_max_ms, control_ctx.infer_total_max_ms,
-                 control_ctx.transaction_max_ms, sample_count);
+    if (rc != 0 && atomic_load(&runtime_metrics.fatal_errors) == 0) {
+        atomic_fetch_add(&runtime_metrics.fatal_errors, 1);
     }
-    state = (rc == 0) ? PIPELINE_STATE_STOPPED : PIPELINE_STATE_FAILED;
-    LOG_INFO("pipeline lifecycle final state=%s exit_code=%d", pipeline_state_name(state), rc);
+    metrics_set_state(&runtime_metrics,
+                      (rc == 0) ? PIPELINE_STATE_STOPPED : PIPELINE_STATE_FAILED);
+    metrics_snapshot(&runtime_metrics, run_elapsed_ms, &metrics);
+    LOG_INFO("%s exit (display=%llu/%.2ffps display_drops=%llu stream=%llu drops=%llu; "
+             "ctrl polls=%llu timeouts=%llu infer=%llu lut_req=%llu lut=%llu fail=%llu "
+             "transient=%llu fatal=%llu degraded=%llu state=%s infer_p95=%.2fms "
+             "transaction_p95=%.2fms infer_max=%.2fms infer_total_max=%.2fms "
+             "transaction_max=%.2fms samples=%u)",
+             SOCCHINA_APP_NAME, (unsigned long long)metrics.display_frames, metrics.display_fps,
+             (unsigned long long)metrics.display_drops,
+             (unsigned long long)metrics.stream_frames,
+             (unsigned long long)metrics.stream_drops,
+             (unsigned long long)metrics.control_polls,
+             (unsigned long long)metrics.frame_timeouts,
+             (unsigned long long)metrics.infer_runs,
+             (unsigned long long)metrics.lut_requests,
+             (unsigned long long)metrics.lut_updates,
+             (unsigned long long)metrics.lut_failures,
+             (unsigned long long)metrics.transient_errors,
+             (unsigned long long)metrics.fatal_errors,
+             (unsigned long long)metrics.degraded_events, pipeline_state_name(metrics.state),
+             metrics.infer_p95_ms, metrics.transaction_p95_ms, metrics.infer_max_ms,
+             metrics.infer_total_max_ms, metrics.transaction_max_ms, metrics.timing_samples);
+    LOG_INFO("pipeline lifecycle final state=%s exit_code=%d",
+             pipeline_state_name(metrics.state), rc);
     return rc;
 }
 
