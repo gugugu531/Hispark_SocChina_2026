@@ -257,6 +257,6 @@ pre/post-CLUT 控制输入隔离。
   验证图，且不能与训练 crop 泄漏。
 - 正式权重、`256x144 NV21 + AIPP` 和 checkpoint→ONNX→裸 OM→AIPP OM 同输入数值对拍均已完成；
   下一步补 LUT 高光/端点/单调性护栏和 20–50 张代表性 OS08A20 画质检查。
-- 当前 `socchina_app` 的生产控制线程仍使用规则判决→Gamma。把 NN 真正接入生产路径还需完成：
-  control worker 调用已验证的 chn2+AIPP 推理和 17v2 bridge，按 Gamma/DRC/CLUT 用途分流，
-  并在失败时保留旧参数、进入降级状态和回退现有规则控制。
+- `socchina_app` 已接入 chn2+AIPP 推理、17v2 bridge、失败降级和规则 Gamma 回退。
+  当前场景批量验收显示强制 RGB CLUT 仍会增加高光裁剪并降低细节，因此必须保留高光门控；
+  Gamma 0.25 公平 A/B 当前场景通过。完整结果见 `docs/quality-acceptance.md`。

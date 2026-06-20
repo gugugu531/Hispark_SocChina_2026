@@ -14,6 +14,7 @@
  * 交互：触摸屏点击 toggle 自动校正 开/关（关 = 原始相机图，便于 A/B 对比）。
  * 用法：./test_cotf_auto [秒数] [--block gamma|clut] [--sensor 0|1] [--touch <dev>]
  *                        [--strength <0..1>] [--poll <帧>] [--dumpdir <目录>]
+ *                        [--quality-once]
  */
 
 #include "capture.h"
@@ -152,6 +153,7 @@ int main(int argc, char **argv)
     float strength = 0.7f;
     unsigned poll = 5; /* 每 5 帧读一次 AE 统计评估刷新 */
     int dump_seq = 0, dump_pending = 0;
+    int quality_once = 0, quality_baseline_dumped = 0, quality_applied = 0;
     int rc = 1;
     int sys_up = 0, cap_up = 0, vpss_up = 0, bound = 0, disp_up = 0;
     int tfd = -1;
@@ -159,9 +161,8 @@ int main(int argc, char **argv)
     int frames = 0, auto_on = 1;
     long t0, t_last_log;
     static unsigned int base_lut[OT_ISP_CLUT_LUT_LENGTH]; /* 硬件默认表基线（缓存一次） */
-    luma_stats_t prev_stats, cur_stats;
-    int have_prev = 0;
-    unsigned last_refresh_frame = 0;
+    luma_stats_t raw_stats, cur_stats;
+    control_feedback_t feedback;
     expo_mode_t cur_mode = EXPO_MODE_BYPASS;
     ot_vb_cfg vb_cfg = {0};
     ot_pic_buf_attr buf_attr = {0};
@@ -186,6 +187,8 @@ int main(int argc, char **argv)
             dump_dir = argv[++i];
         } else if (strcmp(argv[i], "--block") == 0 && i + 1 < argc) {
             block = (strcmp(argv[++i], "clut") == 0) ? BLOCK_CLUT : BLOCK_GAMMA;
+        } else if (strcmp(argv[i], "--quality-once") == 0) {
+            quality_once = 1;
         } else {
             run_sec = atoi(argv[i]);
         }
@@ -194,6 +197,7 @@ int main(int argc, char **argv)
     if (capture_query_in_size(&in_w, &in_h) != 0) {
         return 1;
     }
+    control_feedback_init(&feedback);
     LOG_INFO("test_cotf_auto: %ds block=%s sensor=%d in=%ux%u strength=%.2f poll=%u touch=%s dump=%s",
              run_sec, (block == BLOCK_GAMMA) ? "gamma" : "clut", cap_cfg.sensor_index, in_w, in_h,
              strength, poll, touch_dev, dump_dir ? dump_dir : "off");
@@ -243,7 +247,7 @@ int main(int argc, char **argv)
         LOG_INFO("==> 触摸屏幕切换 自动曝光校正 [ON 场景自适应 <-> OFF 原图]");
     }
 
-    if (dump_dir != NULL) {
+    if (dump_dir != NULL && !quality_once) {
         dump_pending = 6; /* 先落一帧 bypass 基线（off）作 before */
     }
     t0 = now_ms();
@@ -256,7 +260,7 @@ int main(int argc, char **argv)
                 (void)apply_tone(block, base_lut, ISP_TONE_BYPASS, strength); /* 关 = 原图 */
                 LOG_INFO(">>> AUTO OFF (原始相机图)");
             } else {
-                have_prev = 0; /* 重新立即刷新 */
+                control_feedback_init(&feedback); /* 重新立即刷新 */
                 LOG_INFO(">>> AUTO ON (场景自适应曝光校正)");
             }
             if (dump_dir != NULL) {
@@ -271,6 +275,13 @@ int main(int argc, char **argv)
             (void)vpss_release_frame(0, 0, &frame);
             goto cleanup;
         }
+        if (quality_once && dump_dir != NULL && !quality_baseline_dumped &&
+            frames + 1 >= CTRL_WARMUP_FRAMES) {
+            char path[256];
+            snprintf(path, sizeof(path), "%s/gamma_bypass_stable.nv21", dump_dir);
+            (void)dump_nv21_frame(&frame, path);
+            quality_baseline_dumped = 1;
+        }
         if (dump_pending > 0 && --dump_pending == 0) {
             char path[256];
             snprintf(path, sizeof(path), "%s/%s_%s_%d.nv21", dump_dir,
@@ -282,18 +293,17 @@ int main(int argc, char **argv)
         frames++;
 
         /* 低频控制环（AE 收敛后才读统计）：读 AE 统计 → 判决 → 按迟滞/限流刷新 CLUT tone。 */
-        if (auto_on && frames > CTRL_WARMUP_FRAMES && (unsigned)frames % poll == 0) {
-            if (isp_get_luma_stats(&cur_stats) == 0) {
-                if (control_should_refresh_lut(have_prev ? &prev_stats : NULL, &cur_stats,
-                                               (unsigned)frames - last_refresh_frame)) {
+        if (auto_on && (!quality_once || !quality_applied) &&
+            frames > CTRL_WARMUP_FRAMES && (unsigned)frames % poll == 0) {
+            if (isp_get_luma_stats(&raw_stats) == 0) {
+                if (control_feedback_observe(&feedback, &raw_stats, &cur_stats)) {
                     cur_mode = control_decide(&cur_stats);
                     (void)apply_tone(block, base_lut, mode_to_tone(cur_mode), strength);
-                    prev_stats = cur_stats;
-                    have_prev = 1;
-                    last_refresh_frame = (unsigned)frames;
+                    control_feedback_commit(&feedback);
                     if (dump_dir != NULL) {
                         dump_pending = 6;
                     }
+                    quality_applied = 1;
                     LOG_INFO("[ctrl] refresh -> %s (luma=%.1f low=%.1f%% high=%.1f%%)",
                              mode_name(cur_mode), cur_stats.mean_luma, cur_stats.clip_low_pct,
                              cur_stats.clip_high_pct);

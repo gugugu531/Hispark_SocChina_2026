@@ -48,6 +48,44 @@ int main(void)
     check_i("lut: scene change -> yes", control_should_refresh_lut(&a, &a_big, 10), 1);
     check_i("lut: small change -> no", control_should_refresh_lut(&a, &a_small, 10), 0);
 
+    {
+        control_health_t health;
+        control_health_init(&health);
+        check_i("health: initial", health.degraded, 0);
+        check_i("health: fail 1", control_health_record(&health, 0, 3), 0);
+        check_i("health: success resets", control_health_record(&health, 1, 3), 0);
+        check_i("health: fail 1 again", control_health_record(&health, 0, 3), 0);
+        check_i("health: fail 2", control_health_record(&health, 0, 3), 0);
+        check_i("health: fail 3 degrades", control_health_record(&health, 0, 3), 1);
+        check_i("health: degraded sticky", control_health_record(&health, 1, 3), 1);
+    }
+
+    {
+        control_feedback_t feedback;
+        luma_stats_t filtered;
+        luma_stats_t base = {100.0f, 1.0f, 2.0f};
+        luma_stats_t changed = {180.0f, 1.0f, 2.0f};
+        int refresh = 0;
+
+        control_feedback_init(&feedback);
+        check_i("feedback: first refresh",
+                control_feedback_observe(&feedback, &base, &filtered), 1);
+        control_feedback_commit(&feedback);
+        for (int i = 0; i < 10; i++) {
+            refresh |= control_feedback_observe(&feedback, &changed, &filtered);
+        }
+        check_i("feedback: cooldown blocks", refresh, 0);
+        check_i("feedback: confirm 1",
+                control_feedback_observe(&feedback, &changed, &filtered), 0);
+        check_i("feedback: confirm 2",
+                control_feedback_observe(&feedback, &changed, &filtered), 0);
+        check_i("feedback: confirm 3",
+                control_feedback_observe(&feedback, &changed, &filtered), 1);
+        control_feedback_commit(&feedback);
+        check_i("feedback: commit cooldown",
+                control_feedback_observe(&feedback, &changed, &filtered), 0);
+    }
+
     printf("%s: %d failure(s)\n", g_fails ? "RESULT FAIL" : "RESULT OK", g_fails);
     return g_fails ? 1 : 0;
 }

@@ -20,6 +20,8 @@
 
 static int g_acl_inited = 0;
 static int g_inited = 0;
+static int g_device_set = 0;
+static int g_model_loaded = 0;
 static int32_t g_device = 0;
 static aclrtContext g_ctx = NULL;
 static uint32_t g_model_id = 0;
@@ -73,14 +75,14 @@ static int execute_and_copy(float *lut_out, size_t lut_count, long t0, long t1,
 
     if (aclmdlExecute(g_model_id, g_in_ds, g_out_ds) != ACL_SUCCESS) {
         LOG_ERR("infer: aclmdlExecute failed");
-        return -1;
+        return PIPELINE_ERR_RUNTIME;
     }
     t2 = now_us();
     if (g_out_size > sizeof(host_out) ||
         aclrtMemcpy(host_out, sizeof(host_out), g_out_dev, g_out_size,
                     ACL_MEMCPY_DEVICE_TO_HOST) != ACL_SUCCESS) {
         LOG_ERR("infer: D2H memcpy failed/out too large (%zu)", g_out_size);
-        return -1;
+        return PIPELINE_ERR_RUNTIME;
     }
     n = lut_count;
     if (g_out_size == lut_count * sizeof(float)) {
@@ -91,7 +93,7 @@ static int execute_and_copy(float *lut_out, size_t lut_count, long t0, long t1,
         for (i = 0; i < n; i++) lut_out[i] = half_to_float(src[i]);
     } else {
         LOG_ERR("infer: unexpected output size %zu for %zu floats", g_out_size, lut_count);
-        return -1;
+        return PIPELINE_ERR_INVALID;
     }
     t3 = now_us();
     if (timing != NULL) {
@@ -105,6 +107,9 @@ static int execute_and_copy(float *lut_out, size_t lut_count, long t0, long t1,
 
 int infer_init(const infer_cfg_t *cfg)
 {
+    aclDataBuffer *in_buf = NULL;
+    aclDataBuffer *out_buf = NULL;
+
     if (cfg == NULL || cfg->model_path == NULL) {
         LOG_ERR("infer_init: bad cfg");
         return -1;
@@ -118,55 +123,69 @@ int infer_init(const infer_cfg_t *cfg)
     if (!g_acl_inited) {
         if (aclInit(NULL) != ACL_SUCCESS) {
             LOG_ERR("aclInit failed");
-            return -1;
+            return PIPELINE_ERR_RUNTIME;
         }
         g_acl_inited = 1;
     }
     if (aclrtSetDevice(g_device) != ACL_SUCCESS) {
         LOG_ERR("aclrtSetDevice(%d) failed", g_device);
-        return -1;
+        goto fail;
     }
+    g_device_set = 1;
     if (aclrtCreateContext(&g_ctx, g_device) != ACL_SUCCESS) {
         LOG_ERR("aclrtCreateContext failed");
-        return -1;
+        goto fail;
     }
     if (aclmdlLoadFromFile(cfg->model_path, &g_model_id) != ACL_SUCCESS) {
         LOG_ERR("aclmdlLoadFromFile(%s) failed", cfg->model_path);
-        return -1;
+        goto fail;
     }
+    g_model_loaded = 1;
     g_desc = aclmdlCreateDesc();
     if (g_desc == NULL || aclmdlGetDesc(g_desc, g_model_id) != ACL_SUCCESS) {
         LOG_ERR("aclmdlGetDesc failed");
-        return -1;
+        goto fail;
     }
     g_in_size = aclmdlGetInputSizeByIndex(g_desc, INFER_INPUT_IDX);
     g_out_size = aclmdlGetOutputSizeByIndex(g_desc, INFER_OUTPUT_IDX);
     if (g_in_size == 0 || g_out_size == 0) {
         LOG_ERR("infer: zero io size (in=%zu out=%zu)", g_in_size, g_out_size);
-        return -1;
+        goto fail;
     }
 
     if (aclrtMalloc(&g_in_dev, g_in_size, ACL_MEM_MALLOC_NORMAL_ONLY) != ACL_SUCCESS ||
         aclrtMalloc(&g_out_dev, g_out_size, ACL_MEM_MALLOC_NORMAL_ONLY) != ACL_SUCCESS) {
         LOG_ERR("infer: aclrtMalloc failed");
-        return -1;
+        goto fail;
     }
     g_in_ds = aclmdlCreateDataset();
     g_out_ds = aclmdlCreateDataset();
     if (g_in_ds == NULL || g_out_ds == NULL) {
         LOG_ERR("infer: create dataset failed");
-        return -1;
+        goto fail;
     }
-    if (aclmdlAddDatasetBuffer(g_in_ds, aclCreateDataBuffer(g_in_dev, g_in_size)) != ACL_SUCCESS ||
-        aclmdlAddDatasetBuffer(g_out_ds, aclCreateDataBuffer(g_out_dev, g_out_size)) != ACL_SUCCESS) {
+    in_buf = aclCreateDataBuffer(g_in_dev, g_in_size);
+    out_buf = aclCreateDataBuffer(g_out_dev, g_out_size);
+    if (in_buf == NULL || out_buf == NULL ||
+        aclmdlAddDatasetBuffer(g_in_ds, in_buf) != ACL_SUCCESS ||
+        aclmdlAddDatasetBuffer(g_out_ds, out_buf) != ACL_SUCCESS) {
         LOG_ERR("infer: add dataset buffer failed");
-        return -1;
+        if (in_buf != NULL && aclmdlGetDatasetNumBuffers(g_in_ds) == 0) {
+            aclDestroyDataBuffer(in_buf);
+        }
+        if (out_buf != NULL && aclmdlGetDatasetNumBuffers(g_out_ds) == 0) {
+            aclDestroyDataBuffer(out_buf);
+        }
+        goto fail;
     }
     g_inited = 1;
     LOG_INFO("infer up: model=%s in=%zuB out=%zuB (inputs=%u outputs=%u)", cfg->model_path,
              g_in_size, g_out_size, (unsigned)aclmdlGetNumInputs(g_desc),
              (unsigned)aclmdlGetNumOutputs(g_desc));
     return 0;
+fail:
+    (void)infer_deinit();
+    return PIPELINE_ERR_RUNTIME;
 }
 
 int infer_run_nv21(const void *frame_info, float *lut_out, size_t lut_count, infer_timing_t *timing)
@@ -178,7 +197,12 @@ int infer_run_nv21(const void *frame_info, float *lut_out, size_t lut_count, inf
     td_u32 map_size;
 
     if (!g_inited || fi == NULL || lut_out == NULL) {
-        return -1;
+        return PIPELINE_ERR_STATE;
+    }
+    /* ACL context 是线程相关状态：生产程序在 main 线程 init、control worker 中 run。 */
+    if (aclrtSetCurrentContext(g_ctx) != ACL_SUCCESS) {
+        LOG_ERR("infer: aclrtSetCurrentContext failed");
+        return PIPELINE_ERR_RUNTIME;
     }
     /* 1) 输入：把 NV21 帧映射后复制进 device 输入缓冲（PIPELINE_INPUT_COPY；多退少补到 in_size）。 */
     t0 = now_us();
@@ -186,13 +210,13 @@ int infer_run_nv21(const void *frame_info, float *lut_out, size_t lut_count, inf
     virt = (td_u8 *)ss_mpi_sys_mmap(fi->video_frame.phys_addr[0], map_size);
     if (virt == TD_NULL) {
         LOG_ERR("infer: mmap frame failed");
-        return -1;
+        return PIPELINE_ERR_IO;
     }
     copy_len = (map_size < g_in_size) ? map_size : g_in_size;
     if (aclrtMemcpy(g_in_dev, g_in_size, virt, copy_len, ACL_MEMCPY_HOST_TO_DEVICE) != ACL_SUCCESS) {
         (void)ss_mpi_sys_munmap(virt, map_size);
         LOG_ERR("infer: H2D memcpy failed");
-        return -1;
+        return PIPELINE_ERR_RUNTIME;
     }
     (void)ss_mpi_sys_munmap(virt, map_size);
     t1 = now_us();
@@ -207,13 +231,17 @@ int infer_run_buffer(const void *input, size_t input_size, float *lut_out, size_
 
     if (!g_inited || input == NULL || lut_out == NULL || input_size != g_in_size) {
         LOG_ERR("infer_run_buffer: input=%p size=%zu expected=%zu", input, input_size, g_in_size);
-        return -1;
+        return PIPELINE_ERR_INVALID;
+    }
+    if (aclrtSetCurrentContext(g_ctx) != ACL_SUCCESS) {
+        LOG_ERR("infer: aclrtSetCurrentContext failed");
+        return PIPELINE_ERR_RUNTIME;
     }
     t0 = now_us();
     if (aclrtMemcpy(g_in_dev, g_in_size, input, input_size, ACL_MEMCPY_HOST_TO_DEVICE) !=
         ACL_SUCCESS) {
         LOG_ERR("infer: buffer H2D memcpy failed");
-        return -1;
+        return PIPELINE_ERR_RUNTIME;
     }
     t1 = now_us();
     return execute_and_copy(lut_out, lut_count, t0, t1, timing);
@@ -236,11 +264,19 @@ int infer_deinit(void)
     if (g_in_dev != NULL) { aclrtFree(g_in_dev); g_in_dev = NULL; }
     if (g_out_dev != NULL) { aclrtFree(g_out_dev); g_out_dev = NULL; }
     if (g_desc != NULL) { aclmdlDestroyDesc(g_desc); g_desc = NULL; }
-    if (g_inited) { aclmdlUnload(g_model_id); }
+    if (g_model_loaded) {
+        aclmdlUnload(g_model_id);
+        g_model_loaded = 0;
+    }
     if (g_ctx != NULL) { aclrtDestroyContext(g_ctx); g_ctx = NULL; }
-    if (g_inited) { aclrtResetDevice(g_device); }
+    if (g_device_set) {
+        aclrtResetDevice(g_device);
+        g_device_set = 0;
+    }
     if (g_acl_inited) { aclFinalize(); g_acl_inited = 0; }
     g_inited = 0;
+    g_in_size = 0;
+    g_out_size = 0;
     return 0;
 }
 

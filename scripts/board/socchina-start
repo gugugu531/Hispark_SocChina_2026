@@ -25,11 +25,20 @@ source "${CONFIG}"
 : "${STREAM_PATH:=live}"
 : "${BITRATE_KBPS:=3000}"
 : "${SENSOR_INDEX:=1}"
-: "${TONE_STRENGTH:=0.7}"
+: "${TONE_STRENGTH:=0.25}"
+: "${ENABLE_NN_CONTROL:=0}"
+: "${MODEL_PATH:=/root/socchina-2026/cotf_paramnet_256x144_lcdp_best_e0167_fp16_aipp.om}"
 
 if [[ "${ENABLE_HDMI}" != "0" && "${ENABLE_HDMI}" != "1" ]]; then
     echo "[socchina-start] ENABLE_HDMI must be 0 or 1" >&2
     exit 2
+fi
+if [[ "${ENABLE_NN_CONTROL}" != "0" && "${ENABLE_NN_CONTROL}" != "1" ]]; then
+    echo "[socchina-start] ENABLE_NN_CONTROL must be 0 or 1" >&2
+    exit 2
+fi
+if [[ "${ENABLE_NN_CONTROL}" == "1" && ! -r "${MODEL_PATH}" ]]; then
+    echo "[socchina-start] warning: NN model not readable; app will fall back to rule Gamma: ${MODEL_PATH}" >&2
 fi
 if [[ ! "${RTSP_PORT}" =~ ^[0-9]+$ ]] || ((RTSP_PORT < 1 || RTSP_PORT > 65535)); then
     echo "[socchina-start] invalid RTSP_PORT: ${RTSP_PORT}" >&2
@@ -71,7 +80,12 @@ args=(
 if [[ "${ENABLE_HDMI}" == "0" ]]; then
     args+=(--no-display)
 fi
+if [[ "${ENABLE_NN_CONTROL}" == "1" ]]; then
+    args+=(--model "${MODEL_PATH}")
+else
+    args+=(--no-nn)
+fi
 
-echo "[socchina-start] RTSP port=${RTSP_PORT} path=/${STREAM_PATH} bitrate=${BITRATE_KBPS}kbps HDMI=${ENABLE_HDMI}"
+echo "[socchina-start] RTSP port=${RTSP_PORT} path=/${STREAM_PATH} bitrate=${BITRATE_KBPS}kbps HDMI=${ENABLE_HDMI} NN=${ENABLE_NN_CONTROL}"
 cd "${APP_DIR}"
 exec stdbuf -oL -eL "${APP}" "${args[@]}"

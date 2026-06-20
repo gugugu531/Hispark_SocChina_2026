@@ -6,6 +6,7 @@
 | `architecture.md` | 系统架构与完整图像增强链数据通路、逐级明细、两套运行配置、已核实 SDK 接口与约束。 |
 | `data-path-interface-design.md` | Config-R 阶段 C 协作契约：通道分配、模块接口、线程/帧所有权、LUT 刷新事务、降级策略和并行开发验收。 |
 | `model-route-summary.md` | 模型路线稳定结论：整图访存瓶颈、AIPP 实测、CoTF 主线和待验证边界。 |
+| `quality-acceptance.md` | 画质验收方法、当前场景批量结果、生产回退结论与剩余场景覆盖。 |
 | `board-operations.md` | 板端部署、启动/重启、健康检查、故障恢复手册。 |
 | `network-access.md` | 受管网络/电脑直连两种访问模式、动态地址、Clash TUN、SSH 与故障恢复。 |
 | `TODO.md` | 未完成部分清单与阶段化开发规划（含里程碑判据与风险提示）。 |

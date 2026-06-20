@@ -53,8 +53,8 @@ ISP 参数块位于公共图像链内，因此同一 ISP 输出天然是“已�
 ## 4. 两套运行配置
 
 - **Config-R（实时 30fps，主线）**：低频参数网络读取 VPSS 缩略图；ISP Gamma/DRC/CLUT
-  对每帧全分辨率施加。规则判决→Gamma 已板端 30fps 跑通；正式 NN、chn2+AIPP 和 17v2
-  bridge 已在实验程序中联机，尚待接入生产 control worker 并完成画质/降级验收。
+  对每帧全分辨率施加。规则判决→Gamma 与正式 NN、chn2+AIPP、17v2 bridge 已接入生产
+  control worker；连续失败降级回退和 post-CLUT 基础反馈抑制已实现，待正式画质与长时验收。
 - **Config-R 备选**：`768x432 + 共享曲线 niter8` 整图 OM，单次执行约 `27.2ms`；适合快速演示，
   但仍需为整链开销留预算，且 NPU 每帧参与。
 - **Config-Q（拍照/低帧，高画质）**：更大输入（如 1024x640）、更多迭代、可叠加多帧堆栈；约 100ms 量级，用于按键抓拍增强。
@@ -66,8 +66,8 @@ ISP 参数块位于公共图像链内，因此同一 ISP 输出天然是“已�
 > Image-Adaptive-3DLUT / SepLUT），并把施加卸给 ISP 硬件。官方 CoTF 的命名贡献——协同变换、自适应采样、注意力
 > 融合——因落在 NNN 红名单已**全部丢弃**，故画质 ≈ 全局 3D-LUT 级，**不等于官方 CoTF**。对照详见
 > [../models/cotf-route-verification.md](../models/cotf-route-verification.md) 与 [model-route-summary.md](model-route-summary.md)。
-> 硬件施加、LCDP 正式权重、256x144+AIPP ACL 推理和 C 17v2 bridge 已分别联机；
-> 生产 control worker 接线、高光/端点护栏和闭环稳定性待完成。
+> 硬件施加、LCDP 正式权重、256x144+AIPP ACL 推理和 C 17v2 bridge 已接入生产线程；
+> 高光/端点/单调/最大步长护栏和失败降级已完成，闭环画质与长期稳定性待验收。
 
 横评 5 个架构后确认，「输出整图」的模型在 1024x576 都撞**全分辨率访存的像素线性地板**（与参数量无关）。两条路线：
 
@@ -98,8 +98,8 @@ Config-R 固定 `chn0=1024x600` 显示、`chn1=1024x576` 串流/整图备选互�
    （`640x360 niter8 共享=19.5ms`）；1024x576 归 Config-Q。
 2. ✅ 已验证（2026-06-14）：AIPP 全分辨率 CSC/归一开销 **≈0ms**（挂/不挂同速，差值噪声内），
    预处理可零开销融入 OM 前端。
-3. 🟡 参数网主线：正式权重、chn2+AIPP、17v2 bridge 和 RGB 动态预览已联机；待生产 control
-   worker 接线、刷新事务 p95、强光/端点护栏、post-CLUT 反馈控制和动态闭环画质验收。
+3. 🟡 参数网主线：正式权重、chn2+AIPP、17v2 bridge、生产 control worker、降级回退和
+   post-CLUT 基础反馈抑制已联机；待 10 分钟验收、动态参数标定和闭环画质评估。
 4. ~~ISP 统计读取~~ ✅ 已验证（2026-06-11）：`ss_mpi_isp_get_ae_stats` 低频读取正常，
    `isp_get_luma_stats` 归约为 mean/clip% 直接供 `control_decide`（见 `board/README.md`）。
 5. VO 视频层的现场 flicker 观感待确认；VGS 分屏仅属于整图增强备选。

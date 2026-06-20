@@ -89,9 +89,9 @@ Config-R 主线应采用“低频参数网络 + ISP 参数块每帧施加”。�
 
 ## 下一步
 
-1. 把已验证的 256x144 chn2+AIPP 推理和 17v2 bridge 接入生产 control worker。
-2. 实现失败保旧参数、`PIPELINE_DEGRADED` 和规则 Gamma 回退。
-3. 增加高光肩部、白点/原色端点、单调性/最大变化量护栏，并解决 post-CLUT 反馈。
-4. 测量动态刷新事务 p95、10 分钟稳定性和现场 flicker。
+1. ✅ 256x144 chn2+AIPP 推理和 17v2 bridge 已接入生产 control worker。
+2. ✅ 已实现失败保旧参数、sticky `PIPELINE_DEGRADED` 和规则 Gamma 回退。
+3. 🟡 已增加端点、单调性、最大变化量、高光门控及 post-CLUT 基础反馈抑制；余动态标定。
+4. 测量 10 分钟稳定性和现场 flicker；短测事务 p95 已低于 10ms。
 5. 联调 ISP 局部块（AE/DRC/LDCI/SHARPEN/Dither），用 20–50 张代表性相机帧做画质评估。
 6. Config-Q 高画质抓拍、板端测试自动化和交付收尾；余量 NPU 感知→控制属于后续增强项。

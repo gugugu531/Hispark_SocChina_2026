@@ -198,6 +198,41 @@ vlc 'rtsp://[<BOARD_IPV6>]:8554/live'
 
 - 不开启 VO/HDMI，验证 1024x576@30 H.264 RTSP、无客户端 drain、断开重连和退出清理。
 
+## 2026-06-20 生产 NN 控制闭环与反馈抑制
+
+目标：
+
+- 将 chn2+AIPP param-net、17v2 bridge 和 ISP CLUT 接入生产 control worker。
+- 推理/写入失败时保留旧参数，连续失败回退规则 Gamma。
+- 抑制 chn2 位于 post-CLUT 路径产生的自反馈振荡。
+
+命令/路径：
+
+```sh
+scripts/test_host.sh
+scripts/build_board.sh Release
+BOARD=hispark-remote scripts/validate_board_p1.sh 30
+```
+
+结果：
+
+- 生产链完成 `chn2 -> AIPP/NN -> bridge -> CLUT` 事务；ACL context 跨线程绑定已修。
+- 安全 bridge 包含有限值、identity 偏移、高光增益、立方体端点、主轴单调性和逐次最大步长护栏。
+- 控制反馈加入 `1/4` EMA、连续 `3` 次变化确认、刷新后 `10` 个控制周期冷却。
+- 30 秒 HDMI+RTSP+NN 实测：显示 `30.11fps`，stream `848` 帧、`0 drops`；
+  6/6 次更新成功。当时记录的推理 total p95 为 `2.86ms`，完整事务 p95 `4.86ms`。
+- 中断的约 174 秒测试得到显示 `30.05fps`、stream `5224` 帧、`0 drops`、31/31 更新；
+  推理 p95 `3.50ms`、事务 p95 `5.43ms`。该测试未跑满 10 分钟，不计为正式长测通过。
+
+解读：
+
+- P0 生产闭环和降级路径已完成，短测满足帧率与事务时延门限。
+- 反馈抑制使同场景 30 秒刷新次数从 12 次降到 6 次，未影响主链帧率。
+- 原 `infer_p95` 混入输入/输出复制，与架构引用的模型执行口径不一致；现已改为只统计
+  `aclmdlExecute`，搬运和 bridge/ISP 写入继续由 `transaction_p95` 覆盖。10 分钟正式验收按用户要求暂缓。
+- 计时口径修正后的 20 秒复测：显示 `30.19fps`、stream `547` 帧/`0 drops`、
+  5/5 更新成功，`aclmdlExecute` p95 `1.18ms`、推理 total 最大 `2.51ms`、事务 p95 `4.49ms`。
+
 命令/路径：
 
 ```sh

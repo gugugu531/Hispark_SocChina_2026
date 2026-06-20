@@ -36,4 +36,30 @@ expo_mode_t control_decide(const luma_stats_t *stats);
 int control_should_refresh_lut(const luma_stats_t *prev, const luma_stats_t *cur,
                                unsigned frames_since_refresh);
 
+/* 连续失败降级门：success 清零；failure 累计到 limit 后进入 degraded。 */
+typedef struct {
+    unsigned consecutive_failures;
+    int degraded;
+} control_health_t;
+
+void control_health_init(control_health_t *health);
+int control_health_record(control_health_t *health, int success, unsigned failure_limit);
+
+/* post-CLUT 反馈抑制：对统计做低通，场景变化需连续确认，刷新后进入短冷却期。
+ * 所有计数单位都是 control worker 的轮询周期。 */
+typedef struct {
+    luma_stats_t filtered;
+    luma_stats_t committed;
+    unsigned ticks_since_commit;
+    unsigned cooldown_remaining;
+    unsigned change_streak;
+    int have_filtered;
+    int have_committed;
+} control_feedback_t;
+
+void control_feedback_init(control_feedback_t *feedback);
+int control_feedback_observe(control_feedback_t *feedback, const luma_stats_t *raw,
+                             luma_stats_t *filtered_out);
+void control_feedback_commit(control_feedback_t *feedback);
+
 #endif /* SOCCHINA_CONTROL_H */

@@ -7,6 +7,8 @@ readonly REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 readonly BUILD_DIR="${REPO_ROOT}/build"
 readonly DEST="${DEST:-/root/socchina-2026}"
 readonly STAGE="/tmp/socchina-service-install"
+readonly DEFAULT_MODEL="${REPO_ROOT}/models/weights/cotf_paramnet_lcdp_rtx4060/cotf_paramnet_256x144_lcdp_best_e0167_fp16_aipp.om"
+readonly MODEL_FILE="${MODEL_FILE:-${DEFAULT_MODEL}}"
 
 if [[ -z "${BOARD:-}" ]]; then
     echo "[install-service] 请设置 BOARD=hispark-remote；电脑直连可设 BOARD=root@192.168.1.168" >&2
@@ -23,6 +25,7 @@ files=(
     "${REPO_ROOT}/deploy/systemd/runtime.conf"
     "${REPO_ROOT}/scripts/board/socchina-start"
     "${REPO_ROOT}/scripts/board/socchina-display"
+    "${MODEL_FILE}"
 )
 for file in "${files[@]}"; do
     [[ -f "${file}" ]] || {
@@ -43,6 +46,7 @@ ssh "${BOARD}" "set -eu
     install -m 0755 '${STAGE}/socchina_app' '${DEST}/socchina_app'
     install -m 0755 '${STAGE}/socchina-start' /usr/local/sbin/socchina-start
     install -m 0755 '${STAGE}/socchina-display' /usr/local/sbin/socchina-display
+    install -m 0644 '${STAGE}/$(basename "${MODEL_FILE}")' '${DEST}/cotf_paramnet_256x144_lcdp_best_e0167_fp16_aipp.om'
     install -m 0644 '${STAGE}/socchina-stream.service' /etc/systemd/system/socchina-stream.service
     if [ ! -e /etc/socchina/runtime.conf ]; then
         install -m 0644 '${STAGE}/runtime.conf' /etc/socchina/runtime.conf

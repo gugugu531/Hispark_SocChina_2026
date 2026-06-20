@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # 在目标板上运行生产主程序或指定板端程序。
 # 用法：[BOARD=hispark-remote] [DEST=/root/socchina-2026] scripts/run_board.sh [程序 [参数...]]
-#   默认运行 socchina_app（相机→ISP+Gamma→HDMI 实时曝光校正，Ctrl-C 退出）。
+#   默认运行 socchina_app。配置 NN 时传：
+#   scripts/run_board.sh socchina_app --model ./cotf_paramnet_256x144_lcdp_best_e0167_fp16_aipp.om
 #   例：scripts/run_board.sh test_infer --iters 30
 #
 # 自动设置 LD_LIBRARY_PATH 含 /opt/lib/npu（libascendcl 等 NPU 运行时）。

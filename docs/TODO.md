@@ -3,7 +3,9 @@
 > 状态快照日期：2026-06-20。阶段 A/B 已完成，硬件施加端与规则控制→Gamma 生产整链已板端
 > 30fps 跑通；CLUT 17v2 几何已由厂商资料和板端 sweep 确认（17³、8 bank、4 路交织）。param-net 的训练、
 > 推荐 YAML、ETA/断点恢复、LCDP 正式权重和 256x144+AIPP 板端推理已完成。当前主线剩余：
-> NN→Gamma/DRC/CLUT 安全参数桥、生产 control worker 接线和动态闭环画质验证。RTSP 的
+> NN→Gamma/DRC/CLUT 安全参数桥与生产 control worker 接线已完成，并通过 20 秒板端生产冒烟：
+> 3 次 NN+CLUT 更新、推理总耗时 2.40–2.71ms、RTSP 451 帧/0 drops、退出清理正常。剩长时 p95
+> 和动态闭环画质验证。RTSP 的
 > VENC/协议实现、生产线程接线、RTSP+HDMI 并行验收和 systemd 开机自启动均已完成：
 > 1024x576 H.264 约 30.1fps/3Mbps，HDMI 并行显示约 30.1–30.5fps、stream drops=0。
 > 数据通路与模块定义见 [architecture.md](architecture.md)；规范见 [development-guide.md](development-guide.md)。
@@ -29,12 +31,12 @@
 | 2–4 ISP | `isp.c` | ✅ 基本完成 | Gamma/CLUT 热刷新已板端联机；CLUT 17v2 identity 已通过。余：DRC/局部块画质标定和动态 NN 参数安全写回 |
 | 5 分发缩放 | `vpss.c` | ✅ 已完成 | chn0 1024x600 已实测；chn2 256x144 已在正式 param-net 推理冒烟中启用；chn1 留给 RTSP |
 | 6 预处理 | （融入 OM 的 AIPP） | ✅ 板端验证 | `aipp_nv21_256x144.cfg` 已随正式 OM 上板，输入 55296B NV21，30/30 成功 |
-| 7 推理 | `infer.c` | ✅ ACL 实现+板端验证 | LCDP best epoch 167 正式 OM，chn2+AIPP 30/30，exec 平均 1.13ms、冷启动最大 3.84ms；余：生产接线与 p95 长测 |
-| 8 参数桥 | `lut_bridge.c` / RGB CLUT 预览 | 🟡 板端预览 | 17v2 打包、有限值/范围检查、identity 强度混合已接正式模型；20 秒动态闭环 20/20 更新成功。强光抓帧暴露裁剪增加和 post-CLUT 反馈，长时展示暂回退 Gamma，待补高光/端点护栏 |
+| 7 推理 | `infer.c` | ✅ 生产接线+冒烟 | LCDP best epoch 167 正式 OM；生产 control worker 20 秒冒烟 3/3 更新，推理总耗时 2.40–2.71ms；ACL context 跨线程绑定已修，运行时错误安全停链；余 p95 长测 |
+| 8 参数桥 | `lut_bridge.c` | ✅ P0 安全桥 | 17v2 打包、有限值/范围、identity 偏移、高光增益、立方体端点、主轴单调性和逐次最大步长护栏已接生产线程；高裁剪场景旁路 CLUT。余动态画质标定 |
 | 9 后处理/合成 | `postproc.c` / `compose.c` | ⏸ 备选路线 | 仅整图 ExpoCurveNet 分屏演示需要，非 CoTF 主路径依赖 |
 | 10a 显示 | `display.c` | ✅ 已完成 | 板端冒烟 PASS，启动杂线已修（黑场预帧）；flicker 观感需现场目视确认 |
 | 10b 串流 | `stream.c` | ✅ 已完成 | chn1→VENC H.264 CBR、单客户端 RTSP/RTP over TCP、断线重连和生产 stream worker 已实现；实测 1024x576 约 30.1fps、2954.5kbps、两次 10s GStreamer 重连成功、VENC 零积压；RTSP+HDMI 并行时显示约 30.1–30.5fps、stream drops=0 |
-| 11 控制 | `control.c` | 🟡 初版+接线 | 判决逻辑/LUT 刷新策略主机单测过；**场景自适应闭环已板端跑通**（`control_decide`→ISP 色调块）：集成式 `test_cotf_auto` 自带整链 **~31fps**、AE→判决→**Gamma tone**(默认,原生 1D,出图干净无伪色; `--block clut` 为对照),2026-06-19;独立控制面 `test_cotf_ctrl` cross-process 注入 OK |
+| 11 控制 | `control.c` / `main.c` | ✅ P0 生产闭环 | AE→规则 Gamma 与 chn2→NN→bridge→CLUT 已接同一 worker；失败保旧 LUT，连续 3 次失败进入 sticky DEGRADED；post-CLUT 反馈加入 EMA、3 次确认和 10 周期冷却 |
 | — 共享 | `pipeline.h` | ✅ 契约完成 | 通道、尺寸、状态、错误码、输入模式和指标已固定；实现仍由 main/pipeline 接管 |
 | — 入口 | `main.c` | ✅ 生产整链 | **socchina_app 已板端跑通**（2026-06-19）：SYS/VB 初始化 + capture/vpss/display 起链 + **显示线程 30.5fps 直通** + **控制线程低频 AE→control_decide→Gamma tone** + SIGINT 优雅退出（逆序清理）。控制大脑现为规则判决，后续可换 infer.c 的 NN |
 
@@ -173,10 +175,12 @@ ISP 硬件 CLUT 全分辨率施加（零 NPU）」**。完整验证与代码见 
 
 ### 阶段 D — 控制大脑与画质
 
-1. 把已验证的 chn2 infer + bridge 接入生产 control worker，完成失败保旧参数、
-   `PIPELINE_DEGRADED` 和规则 Gamma 回退。
-2. 完善 NN→Gamma/DRC/CLUT 用途分流、高光/端点护栏和 post-CLUT 反馈控制。
-3. 用 LCDP 预训练权重做 OS08A20 微调与画质验证（≥20–50 张代表性相机帧）。
+1. ✅ 已把 chn2 infer + bridge 接入生产 control worker，完成失败保旧参数、
+   sticky `PIPELINE_DEGRADED`、规则 Gamma 回退和 ACL 致命错误停链。
+2. 🟡 已完成 Gamma/DRC/CLUT 用途分流及高光/端点/单调/最大步长基础护栏；
+   post-CLUT 反馈已加入 EMA/持续确认/冷却。当前场景强制 RGB CLUT 画质失败，生产高光门控必须保留。
+3. 🟡 已完成单场景 21 帧 param-net + 7 组 Gamma 公平 A/B：Gamma 0.25 当前场景通过，
+   强制 RGB CLUT 不通过；余 ≥5 类、20–50 张独立场景最终验收与 OS08A20 微调。
 4. 完成 OS08A20 WDR 的强逆光、运动鬼影和长时稳定性验证。
 5. 阈值标定（control.c 注释已标注初版经验值待标定）。
 
@@ -193,7 +197,7 @@ ISP 硬件 CLUT 全分辨率施加（零 NPU）」**。完整验证与代码见 
 | --- | --- |
 | M1（阶段 A） | ✅ 相机实时画面上屏 30.5fps；部署/启动脚本已补（2026-06-19） |
 | M2（阶段 B） | OM 板端实测耗时出数,Config-R 可行性有结论 |
-| M3（阶段 C） | 🟡 类 CoTF 初步闭环已完成：正式 NN+AIPP、17v2 bridge、RGB 动态预览均联机；余生产 worker 接线、刷新 p95 和降级验收 |
+| M3（阶段 C） | 🟡 生产闭环、降级回退与反馈抑制已完成并短测通过；余 10 分钟正式验收、动态画质和现场 flicker |
 | M4（阶段 D） | 场景自适应生效,画质验证通过 |
 | M5（阶段 E） | RTSP 远程可看,拍照路径可用,可交付演示 |
 

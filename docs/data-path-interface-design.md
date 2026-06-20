@@ -1,9 +1,9 @@
 # Config-R 数据通路接口与协作设计
 
 > 状态快照：2026-06-20。本文保留阶段 C 的模块边界和帧所有权契约；具体 SDK 调用以实现和板端实测为准。
-> 当前实现差异：display + 规则 control→Gamma 已进生产 `main.c` 并板端 30fps 跑通；ACL 推理已独立验证；
-> 正式权重、chn2+AIPP、CLUT 17v2 identity 和 C bridge 均已板端验证，RGB 动态预览已跑通。
-> 尚未完成的是生产 control worker 接线、高光/端点护栏、降级回退和闭环画质验收。
+> 当前实现：display + stream + 规则 Gamma + chn2/AIPP/param-net + 安全 bridge + CLUT 已进入生产
+> `main.c`。连续三次刷新失败进入 sticky DEGRADED 并回退 Gamma；高光/端点/单调/最大步长护栏、
+> 统计低通、变化持续确认和刷新后冷却均已实现。尚未完成的是 10 分钟正式验收和闭环画质评估。
 > **命名说明**：文中「CoTF」指受官方 CoTF 启发、只保留「预测 3D-LUT + ISP 硬件施加」的子集，**非官方 CoTF**
 > （协同变换/自适应采样/注意力融合等红名单部件已丢弃，画质 ≈ 全局 3D-LUT 级）。详见
 > [architecture.md §4.1](architecture.md) 与 [../models/cotf-route-verification.md](../models/cotf-route-verification.md)。
@@ -22,7 +22,7 @@
 | --- | --- |
 | 主链帧率 | 连续 10 分钟平均不低于 29.5 fps |
 | 控制轮询 | 默认每 3 帧一次，约 10 Hz |
-| 256x144 推理 | p95 不高于 3 ms；已有独立 benchmark 约 0.8 ms |
+| 256x144 模型执行 | `aclmdlExecute` p95 不高于 3 ms；输入/输出复制计入完整刷新事务 |
 | 单次 LUT 刷新事务 | p95 不高于 10 ms，不阻塞显示线程 |
 | 内存行为 | 稳态无逐帧/逐次刷新 `malloc`，无借用帧泄漏 |
 | 故障行为 | 推理或 CLUT 刷新失败时保留旧 LUT，显示主链继续运行 |
@@ -177,7 +177,8 @@ control worker 默认每 3 帧执行一次控制轮询，但只有 `control_shou
 
 1. ✅ Identity LUT：开关 CLUT 后无历史伪色；相邻 OFF/ON MAE 1.025、UV MAE 0.116。
 2. ✅ 轴序/位序诊断：36 组 sweep 确认 RGB 轴序、R高/G中/B低与 17v2 交织。
-3. 🟡 热刷新：20 秒动态预览 20/20 更新成功、约 30.2fps；长期 flicker/刷新 p95 待测。
+3. 🟡 热刷新：生产线程 30 秒测试为 30.11fps、6/6 更新、0 drops；推理 p95 2.86ms、
+   事务 p95 4.86ms。10 分钟正式验收与现场 flicker 待测。
 4. 🟡 固定模型 LUT：Python/C identity 已对齐；仍需多组随机 LUT 逐项对拍。
 5. 🟡 动态模型 LUT：已接 `infer_run_nv21` 实验预览；待生产 worker、降级和画质护栏。
 
@@ -203,8 +204,8 @@ control worker 默认每 3 帧执行一次控制轮询，但只有 `control_shou
 - CLUT 逻辑网格和 17v2 存储已确认；Python/C bridge 已实现有限值、范围检查和 identity
   强度混合，并通过 identity/轴序/位序门禁。仍需高光/端点/变化量护栏、随机 LUT 对拍、
   失败保旧参数和生产低频刷新事务。
-- chn2 位于 post-CLUT 路径，动态模型会读取自身增强结果；需解决输入隔离或加入迟滞、
-  时间滤波与收敛判定。
+- chn2 位于 post-CLUT 路径，动态模型会读取自身增强结果。当前已加入 1/4 EMA、连续 3 次变化确认、
+  刷新后 10 个控制周期冷却和 packed LUT 最大步长；仍需用动态场景验证收敛参数。
 - ACL 是否能安全直接导入 VPSS/VB 物理地址尚未验证；当前基线是缩略图 copy。
 - ISP CLUT 主线不能直接提供严格同帧原图/增强图分屏；需要额外 ISP/旁路能力或整图备选。
 - RTSP server 已选仓库内轻量实现：单客户端、RTP/RTSP over TCP interleaved、无第三方运行依赖；

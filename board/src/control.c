@@ -60,3 +60,109 @@ int control_should_refresh_lut(const luma_stats_t *prev, const luma_stats_t *cur
                         (fabsf_local(cur->clip_low_pct - prev->clip_low_pct) > LUT_DCLIP_TH);
     return scene_changed ? 1 : 0;
 }
+
+void control_health_init(control_health_t *health)
+{
+    if (health == NULL) {
+        return;
+    }
+    health->consecutive_failures = 0;
+    health->degraded = 0;
+}
+
+int control_health_record(control_health_t *health, int success, unsigned failure_limit)
+{
+    if (health == NULL || failure_limit == 0) {
+        return 0;
+    }
+    if (success) {
+        health->consecutive_failures = 0;
+        return health->degraded;
+    }
+    if (health->consecutive_failures < failure_limit) {
+        health->consecutive_failures++;
+    }
+    if (health->consecutive_failures >= failure_limit) {
+        health->degraded = 1;
+    }
+    return health->degraded;
+}
+
+#define FEEDBACK_ALPHA_NUM      1u
+#define FEEDBACK_ALPHA_DEN      4u
+#define FEEDBACK_CONFIRM_POLLS  3u
+#define FEEDBACK_COOLDOWN_POLLS 10u
+
+static float lowpass(float previous, float current)
+{
+    return previous +
+           (current - previous) * (float)FEEDBACK_ALPHA_NUM / (float)FEEDBACK_ALPHA_DEN;
+}
+
+void control_feedback_init(control_feedback_t *feedback)
+{
+    if (feedback == NULL) {
+        return;
+    }
+    feedback->filtered = (luma_stats_t){0};
+    feedback->committed = (luma_stats_t){0};
+    feedback->ticks_since_commit = 0;
+    feedback->cooldown_remaining = 0;
+    feedback->change_streak = 0;
+    feedback->have_filtered = 0;
+    feedback->have_committed = 0;
+}
+
+int control_feedback_observe(control_feedback_t *feedback, const luma_stats_t *raw,
+                             luma_stats_t *filtered_out)
+{
+    int changed;
+
+    if (feedback == NULL || raw == NULL) {
+        return 0;
+    }
+    if (!feedback->have_filtered) {
+        feedback->filtered = *raw;
+        feedback->have_filtered = 1;
+    } else {
+        feedback->filtered.mean_luma =
+            lowpass(feedback->filtered.mean_luma, raw->mean_luma);
+        feedback->filtered.clip_high_pct =
+            lowpass(feedback->filtered.clip_high_pct, raw->clip_high_pct);
+        feedback->filtered.clip_low_pct =
+            lowpass(feedback->filtered.clip_low_pct, raw->clip_low_pct);
+    }
+    if (filtered_out != NULL) {
+        *filtered_out = feedback->filtered;
+    }
+    feedback->ticks_since_commit++;
+
+    if (!feedback->have_committed) {
+        return 1;
+    }
+    if (feedback->cooldown_remaining > 0) {
+        feedback->cooldown_remaining--;
+        feedback->change_streak = 0;
+        return 0;
+    }
+    changed = control_should_refresh_lut(&feedback->committed, &feedback->filtered,
+                                         feedback->ticks_since_commit);
+    if (!changed) {
+        feedback->change_streak = 0;
+        return 0;
+    }
+    feedback->change_streak++;
+    return feedback->change_streak >= FEEDBACK_CONFIRM_POLLS;
+}
+
+void control_feedback_commit(control_feedback_t *feedback)
+{
+    if (feedback == NULL || !feedback->have_filtered) {
+        return;
+    }
+    feedback->committed = feedback->filtered;
+    feedback->have_committed = 1;
+    feedback->ticks_since_commit = 0;
+    feedback->cooldown_remaining = FEEDBACK_COOLDOWN_POLLS;
+    feedback->change_streak = 0;
+}

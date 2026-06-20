@@ -20,6 +20,12 @@ for u in "${HOST_UNITS[@]}"; do
     "${bin}" || fail=1
 done
 
+bin="${OUT}/test_lut_bridge"
+cc -std=c11 -Wall -Wextra -I"${BOARD}/include" \
+    "${BOARD}/tests/test_lut_bridge.c" "${BOARD}/src/lut_bridge.c" -lm -o "${bin}"
+echo "== running test_lut_bridge =="
+"${bin}" || fail=1
+
 # 纯头文件契约测试，无对应 src 文件。
 bin="${OUT}/test_pipeline_contract"
 cc -std=c11 -Wall -Wextra -I"${BOARD}/include" \

@@ -1,0 +1,83 @@
+#!/usr/bin/env bash
+# 板端 P1 稳定性验收：临时停止生产服务，在独立目录运行 NN+HDMI+RTSP，结束后恢复服务。
+# 用法：socchina-p1-validate [持续秒数]；默认 600 秒。
+set -euo pipefail
+
+readonly RUN_DIR="${SOCCHINA_P1_DIR:-/root/socchina-p1-validate}"
+readonly DURATION="${1:-600}"
+readonly APP="${RUN_DIR}/socchina_app"
+readonly MODEL="${RUN_DIR}/cotf_paramnet_256x144_lcdp_best_e0167_fp16_aipp.om"
+readonly LOG="${RUN_DIR}/p1-validation.log"
+readonly SERVICE="${SOCCHINA_SERVICE:-socchina-stream.service}"
+
+if [[ ! "${DURATION}" =~ ^[0-9]+$ ]] || ((DURATION < 10)); then
+    echo "[p1] duration must be an integer >= 10 seconds" >&2
+    exit 2
+fi
+if [[ ! -x "${APP}" || ! -r "${MODEL}" ]]; then
+    echo "[p1] missing app/model under ${RUN_DIR}" >&2
+    exit 1
+fi
+
+service_was_active=0
+if systemctl is-active --quiet "${SERVICE}"; then
+    service_was_active=1
+fi
+restore_service() {
+    if ((service_was_active)); then
+        systemctl start "${SERVICE}" >/dev/null 2>&1 || true
+    fi
+}
+trap restore_service EXIT HUP INT TERM
+
+systemctl stop "${SERVICE}" 2>/dev/null || true
+sleep 2
+
+: >"${LOG}"
+set +e
+timeout -s INT -k 10 "${DURATION}" \
+    env LD_LIBRARY_PATH="/opt/lib/npu:${LD_LIBRARY_PATH:-}" \
+    "${APP}" --stream --sensor 1 --strength 0.25 --nn-high-clip 100 --model "${MODEL}" \
+    >"${LOG}" 2>&1
+run_rc=$?
+set -e
+
+summary="$(grep 'socchina2026 exit (' "${LOG}" | tail -1 || true)"
+if [[ -z "${summary}" ]]; then
+    echo "[p1] missing exit summary (rc=${run_rc})" >&2
+    tail -80 "${LOG}" >&2
+    exit 1
+fi
+
+extract_value() {
+    local key="$1"
+    sed -n "s/.*${key}=\\([0-9.]*\\).*/\\1/p" <<<"${summary}"
+}
+
+infer_p95="$(extract_value infer_p95)"
+transaction_p95="$(extract_value transaction_p95)"
+drops="$(extract_value drops)"
+failures="$(extract_value fail)"
+lut_updates="$(extract_value lut)"
+samples="$(extract_value samples)"
+display_fps="$(sed -n 's/.*display=[0-9]*\/\([0-9.]*\)fps.*/\1/p' <<<"${summary}")"
+state="$(sed -n 's/.*state=\([A-Z]*\).*/\1/p' <<<"${summary}")"
+
+validation_failed=0
+[[ "${run_rc}" == "124" ]] || validation_failed=1
+[[ "${state}" == "STOPPED" ]] || validation_failed=1
+[[ "${drops}" == "0" ]] || validation_failed=1
+[[ "${failures}" == "0" ]] || validation_failed=1
+(( ${lut_updates:-0} > 0 )) || validation_failed=1
+(( ${samples:-0} > 0 )) || validation_failed=1
+awk -v value="${display_fps:-0}" 'BEGIN { exit !(value >= 29.5) }' || validation_failed=1
+awk -v value="${infer_p95:-999}" 'BEGIN { exit !(value <= 3.0) }' || validation_failed=1
+awk -v value="${transaction_p95:-999}" 'BEGIN { exit !(value <= 10.0) }' ||
+    validation_failed=1
+
+echo "[p1] ${summary}"
+if ((validation_failed)); then
+    echo "[p1] FAIL" >&2
+    exit 1
+fi
+echo "[p1] PASS"
