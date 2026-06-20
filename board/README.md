@@ -164,6 +164,69 @@ chn2=256x144 CoTF 控制缩略图，NV21 无压缩输出；`depth>0` 的通道�
 `display_send_frame` 直接兼容。取帧方必须在同一线程向同一 grp/chn 恰好归还一次。
 当前实现一次支持一个组（管线仅用 grp0）。
 
+### stream — VENC H.264 + RTSP 远程串流（数据通路第 10b 级）
+
+接口见 `include/stream.h`：`stream_init` / `stream_send_frame` / `stream_deinit`。生产程序加
+`--stream` 后启用 VPSS chn1 `1024x576 NV21`，独立 stream worker 执行
+`get → VENC send → release`，编码码流由模块内 drain 线程持续取出并送给 RTSP server。
+
+RTSP 选型：
+
+- 原厂 MPP sample 提供 VENC H.264/H.265 编码和落文件逻辑，但没有 RTSP server。
+- 首版采用仓库内轻量单客户端 server，RTP/RTSP 均走 TCP interleaved；不引入 live555/GStreamer
+  等第三方运行依赖，IPv4/IPv6 双栈监听。
+- RTP 支持 H.264 单 NAL 和 FU-A 分片；客户端 `PLAY` 时请求即时 IDR。慢客户端或网络写阻塞会被
+  主动断开，不能反压 VENC、display 或 control。
+- 无客户端时编码流仍被持续 drain，避免 VENC 队列堆积；客户端断开后可重新连接。
+
+生产运行：
+
+```sh
+BOARD=hispark-remote scripts/run_board.sh socchina_app --stream
+# 不启用 VO/HDMI，仅做远程串流：
+BOARD=hispark-remote scripts/run_board.sh socchina_app --stream --no-display
+# 可选：--bitrate 3000 --rtsp-port 8554 --stream-path live
+
+# IPv6 URL 的地址必须使用方括号；强制 TCP 与服务端实现一致
+ffplay -rtsp_transport tcp 'rtsp://[<BOARD_IPV6>]:8554/live'
+vlc 'rtsp://[<BOARD_IPV6>]:8554/live'
+```
+
+## 2026-06-20 RTSP 纯串流板端验收
+
+目标：
+
+- 不开启 VO/HDMI，验证 1024x576@30 H.264 RTSP、无客户端 drain、断开重连和退出清理。
+
+命令/路径：
+
+```sh
+/root/socchina-2026/socchina_app --stream --no-display
+gst-launch-1.0 -q rtspsrc \
+  location='rtsp://[<BOARD_IPV6>]:8554/live' protocols=tcp latency=100 \
+  ! rtph264depay ! fakesink sync=false
+```
+
+结果：
+
+- `scripts/test_host.sh`、ASan/UBSan RTSP 测试和 SDK Release 交叉编译通过。
+- GStreamer TCP depay 连续运行 10 秒后由测试超时主动结束，重复连接第二次同样通过；媒体主链无需重启。
+- 独立 10 秒 RTP 统计：301 个 access unit（约 30.1fps），H.264 payload 约
+  2954.5kbps；NAL 包含 SPS/PPS/IDR/SEI/P slice，证明客户端拿到的是完整编码流。
+- 无客户端的启动阶段仍持续编码/drain；42 秒运行 VENC sequence=1254、send=1255、错误 0、
+  `left_bytes/left_frm/cur_packs=0`，应用日志 stream drops=0（另一次启动首帧曾有 1 次 VPSS timeout）。
+- 整个应用进程（含 VI/ISP/VPSS/VENC/RTSP/control）当时约 9.6% CPU、RSS/HWM 38,252kB、
+  8 threads；不是 RTSP 模块的独立增量开销。
+- SIGTERM 后 8554 监听消失，VENC 通道清空，VPSS/capture 逆序退出。全程
+  `/proc/umap/hdmi0` 为 `hdmi enable: NO`。
+
+解读：
+
+- VENC→RTSP 最小闭环、断线重连、无客户端不堵塞和资源释放已通过纯串流门禁。
+- 按现场明确要求未开启 HDMI，因此 Issue #5 中“串流故障期间 HDMI ≥29.5fps”未执行，
+  不能据本次数据声称显示与串流并行验收通过。
+- 当前限制：单客户端、仅 RTP over RTSP/TCP，不提供鉴权、UDP transport 或音频。
+
 ### Config-R 接口契约（阶段 C）
 
 `include/pipeline.h`、`infer.h`、`lut_bridge.h`、`stream.h` 已固定通道、同步调用、帧所有权和输出布局。

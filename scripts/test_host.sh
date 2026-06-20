@@ -27,4 +27,10 @@ cc -std=c11 -Wall -Wextra -I"${BOARD}/include" \
 echo "== running test_pipeline_contract =="
 "${bin}" || fail=1
 
+bin="${OUT}/test_rtsp_server"
+cc -std=c11 -Wall -Wextra -pthread -I"${BOARD}/include" \
+    "${BOARD}/tests/test_rtsp_server.c" "${BOARD}/src/rtsp_server.c" -o "${bin}"
+echo "== running test_rtsp_server =="
+"${bin}" || fail=1
+
 exit "${fail}"

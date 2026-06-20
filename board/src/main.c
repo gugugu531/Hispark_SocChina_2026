@@ -19,6 +19,7 @@
 
 #include <pthread.h>
 #include <signal.h>
+#include <stdatomic.h>
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
@@ -27,6 +28,7 @@
 #include "capture.h"
 #include "display.h"
 #include "isp.h"
+#include "stream.h"
 #include "vpss.h"
 
 #include "ot_buffer.h"
@@ -35,37 +37,50 @@
 #include "ot_type.h"
 #include "sample_comm.h"
 
-#define APP_CTRL_PERIOD_MS  100u /* 控制环周期（~10Hz，低频；刷新由迟滞/限流再收敛） */
-#define APP_CTRL_WARMUP_MS  1000u /* AE 收敛前不读统计 */
-#define APP_TONE_STRENGTH   0.7f
+#define APP_CTRL_PERIOD_MS      100u  /* 控制环周期（~10Hz，低频；刷新由迟滞/限流再收敛） */
+#define APP_CTRL_WARMUP_MS      1000u /* AE 收敛前不读统计 */
+#define APP_TONE_STRENGTH       0.7f
+#define APP_STREAM_BITRATE_KBPS 3000u
+#define APP_RTSP_PORT           8554u
+#define APP_RTSP_PATH           "live"
 
 static volatile sig_atomic_t g_stop = 0;
-static void on_sig(int s) { (void)s; g_stop = 1; }
+static atomic_uint_fast64_t g_stream_frames;
+static atomic_uint_fast64_t g_stream_drops;
+static void on_sig(int s) {
+    (void) s;
+    g_stop = 1;
+}
 
-static long now_ms(void)
-{
+static long now_ms(void) {
     struct timespec ts;
     clock_gettime(CLOCK_MONOTONIC, &ts);
     return ts.tv_sec * 1000L + ts.tv_nsec / 1000000L;
 }
 
-static isp_tone_t mode_to_tone(expo_mode_t m)
-{
+static isp_tone_t mode_to_tone(expo_mode_t m) {
     switch (m) {
-        case EXPO_MODE_BRIGHTEN: return ISP_TONE_BRIGHTEN;
-        case EXPO_MODE_COMPRESS: return ISP_TONE_COMPRESS;
-        case EXPO_MODE_BIDIR:    return ISP_TONE_BIDIR;
-        default:                 return ISP_TONE_BYPASS;
+        case EXPO_MODE_BRIGHTEN:
+            return ISP_TONE_BRIGHTEN;
+        case EXPO_MODE_COMPRESS:
+            return ISP_TONE_COMPRESS;
+        case EXPO_MODE_BIDIR:
+            return ISP_TONE_BIDIR;
+        default:
+            return ISP_TONE_BYPASS;
     }
 }
 
-static const char *mode_name(expo_mode_t m)
-{
+static const char* mode_name(expo_mode_t m) {
     switch (m) {
-        case EXPO_MODE_BRIGHTEN: return "BRIGHTEN";
-        case EXPO_MODE_COMPRESS: return "COMPRESS";
-        case EXPO_MODE_BIDIR:    return "BIDIR";
-        default:                 return "BYPASS";
+        case EXPO_MODE_BRIGHTEN:
+            return "BRIGHTEN";
+        case EXPO_MODE_COMPRESS:
+            return "COMPRESS";
+        case EXPO_MODE_BIDIR:
+            return "BIDIR";
+        default:
+            return "BYPASS";
     }
 }
 
@@ -73,15 +88,14 @@ static const char *mode_name(expo_mode_t m)
  * 控制线程：低频读 AE 统计 → 判决 → 刷新 ISP Gamma 色调。
  * 只触 ISP 参数面（统计读 + Gamma 写），不借用 VPSS 帧，与显示线程无共享帧、无锁需求。
  */
-static void *control_worker(void *arg)
-{
-    float strength = *(const float *)arg;
+static void* control_worker(void* arg) {
+    float strength = *(const float*) arg;
     luma_stats_t prev, cur;
     int have_prev = 0;
     unsigned ticks = 0, last_refresh = 0;
 
-    (void)isp_gamma_apply_tone(ISP_TONE_BYPASS, strength); /* 缓存默认 Gamma + 初始原图 */
-    usleep(APP_CTRL_WARMUP_MS * 1000);                     /* 等 AE 收敛 */
+    (void) isp_gamma_apply_tone(ISP_TONE_BYPASS, strength); /* 缓存默认 Gamma + 初始原图 */
+    usleep(APP_CTRL_WARMUP_MS * 1000);                      /* 等 AE 收敛 */
 
     while (!g_stop) {
         usleep(APP_CTRL_PERIOD_MS * 1000);
@@ -91,35 +105,62 @@ static void *control_worker(void *arg)
         }
         if (control_should_refresh_lut(have_prev ? &prev : TD_NULL, &cur, ticks - last_refresh)) {
             expo_mode_t mode = control_decide(&cur);
-            (void)isp_gamma_apply_tone(mode_to_tone(mode), strength);
+            (void) isp_gamma_apply_tone(mode_to_tone(mode), strength);
             prev = cur;
             have_prev = 1;
             last_refresh = ticks;
-            LOG_INFO("[ctrl] -> %s (luma=%.1f low=%.1f%% high=%.1f%%)", mode_name(mode),
-                     cur.mean_luma, cur.clip_low_pct, cur.clip_high_pct);
+            LOG_INFO("[ctrl] -> %s (luma=%.1f low=%.1f%% high=%.1f%%)", mode_name(mode), cur.mean_luma,
+                     cur.clip_low_pct, cur.clip_high_pct);
         }
     }
-    (void)isp_gamma_apply_tone(ISP_TONE_BYPASS, strength); /* 退出前还原默认 Gamma */
+    (void) isp_gamma_apply_tone(ISP_TONE_BYPASS, strength); /* 退出前还原默认 Gamma */
     return TD_NULL;
 }
 
-int main(int argc, char **argv)
-{
+static void* stream_worker(void* arg) {
+    ot_video_frame_info frame;
+    (void) arg;
+
+    while (!g_stop) {
+        if (vpss_get_frame(PIPELINE_VPSS_GRP, PIPELINE_VPSS_CHN_STREAM, &frame, 200) != 0) {
+            atomic_fetch_add(&g_stream_drops, 1);
+            continue;
+        }
+        if (stream_send_frame(&frame, 0) == 0) {
+            atomic_fetch_add(&g_stream_frames, 1);
+        } else {
+            atomic_fetch_add(&g_stream_drops, 1);
+        }
+        if (vpss_release_frame(PIPELINE_VPSS_GRP, PIPELINE_VPSS_CHN_STREAM, &frame) != 0) {
+            atomic_fetch_add(&g_stream_drops, 1);
+        }
+    }
+    return TD_NULL;
+}
+
+int main(int argc, char** argv) {
     capture_cfg_t cap_cfg = {CAPTURE_SENSOR_INDEX_DEFAULT, CAPTURE_MODE_LINEAR};
+    stream_cfg_t stream_cfg = {
+        PIPELINE_STREAM_WIDTH,   PIPELINE_STREAM_HEIGHT, PIPELINE_TARGET_FPS,
+        APP_STREAM_BITRATE_KBPS, APP_RTSP_PORT,          APP_RTSP_PATH,
+    };
     float strength = APP_TONE_STRENGTH;
+    int enable_display = 1;
+    int enable_stream = 0;
     int rc = 1;
-    int sys_up = 0, cap_up = 0, vpss_up = 0, bound = 0, disp_up = 0, ctrl_up = 0;
+    int sys_up = 0, cap_up = 0, vpss_up = 0, bound = 0, disp_up = 0, stream_up = 0;
+    int ctrl_up = 0, stream_thread_up = 0;
     unsigned in_w = 0, in_h = 0;
     long t0, t_last_log;
     uint64_t frames = 0;
-    pthread_t ctrl_tid;
+    pthread_t ctrl_tid, stream_tid;
     ot_vb_cfg vb_cfg = {0};
     ot_pic_buf_attr buf_attr = {0};
     ot_vb_calc_cfg calc_cfg = {0};
     ot_video_frame_info frame;
     vpss_chn_cfg_t chn_cfg[VPSS_CHN_COUNT] = {
         {1, DISPLAY_WIDTH, DISPLAY_HEIGHT, 2}, /* chn0：显示底图 */
-        {0, 0, 0, 0},
+        {0, PIPELINE_STREAM_WIDTH, PIPELINE_STREAM_HEIGHT, 2},
         {0, 0, 0, 0},
     };
 
@@ -127,12 +168,24 @@ int main(int argc, char **argv)
         if (strcmp(argv[i], "--sensor") == 0 && i + 1 < argc) {
             cap_cfg.sensor_index = atoi(argv[++i]);
         } else if (strcmp(argv[i], "--strength") == 0 && i + 1 < argc) {
-            strength = (float)atof(argv[++i]);
+            strength = (float) atof(argv[++i]);
+        } else if (strcmp(argv[i], "--stream") == 0) {
+            enable_stream = 1;
+        } else if (strcmp(argv[i], "--no-display") == 0) {
+            enable_display = 0;
+        } else if (strcmp(argv[i], "--bitrate") == 0 && i + 1 < argc) {
+            stream_cfg.bitrate_kbps = (unsigned) strtoul(argv[++i], NULL, 10);
+        } else if (strcmp(argv[i], "--rtsp-port") == 0 && i + 1 < argc) {
+            stream_cfg.rtsp_port = (unsigned) strtoul(argv[++i], NULL, 10);
+        } else if (strcmp(argv[i], "--stream-path") == 0 && i + 1 < argc) {
+            stream_cfg.stream_path = argv[++i];
         }
     }
+    chn_cfg[PIPELINE_VPSS_CHN_DISPLAY].enable = enable_display;
+    chn_cfg[PIPELINE_VPSS_CHN_STREAM].enable = enable_stream;
 
-    LOG_INFO("%s v%s — CoTF 实时曝光校正（相机→ISP+Gamma→HDMI，控制线程低频刷新，零 NPU）",
-             SOCCHINA_APP_NAME, SOCCHINA_APP_VERSION);
+    LOG_INFO("%s v%s — CoTF realtime exposure correction (display=%s stream=%s)", SOCCHINA_APP_NAME,
+             SOCCHINA_APP_VERSION, enable_display ? "on" : "off", enable_stream ? "on" : "off");
 
     signal(SIGINT, on_sig);
     signal(SIGTERM, on_sig);
@@ -150,9 +203,8 @@ int main(int argc, char **argv)
     ot_common_get_pic_buf_cfg(&buf_attr, &calc_cfg);
     vb_cfg.max_pool_cnt = 2;
     vb_cfg.common_pool[0].blk_size = calc_cfg.vb_size;
-    vb_cfg.common_pool[0].blk_cnt = 10;
-    CHECK_RET_GOTO(sample_comm_sys_init_with_vb_supplement(&vb_cfg, OT_VB_SUPPLEMENT_BNR_MOT_MASK),
-                   cleanup);
+    vb_cfg.common_pool[0].blk_cnt = enable_stream ? 12 : 10;
+    CHECK_RET_GOTO(sample_comm_sys_init_with_vb_supplement(&vb_cfg, OT_VB_SUPPLEMENT_BNR_MOT_MASK), cleanup);
     sys_up = 1;
 
     if (capture_init(&cap_cfg) != 0) {
@@ -167,35 +219,67 @@ int main(int argc, char **argv)
         goto cleanup;
     }
     bound = 1;
-    if (display_init() != 0) {
-        goto cleanup;
+    if (enable_display) {
+        if (display_init() != 0) {
+            goto cleanup;
+        }
+        disp_up = 1;
     }
-    disp_up = 1;
+    if (enable_stream) {
+        if (stream_init(&stream_cfg) != 0) {
+            goto cleanup;
+        }
+        stream_up = 1;
+    }
 
     if (pthread_create(&ctrl_tid, TD_NULL, control_worker, &strength) != 0) {
         LOG_ERR("control thread create failed");
         goto cleanup;
     }
     ctrl_up = 1;
-    LOG_INFO("running: 显示线程 30fps + 控制线程 %ums；Ctrl-C 优雅退出", APP_CTRL_PERIOD_MS);
+    if (enable_stream) {
+        if (pthread_create(&stream_tid, TD_NULL, stream_worker, TD_NULL) != 0) {
+            LOG_ERR("stream thread create failed");
+            goto cleanup_running;
+        }
+        stream_thread_up = 1;
+    }
+    LOG_INFO("running: control %ums%s%s; Ctrl-C to stop", APP_CTRL_PERIOD_MS,
+             enable_display ? " + display 30fps" : "", enable_stream ? " + H.264/RTSP" : "");
 
     /* 显示线程（主）：全分辨率相机帧直通到 HDMI，~30fps。 */
     t0 = now_ms();
     t_last_log = t0;
     while (!g_stop) {
+        if (!enable_display) {
+            usleep(100000);
+            if (now_ms() - t_last_log >= 5000) {
+                if (enable_stream) {
+                    LOG_INFO("stream %llu frames, %llu drops",
+                             (unsigned long long) atomic_load(&g_stream_frames),
+                             (unsigned long long) atomic_load(&g_stream_drops));
+                }
+                t_last_log = now_ms();
+            }
+            continue;
+        }
         if (vpss_get_frame(0, 0, &frame, PIPELINE_FRAME_TIMEOUT_MS) != 0) {
             LOG_WARN("vpss_get_frame timeout/err");
             continue;
         }
         if (display_send_frame(&frame, -1) != 0) {
-            (void)vpss_release_frame(0, 0, &frame);
+            (void) vpss_release_frame(0, 0, &frame);
             goto cleanup_running;
         }
-        (void)vpss_release_frame(0, 0, &frame);
+        (void) vpss_release_frame(0, 0, &frame);
         frames++;
         if (now_ms() - t_last_log >= 5000) {
-            LOG_INFO("display %llu frames, %.1f fps", (unsigned long long)frames,
+            LOG_INFO("display %llu frames, %.1f fps", (unsigned long long) frames,
                      frames * 1000.0 / (now_ms() - t0));
+            if (enable_stream) {
+                LOG_INFO("stream %llu frames, %llu drops", (unsigned long long) atomic_load(&g_stream_frames),
+                         (unsigned long long) atomic_load(&g_stream_drops));
+            }
             t_last_log = now_ms();
         }
     }
@@ -204,8 +288,14 @@ int main(int argc, char **argv)
 cleanup_running:
     g_stop = 1;
 cleanup:
+    if (stream_thread_up) {
+        (void) pthread_join(stream_tid, TD_NULL);
+    }
     if (ctrl_up) {
-        (void)pthread_join(ctrl_tid, TD_NULL);
+        (void) pthread_join(ctrl_tid, TD_NULL);
+    }
+    if (stream_up) {
+        CHECK_RET(stream_deinit());
     }
     if (disp_up) {
         CHECK_RET(display_deinit());
@@ -222,15 +312,14 @@ cleanup:
     if (sys_up) {
         sample_comm_sys_exit();
     }
-    LOG_INFO("%s exit (%llu frames displayed)", SOCCHINA_APP_NAME, (unsigned long long)frames);
+    LOG_INFO("%s exit (%llu frames displayed)", SOCCHINA_APP_NAME, (unsigned long long) frames);
     return rc;
 }
 
 #else /* !WITH_SS928_SDK */
 
 /* SDK-free（无硬件）：仅验证构建闭环与控制逻辑，不起数据通路。 */
-int main(void)
-{
+int main(void) {
     luma_stats_t demo = {30.0f, 0.1f, 25.0f};
     LOG_INFO("%s v%s — board app skeleton (no SS928 SDK)", SOCCHINA_APP_NAME, SOCCHINA_APP_VERSION);
     LOG_INFO("control_decide(demo) = %d", control_decide(&demo));

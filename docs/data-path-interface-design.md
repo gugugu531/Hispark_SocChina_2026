@@ -207,5 +207,7 @@ control worker 默认每 3 帧执行一次控制轮询，但只有 `control_shou
   时间滤波与收敛判定。
 - ACL 是否能安全直接导入 VPSS/VB 物理地址尚未验证；当前基线是缩略图 copy。
 - ISP CLUT 主线不能直接提供严格同帧原图/增强图分屏；需要额外 ISP/旁路能力或整图备选。
-- RTSP server 复用厂商 sample 还是引入轻量实现尚未选型。
+- RTSP server 已选仓库内轻量实现：单客户端、RTP/RTSP over TCP interleaved、无第三方运行依赖；
+  厂商 MPP sample 仅提供 VENC/落文件代码，没有可小范围复用的 RTSP server。实现已通过主机协议
+  单测、SDK Release 交叉编译和纯串流板端播放/重连/资源验收；按现场要求未开启 HDMI，并行帧率仍开放。
 - `chn1` 若用于整图模型备选，必须在配置层禁用 stream，第一版不做动态抢占。
