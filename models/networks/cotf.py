@@ -1,4 +1,4 @@
-"""CoTF（Real-Time Exposure Correction, CVPR 2024）速率/可行性探针。
+"""受 CoTF 启发的 AICore 友好 param-net。
 
 CoTF 思路：低分辨率编码器预测**全局变换 + 3D-LUT**，全分辨率用 ISP CLUT 施加。
 该路线支持双向曝光校正，并把模型移出每帧关键路径。
@@ -13,7 +13,8 @@ CoTF 思路：低分辨率编码器预测**全局变换 + 3D-LUT**，全分辨�
 * 不复刻官方自适应采样/协同变换全部细节；`CoTFParamNet` 是"低分辨率 conv 编码器 → 全局池化 →
   预测 3D-LUT 系数"的代理，足以测 NN-only 的量级。
 * `lut_apply_graph` 用 `F.grid_sample`（3D）实现标准 3D-LUT 三线性查表 —— 这是判定该算子能否上板的关键。
-* 仅作探针：随机权重，测速率 + 算子可行性。
+* 参数网络现在可正式训练：输出以恒等 3D-LUT 初始化，并限制在 ``[0, 1]``。
+* ``LUTApply`` 仅供主机训练/验证，不进入部署 ONNX；部署图仍只包含 param-net。
 """
 
 from __future__ import annotations
@@ -41,26 +42,46 @@ class CoTFParamNet(nn.Module):
         self.head = nn.Conv2d(2 * ch, in_channels * lut_dim ** 3, 1)  # 预测 LUT 系数
         self.lut_dim = lut_dim
         self.in_channels = in_channels
+        self.reset_parameters()
+
+    def reset_parameters(self) -> None:
+        """让未训练模型输出恒等 LUT，避免随机权重直接破坏板端画面。"""
+        nn.init.zeros_(self.head.weight)
+        axis = torch.linspace(0.0, 1.0, self.lut_dim)
+        r, g, b = torch.meshgrid(axis, axis, axis, indexing="ij")
+        identity = torch.stack((r, g, b), dim=0).reshape(-1)
+        with torch.no_grad():
+            self.head.bias.copy_(identity)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         f = self.enc(self.down(x))
         f = self.gap(f)
-        return self.head(f)  # (1, 3*D^3, 1, 1) —— 全图 3D-LUT 系数
+        return F.hardtanh(self.head(f), 0.0, 1.0)  # (N, 3*D^3, 1, 1)
+
+    def as_lut(self, flat: torch.Tensor) -> torch.Tensor:
+        """把扁平输出变为训练用 ``(N, 3, D, D, D)`` LUT。"""
+        return flat.reshape(flat.shape[0], self.in_channels, self.lut_dim, self.lut_dim,
+                            self.lut_dim)
 
 
 class LUTApply(nn.Module):
-    """全分辨率 3D-LUT 三线性施加（grid_sample 3D）。用于判定该算子能否上 NNN。"""
+    """主机训练用 3D-LUT 三线性施加；该模块不导出到板端。"""
 
     def __init__(self, lut_dim: int = 9, in_channels: int = 3) -> None:
         super().__init__()
         self.lut_dim = lut_dim
-        # 固定一个 identity-ish LUT 作常量（探针只看算子，不看数值）
-        self.register_buffer("lut", torch.rand(1, in_channels, lut_dim, lut_dim, lut_dim))
+        axis = torch.linspace(0.0, 1.0, lut_dim)
+        r, g, b = torch.meshgrid(axis, axis, axis, indexing="ij")
+        self.register_buffer("lut", torch.stack((r, g, b), dim=0).unsqueeze(0))
 
-    def forward(self, img: torch.Tensor) -> torch.Tensor:
-        # img (1,3,H,W) in [0,1] → 取 RGB 作 3D 网格坐标 → grid_sample 查 LUT
-        grid = (img * 2.0 - 1.0).permute(0, 2, 3, 1).unsqueeze(1)  # (1,1,H,W,3)
-        out = F.grid_sample(self.lut, grid, mode="bilinear", align_corners=True)  # (1,3,1,H,W)
+    def forward(self, img: torch.Tensor, lut: torch.Tensor | None = None) -> torch.Tensor:
+        # grid_sample 的坐标顺序是 W/H/D；LUT 轴是 R/G/B，因此网格需按 B/G/R 排列。
+        active_lut = self.lut if lut is None else lut
+        if active_lut.shape[0] == 1 and img.shape[0] != 1:
+            active_lut = active_lut.expand(img.shape[0], -1, -1, -1, -1)
+        grid = (img[:, [2, 1, 0]] * 2.0 - 1.0).permute(0, 2, 3, 1).unsqueeze(1)
+        out = F.grid_sample(active_lut, grid, mode="bilinear", padding_mode="border",
+                            align_corners=True)
         return out.squeeze(2)
 
 

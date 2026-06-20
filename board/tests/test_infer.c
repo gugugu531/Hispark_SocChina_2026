@@ -1,8 +1,9 @@
 /* test_infer — CoTF param-net 板端 NPU 推理冒烟（触硬件 + NPU/ACL）。
  *
- * 链路：相机 → VI → ISP → VPSS chn0 NV21 → infer_run_nv21（ACL 在 NPU 跑 param-net OM）→ LUT 系数。
+ * 链路：相机 → VI → ISP → VPSS chn2 256x144 NV21 → AIPP
+ *      → infer_run_nv21（ACL 在 NPU 跑 param-net OM）→ LUT 系数。
  * 验证 infer.c 的 ACL 推理通路：模型加载、输入复制、NPU 执行、输出取回与耗时分解。
- * 注：当前 param-net 为随机权重（训练暂跳过），输出 LUT 仅用于验证通路与耗时，非有意义校正。
+ * 默认模型为 LCDP best checkpoint 转换的 256x144+AIPP OM；仍需生产安全参数桥与现场画质验收。
  *
  * 用法：./test_infer [--model <om>] [--iters N] [--sensor 0|1]
  * 前置：板上接 OS08A20；OM 已部署；LD_LIBRARY_PATH 含 /opt/lib/npu（libascendcl 等）。
@@ -38,7 +39,7 @@ int main(int argc, char **argv)
 {
     int iters = 30;
     capture_cfg_t cap_cfg = {CAPTURE_SENSOR_INDEX_DEFAULT, CAPTURE_MODE_LINEAR};
-    const char *model = "/root/socchina-2026/cotf_paramnet_lut17_1024x576_fp16.om";
+    const char *model = "/root/socchina-2026/cotf_paramnet_256x144_lcdp_best_e0167_fp16_aipp.om";
     int rc = 1;
     int sys_up = 0, cap_up = 0, vpss_up = 0, bound = 0, infer_up = 0;
     unsigned in_w = 0, in_h = 0;
@@ -51,9 +52,9 @@ int main(int argc, char **argv)
     ot_video_frame_info frame;
     infer_cfg_t icfg;
     vpss_chn_cfg_t chn_cfg[VPSS_CHN_COUNT] = {
-        {1, DISPLAY_WIDTH, DISPLAY_HEIGHT, 2},
         {0, 0, 0, 0},
         {0, 0, 0, 0},
+        {1, PIPELINE_CONTROL_WIDTH, PIPELINE_CONTROL_HEIGHT, 2},
     };
 
     for (i = 1; i < argc; i++) {
@@ -100,8 +101,8 @@ int main(int argc, char **argv)
 
     icfg.model_path = model;
     icfg.device_id = 0;
-    icfg.input_width = in_w;
-    icfg.input_height = in_h;
+    icfg.input_width = PIPELINE_CONTROL_WIDTH;
+    icfg.input_height = PIPELINE_CONTROL_HEIGHT;
     icfg.lut_dim = PIPELINE_COTF_LUT_DIM;
     icfg.input_mode = PIPELINE_INPUT_COPY;
     if (infer_init(&icfg) != 0) {
@@ -111,7 +112,7 @@ int main(int argc, char **argv)
 
     for (i = 0; i < iters; i++) {
         infer_timing_t t = {0};
-        if (vpss_get_frame(0, 0, &frame, 1000) != 0) {
+        if (vpss_get_frame(0, PIPELINE_VPSS_CHN_CONTROL, &frame, 1000) != 0) {
             LOG_WARN("vpss_get_frame timeout");
             continue;
         }
@@ -132,7 +133,7 @@ int main(int argc, char **argv)
                          lo, hi, sum / PIPELINE_COTF_LUT_FLOAT_COUNT);
             }
         }
-        (void)vpss_release_frame(0, 0, &frame);
+        (void)vpss_release_frame(0, PIPELINE_VPSS_CHN_CONTROL, &frame);
     }
 
     if (ok > 0) {

@@ -29,11 +29,16 @@ def main() -> int:
     ap.add_argument("--opset", type=int, default=13)
     ap.add_argument("--out-dir", default=str(MODELS_DIR / "weights"))
     ap.add_argument("--tag", default="")
+    ap.add_argument("--checkpoint", help="训练 checkpoint（读取其中的 model state_dict）")
     args = ap.parse_args()
 
     torch.manual_seed(0)
     os.makedirs(args.out_dir, exist_ok=True)
     model = build_param_net(down=args.down, ch=args.ch, lut_dim=args.lut_dim)
+    if args.checkpoint:
+        checkpoint = torch.load(args.checkpoint, map_location="cpu", weights_only=False)
+        model.load_state_dict(checkpoint["model"] if "model" in checkpoint else checkpoint)
+        model.eval()
     n = sum(t.numel() for t in model.parameters())
     stem = f"cotf_paramnet_{args.width}x{args.height}{args.tag}"
     fp32 = os.path.join(args.out_dir, f"{stem}.onnx")

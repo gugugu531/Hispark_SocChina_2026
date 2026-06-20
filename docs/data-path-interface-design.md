@@ -1,6 +1,8 @@
 # Config-R 数据通路接口与协作设计
 
-> 状态快照：2026-06-16。本文固定阶段 C 的模块边界和协作契约；具体 SDK 调用仍以实现和板端实测为准。
+> 状态快照：2026-06-20。本文保留阶段 C 的模块边界和帧所有权契约；具体 SDK 调用以实现和板端实测为准。
+> 当前实现差异：display + 规则 control→Gamma 已进生产 `main.c` 并板端 30fps 跑通；ACL 推理已独立验证；
+> 正式权重、chn2+AIPP、CLUT 17v2 identity 均已板端验证。尚未完成的是生产 NN→Gamma/DRC/CLUT 安全参数桥。
 > **命名说明**：文中「CoTF」指受官方 CoTF 启发、只保留「预测 3D-LUT + ISP 硬件施加」的子集，**非官方 CoTF**
 > （协同变换/自适应采样/注意力融合等红名单部件已丢弃，画质 ≈ 全局 3D-LUT 级）。详见
 > [architecture.md §4.1](architecture.md) 与 [../models/cotf-route-verification.md](../models/cotf-route-verification.md)。
@@ -10,7 +12,7 @@
 目标：
 
 - 保持 `OS08A20 -> VI/ISP -> VPSS -> VO/HDMI` 主链 30 fps。
-- CoTF 只在低频控制旁路读取缩略图、预测 LUT；全分辨率增强由 ISP CLUT 每帧完成。
+- CoTF-inspired 参数网只在低频控制旁路读取缩略图、预测参数；全分辨率增强由 ISP 参数块每帧完成。
 - 让显示、推理、LUT 桥、控制和串流可由不同成员并行开发，避免共享帧和生命周期互相耦合。
 
 阶段 C（M3）验收目标：
@@ -25,7 +27,7 @@
 | 故障行为 | 推理或 CLUT 刷新失败时保留旧 LUT，显示主链继续运行 |
 
 这里的“30 fps”指相机帧链，不是 HDMI 的 60 Hz 扫描刷新率。M3 不要求严格同帧的原图/增强图分屏：
-ISP CLUT 位于公共 ISP 输出上，同一 ISP 输出天然都是已增强帧。
+ISP Gamma/DRC/CLUT 位于公共 ISP 输出上，同一 ISP 输出天然都是已增强帧。
 
 ## 2. 固定通道配置
 
@@ -55,10 +57,10 @@ Config-R 使用一个 VPSS 组（`grp0`）和三个固定角色通道：
 | `capture` | sensor/WDR 配置 | VI/ISP 启停、VI→VPSS 绑定 | VPSS 取帧 |
 | `vpss` | 三通道配置 | 借出/归还 SDK 帧 | 跨线程队列 |
 | `display` | `chn0` 借用帧 | VO/HDMI 送显 | 归还 VPSS 帧 |
-| `infer` | `chn2` NV21 借用帧 | 调用者提供的 float LUT | 决策、CLUT 写入、保留输入帧 |
-| `lut_bridge` | float LUT | 5508 个 ISP packed u32 节点 | ISP 调用、动态分配 |
+| `infer` | `chn2` NV21 借用帧 | 调用者提供的 float 参数 | 决策、ISP 写入、保留输入帧 |
+| `lut_bridge` | NN 参数 | Gamma/DRC/CLUT 安全输入 | ISP 调用、动态分配 |
 | `control` | AE 统计、历史状态 | 模式和是否刷新 LUT 的纯逻辑决策 | 取帧、推理、线程 |
-| `isp` | ISP 参数和 packed LUT | 读取统计、更新 DRC/dehaze/CLUT | 刷新策略 |
+| `isp` | ISP 参数和 packed LUT | 读取统计、更新 Gamma/DRC/dehaze/CLUT | 刷新策略 |
 | `stream` | `chn1` 借用帧 | VENC H.264 + RTSP | 与其他消费者共享帧 |
 
 新增接口：
@@ -78,7 +80,7 @@ Config-R 使用一个 VPSS 组（`grp0`）和三个固定角色通道：
 main thread
   ├─ display worker: chn0 get -> display_send -> chn0 release
   ├─ control worker: AE stats -> decide -> [chn2 get -> infer -> release
-  │                                      -> pack -> ISP CLUT set]
+  │                                      -> safe bridge -> ISP parameter set]
   └─ stream worker:  chn1 get -> VENC/RTSP -> chn1 release（可选）
 ```
 
@@ -93,7 +95,7 @@ main thread
 `infer_run_nv21` 是同步调用，返回时不得保留输入帧地址或输出缓冲区地址。ACL 模型实例由 control
 worker 独占，第一版不支持并发调用。
 
-## 5. LUT 刷新事务
+## 5. 参数刷新事务
 
 control worker 默认每 3 帧执行一次控制轮询，但只有 `control_should_refresh_lut` 判定需要刷新时才取
 `chn2` 和运行 NPU：
@@ -104,13 +106,14 @@ control worker 默认每 3 帧执行一次控制轮询，但只有 `control_shou
 4. 从 `chn2` 取一帧，超时则本轮跳过。
 5. `infer_run_nv21` 同步输出 14,739 个 float。
 6. 无论推理成功与否，立即归还 `chn2` 帧。
-7. 成功时由 `lut_bridge_pack` 生成 5,508 个 packed u32。
-8. 调用 `isp_set_clut`/等价实现热更新 CLUT。
-9. 仅在 CLUT 写入成功后提交“当前 LUT 版本”和成功时间。
+7. 成功时由安全参数桥做有限值检查、clamp、单调/变化量护栏和格式转换。
+8. 按用途更新 Gamma/DRC/CLUT；当前 17³ 输出对应颜色 CLUT，曝光生产路径优先 Gamma/DRC。
+9. 仅在 ISP 写入成功后提交“当前参数版本”和成功时间；失败时保留旧参数并回退规则控制。
 
-模型输出布局固定为 `[RGB][R][G][B]`，B 轴最快，共 `3 * 17^3 = 14,739` 个 float。当前硬件候选
-mesh 为 `17x18x18 = 5,508` 节点，遍历顺序和通道位序仍是板端标定项；因此集中在
-`lut_bridge_cfg_t`，不得散落到推理或 ISP 模块。
+当前模型输出布局固定为 `[RGB][R][G][B]`，B 轴最快，共 `3 * 17^3 = 14,739` 个 float。
+厂商文档确认逻辑 CLUT 为 17³；PQTools `17v2` 实现进一步确认 5,508 项是 8 个奇偶 bank 的
+4 路交织存储，不是 `17×18×18` 逻辑采样网格或边界填充。RGB 轴序和 R高/G中/B低位序必须
+集中在参数桥，不得散落到推理或 ISP 模块。
 
 ## 6. 内存与数据搬运
 
@@ -196,7 +199,8 @@ mesh 为 `17x18x18 = 5,508` 节点，遍历顺序和通道位序仍是板端标�
 
 ## 11. 尚未关闭的设计问题
 
-- ISP CLUT 的准确 mesh 维度、坐标和 packed 通道位序仍需板端诊断 LUT 确认。
+- CLUT 逻辑网格和 17v2 存储已确认；Python packer 已通过 identity、轴序和位序板端门禁。
+  C 生产 bridge 仍需接入范围检查、失败保留旧表和低频刷新事务。
 - ACL 是否能安全直接导入 VPSS/VB 物理地址尚未验证；当前基线是缩略图 copy。
 - ISP CLUT 主线不能直接提供严格同帧原图/增强图分屏；需要额外 ISP/旁路能力或整图备选。
 - RTSP server 复用厂商 sample 还是引入轻量实现尚未选型。

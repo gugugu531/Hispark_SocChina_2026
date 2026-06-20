@@ -1,10 +1,9 @@
 # TODO — 未完成部分与开发规划
 
-> 状态快照日期：2026-06-16。阶段 A 硬件直通链和阶段 B 模型去风险已完成，Config-R 主线已转为
-> CoTF 参数网络 + ISP CLUT。**CoTF 硬件施加端已板端联机点亮**：相机→ISP+CLUT→HDMI 实时整链 30fps、
-> 触摸点屏 toggle CLUT 开/关、零 NPU 跑通（`board/tests/test_cotf_live.c`）；唯一仍开放的是 **CLUT mesh
-> 几何标定**（主机打包/恒等 LUT 均不透传出伪色，当前用几何无关的 gamma 绕过法拿到可见校正）。
-> 详见 [../models/cotf-route-verification.md](../models/cotf-route-verification.md)「板端联机点亮（2026-06-16）」。
+> 状态快照日期：2026-06-20。阶段 A/B 已完成，硬件施加端与规则控制→Gamma 生产整链已板端
+> 30fps 跑通；CLUT 17v2 几何已由厂商资料和板端 sweep 确认（17³、8 bank、4 路交织）。param-net 的训练、
+> 推荐 YAML、ETA/断点恢复、LCDP 正式权重和 256x144+AIPP 板端推理已完成。当前主线剩余：
+> NN→Gamma/DRC/CLUT 安全参数桥、生产 control worker 接线、动态闭环画质验证和 RTSP。
 > 数据通路与模块定义见 [architecture.md](architecture.md)；规范见 [development-guide.md](development-guide.md)。
 > 阶段 C 的接口与协作契约见 [data-path-interface-design.md](data-path-interface-design.md)。
 
@@ -25,11 +24,11 @@
 | 通路级 | 模块文件 | 状态 | 说明 |
 | --- | --- | --- | --- |
 | 1 采集 | `capture.c` | ✅ 已完成 | linear 与 WDR 2to1 均板端 30fps 实测；运行时帧率/镜像/翻转可调 |
-| 2–4 ISP | `isp.c` | ✅ 基本完成 | 抗闪烁/AE 补偿/手动曝光/AE 统计/dehaze/DRC/LDCI 已实测；**CLUT 已板端联机点亮**（`isp_set_clut`/`isp_load_clut_lut` 在运行中 ISP pipe0 即时生效，相机→ISP+CLUT→HDMI 30fps、触摸 toggle，见 `test_cotf_live`）；**仅剩 mesh 几何标定**（任意 NN-LUT 精确落地，见 `models/cotf-route-verification.md`） |
-| 5 分发缩放 | `vpss.c` | ✅ 已完成 | chn0 1024x600 已实测；接口已固定 chn1 1024x576、chn2 256x144，待整链启用 |
-| 6 预处理 | （融入 OM 的 AIPP） | 🟡 模型侧已验证 | 配置和开销已验证；待 `infer.c` 对接 chn2 NV21 |
-| 7 推理 | `infer.c` | ✅ ACL 实现+板端验证 | 全 ACL `aclmdl*` 跑 CoTF param-net OM：模型加载/输入复制(NV21→device)/NPU 执行/输出 fp16→float。**板端 30/30 OK，NPU exec 平均 5.61ms**（lut17_1024x576，`test_infer`，2026-06-19）。注：当前随机权重，输出仅验证通路；接控制环待训练好的色调网络 |
-| 8 LUT 桥 | `lut_bridge.c` | 🟡 接口已固定 | `lut_bridge.h` 已隔离 mesh/轴序/位序；待实现并完成诊断 LUT 标定 |
+| 2–4 ISP | `isp.c` | ✅ 基本完成 | Gamma/CLUT 热刷新已板端联机；CLUT 17v2 identity 已通过。余：DRC/局部块画质标定和动态 NN 参数安全写回 |
+| 5 分发缩放 | `vpss.c` | ✅ 已完成 | chn0 1024x600 已实测；chn2 256x144 已在正式 param-net 推理冒烟中启用；chn1 留给 RTSP |
+| 6 预处理 | （融入 OM 的 AIPP） | ✅ 板端验证 | `aipp_nv21_256x144.cfg` 已随正式 OM 上板，输入 55296B NV21，30/30 成功 |
+| 7 推理 | `infer.c` | ✅ ACL 实现+板端验证 | LCDP best epoch 167 正式 OM，chn2+AIPP 30/30，exec 平均 1.13ms、冷启动最大 3.84ms；余：生产接线与 p95 长测 |
+| 8 参数桥 | `lut_bridge.c` / RGB CLUT 预览 | 🟡 板端预览 | 17v2 打包、有限值/范围检查、identity 强度混合已接正式模型；20 秒动态闭环 20/20 更新成功。强光抓帧暴露裁剪增加和 post-CLUT 反馈，长时展示暂回退 Gamma，待补高光/端点护栏 |
 | 9 后处理/合成 | `postproc.c` / `compose.c` | ⏸ 备选路线 | 仅整图 ExpoCurveNet 分屏演示需要，非 CoTF 主路径依赖 |
 | 10a 显示 | `display.c` | ✅ 已完成 | 板端冒烟 PASS，启动杂线已修（黑场预帧）；flicker 观感需现场目视确认 |
 | 10b 串流 | `stream.c` | 🟡 接口已固定 | 独占 chn1 的契约已定义；待 VENC H.264 + RTSP 实现（server 选型待定） |
@@ -42,11 +41,15 @@
 - ✅ 曲线预测网络实现（2026-06-14，`models/networks/expo_curve.py`，参数化 niter/filters/down/shared_curve，
   仅绿名单算子，pytest 11 过）+ 导出 ONNX（NCHW、opset13、单输出、无 Resize）+ ATC FP16 OM + 算子探测
   （干净落 AICore，无 AICPU/Cast）+ **板端实测耗时**（见 `models/expo-curve-network.md`）。
-- ✅ AIPP 配置（`models/configs/aipp_nv21_1024x576.cfg`，NV21/rbuv_swap//255）+ ATC 转 FP16 OM；AIPP 开销实测 ≈0ms。
+- ✅ AIPP 配置（`aipp_nv21_1024x576.cfg` 与 `aipp_nv21_256x144.cfg`，NV21/rbuv_swap//255）
+  + ATC 转 FP16 OM；256x144 配置已随正式权重板端验证。
 - 🟡 **结论**：1024x576 全分辨率超 33ms（niter8=94.9ms，瓶颈是全分辨率访存）；实时档应取 `768x432+共享曲线`
   （27ms）或 `640x360`。横评 Zero-DCE Lite/SCI/MSEC/CoTF 后，**唯一能在 1024x576 真实时的是 CoTF 路线**
   （NN 出 LUT ~5ms + ISP 硬件施加，见 `models/cotf-route-verification.md`）。
-- ❌ 认真训练（结构与耗时已解耦验证完，可投训练）；Config-Q（高画质 1024x640 级）产出。
+- ✅ param-net 已用 LCDP 1415/100/218 对完成 200 epoch 正式训练；best epoch 167，
+  val/test PSNR 为 19.7247/20.4813dB，输入 test 基线 14.0203dB。checkpoint→FP16 ONNX→
+  256x144+AIPP OM→板端 30/30 推理完成，见 `models/param-net-training.md`。Config-Q
+  （高画质 1024x640 级）仍未产出。
 
 ### 2.3 脚本与工程
 
@@ -65,11 +68,10 @@
    Config-R 主线改为 CoTF + ISP CLUT；1024x576 整图输出留 Config-Q。
 2. ✅ AIPP 全分辨率 CSC/归一开销（2026-06-14）：实测 **≈0ms**（1024x576 挂/不挂 AIPP 同速，差值噪声内），
    预处理可零开销融入 OM 前端，直接吃 VPSS chn1 的 NV21。
-3. 🟡 CoTF CLUT 相机链加载和热刷新（2026-06-16）：**相机→ISP+CLUT→HDMI 实时整链 30fps 联机点亮、
+3. ✅ CoTF CLUT/Gamma 相机链加载和热刷新：**相机→ISP+CLUT→HDMI 实时整链 30fps 联机点亮、
    触摸点屏 toggle CLUT 开/关、零 NPU、运行中即时生效**（`board/tests/test_cotf_live.c`）。
-   AE 在 CLUT 之前测光，故 CLUT 效果不被 AE 抵消。**仍开放**：mesh 几何标定（主机打包/恒等 LUT 均不透传、
-   出伪色——轴序/遍历待对照 SDK《ISP CLUT 调优说明》；当前用几何无关 gamma 绕过法做出可见校正）；
-   flicker 观感现场目视终判；LUT 刷新率标定。详见 `models/cotf-route-verification.md`「板端联机点亮」。
+   AE 在 CLUT 之前测光，故效果不被 AE 抵消。CLUT 几何已由厂商文档确认；Gamma 原生色调路径已
+   31.2fps 实测。仍开放：动态 NN 参数刷新率、p95、闭环稳定性和 flicker 现场目视。
 4. ✅ `ss_mpi_isp_get_ae_stats` 低频读取验证（2026-06-11）：`isp_get_luma_stats` 归约
    1024-bin 直方图为 mean/clip%，直接喂 `control_decide`，判决与实际场景相符。
 5. 🟡 VGS+VO 替代 GFBG 是否无 flicker：链路侧冒烟 PASS，**面板观感需现场目视确认**。
@@ -109,9 +111,10 @@ ISP 硬件 CLUT 全分辨率施加（零 NPU）」**。完整验证与代码见 
 - ✅ **CLUT 联机点亮**：相机链（capture_init→ISP pipe0）上 `isp_load_clut_lut(5508)` + `isp_set_clut(en)`
   在运行中 ISP 即时生效，**相机→ISP+CLUT→HDMI 30fps、触摸点屏 toggle 开/关、零 NPU、零掉帧**
   （`board/tests/test_cotf_live.c`，交叉编译复用 capture/isp/display）。AE 在 CLUT 之前测光，效果不被 AE 抵消。
-- ✅ **施加端选块已厘清（2026-06-19，厂商文档）**：SDK ReleaseDoc《ISP 图像调优指南》§4.20 确认 **CLUT 是
-  17×17×17 线性 RGB 3D-LUT**（`lut[5508]=17×18×18` 是带填充存储；我方曾误用 (17,18,18) 当格点故不透传，
-  mesh 现可正确打包）。但**曝光/色调的原生块是 Gamma（§4.11，1D 1025 节点）/ DRC（§4.6）,不是 CLUT**。
+- ✅ **施加端选块与布局已厘清（2026-06-20）**：ReleaseDoc 确认 CLUT 是 17×17×17 线性 RGB
+  3D-LUT；PQTools `17v2` 确认 5508 项为 8 个奇偶 bank 的 4 路交织。36 组板端 sweep 确认
+  RGB 轴序、R高/G中/B低位域，identity 相邻 OFF/ON MAE 1.025、UV MAE 0.116。
+  但**曝光/色调的原生块仍是 Gamma（§4.11，1D 1025 节点）/ DRC（§4.6）,不是 CLUT**。
   → 施加端按用途分块：**全局色调/曝光走 Gamma**（`isp_gamma_apply_tone`，**已板端 31fps 实测、出图干净无伪色**，
   OFF luma 89.5→BRIGHTEN 149.0）；双向动态范围走 DRC；颜色相关 3D 才用 CLUT(17³)。
 - ❌ **LUT 刷新率标定**：`control_should_refresh_lut` 的间隔/阈值（初版经验值）按实测场景适应延迟标定。
@@ -153,10 +156,9 @@ ISP 硬件 CLUT 全分辨率施加（零 NPU）」**。完整验证与代码见 
 
 接口、所有权和验收条件统一按 [data-path-interface-design.md](data-path-interface-design.md) 执行。
 
-1. 🟡 相机链联机点亮**已完成**（`test_cotf_live`：相机→ISP+CLUT→HDMI 30fps + 触摸 toggle，2026-06-16）；
-   仍需用 identity/诊断 LUT 完成 **CLUT mesh 几何标定**（当前主机打包/恒等 LUT 不透传出伪色，用 gamma 绕过）。
-2. 🟡 `infer.c`：ACL 推理通路**已实现+板端验证**（NPU 跑 param-net OM，exec ~5.6ms）；余：喂 VPSS chn2
-   256x144 缩略图 + AIPP（NV21→RGB）、训练出"色调曲线"网络并把输出接入控制环（替代规则判决）。
+1. ✅ 相机链硬件施加端已完成（CLUT 30fps + Gamma 31.2fps）；CLUT 17v2 identity 已通过。
+2. ✅ `infer.c`：正式 LCDP best OM 已用 VPSS chn2 256x144 NV21+AIPP 板端 30/30，
+   exec 平均 1.13ms；固定输入 checkpoint→ONNX→裸 OM→AIPP OM 数值对拍通过。余项归入第 3 项安全桥。
 3. `lut_bridge.c`：板端把 NN 参数转 ISP 块输入（色调→Gamma 表；色彩 3D→CLUT 17³ 打包）。
 4. ✅ AE 统计 + `control_should_refresh_lut` + 色调热刷新已接入低频 control worker（`main.c` 控制线程，2026-06-19）。
 5. ✅ `main.c` 已建立 display + control 双线程、逆序回滚与 SIGINT 优雅退出（可选 stream 线程后续加）。
@@ -164,8 +166,8 @@ ISP 硬件 CLUT 全分辨率施加（零 NPU）」**。完整验证与代码见 
 
 ### 阶段 D — 控制大脑与画质
 
-1. 将已验证的 ISP 统计读取迁入正式主程序，完成迟滞防抖和 dehaze/DRC/CLUT 参数写回。
-2. 模型正式训练与画质验证（≥20–50 张同分辨率样本,含代表性相机帧——沿用工作区既有画质检查规则）。
+1. 实现 NN→Gamma/DRC/CLUT 安全参数桥和动态闭环；现有规则判决继续作为回退。
+2. 用 LCDP 预训练并做 OS08A20 微调与画质验证（≥20–50 张代表性相机帧）。
 3. 完成 OS08A20 WDR 的强逆光、运动鬼影和长时稳定性验证。
 4. 阈值标定（control.c 注释已标注初版经验值待标定）。
 
@@ -179,7 +181,7 @@ ISP 硬件 CLUT 全分辨率施加（零 NPU）」**。完整验证与代码见 
 
 | 里程碑 | 判据 |
 | --- | --- |
-| M1（阶段 A） | 相机实时画面上屏（✅ socchina_app 30.5fps，2026-06-19）；一键部署/启动脚本待补 |
+| M1（阶段 A） | ✅ 相机实时画面上屏 30.5fps；部署/启动脚本已补（2026-06-19） |
 | M2（阶段 B） | OM 板端实测耗时出数,Config-R 可行性有结论 |
 | M3（阶段 C） | CoTF 相机链联机生效（🟡 socchina_app 整链 30.5fps + 场景自适应 Gamma 双线程已跑通 2026-06-19；余 infer.c NN + 刷新耗时分解） |
 | M4（阶段 D） | 场景自适应生效,画质验证通过 |
@@ -187,9 +189,8 @@ ISP 硬件 CLUT 全分辨率施加（零 NPU）」**。完整验证与代码见 
 
 ## 4. 风险与依赖提示
 
-- 运行中热刷新已板端跑通（30fps 不掉帧、点屏 toggle 即时生效，2026-06-16）；**当前最大技术风险收窄为 ISP CLUT
-  mesh 几何标定**（轴序/遍历顺序——主机打包/恒等 LUT 均不透传出伪色，未标定前任意 NN-LUT 无法精确落地，
-  当前用几何无关 tone 曲线绕过法演示）。整图 OM 的性能风险已在阶段 B 定量关闭。
+- 运行中 Gamma/CLUT 热刷新已板端跑通，CLUT 几何与 identity 已厘清。当前最大风险转为**正式训练后的画质泛化、
+  NN→ISP 参数安全约束与 post-ISP 闭环稳定性**。整图 OM 的性能风险已在阶段 B 定量关闭。
 - **AE 统计单消费者（已知限制）**：cross-process `get_ae_stats` 与占用通路进程的 3A 冲突（0xa01c8045）⇒
   独立控制面无法读 AE 做场景自适应（改手动循环 tone）；AE 驱动的场景自适应走集成式路径（已实测 OK）。
 - 排查留痕：开发期曾遇相机不出帧（VPSS 0xa0078016），实测定位为 **sensor MIPI/上电瞬态故障**

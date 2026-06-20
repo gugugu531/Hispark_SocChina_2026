@@ -6,12 +6,14 @@ import numpy as np
 import pytest
 
 from models.tools.cotf_lut_pack import (
+    HW_BANK_COUNTS,
     HW_LUT_LENGTH,
     decode_paramnet_output,
     identity_cubic_lut,
     pack_cubic_to_hw,
     pack_u30,
     resample_to_hw_mesh,
+    unpack_hw_mesh,
     write_lut_bin,
 )
 
@@ -36,6 +38,11 @@ def test_pack_u30_bit_layout_rgb():
     assert ((v >> 20) & 0x3FF) == 1023 and ((v >> 10) & 0x3FF) == 0 and (v & 0x3FF) == 0
 
 
+def test_pack_u30_default_layout_is_board_verified_rgb():
+    v = pack_u30(np.array([[1.0, 0.0, 0.0]]))[0]
+    assert v == (1023 << 20)
+
+
 def test_resample_to_hw_mesh_length():
     cubic = identity_cubic_lut(17)
     mesh = resample_to_hw_mesh(cubic)
@@ -50,15 +57,18 @@ def test_pack_cubic_to_hw_full_chain():
 
 
 def test_identity_resample_roundtrip():
-    # 恒等立方 LUT 重采样到 mesh 后，节点值应≈其坐标（三线性对线性恒等精确）
-    dims = (17, 18, 18)
-    mesh = resample_to_hw_mesh(identity_cubic_lut(17), dims)
-    r = np.linspace(0, 1, dims[0])
-    g = np.linspace(0, 1, dims[1])
-    b = np.linspace(0, 1, dims[2])
-    rr, gg, bb = np.meshgrid(r, g, b, indexing="ij")
-    expect = np.stack([rr.ravel(), gg.ravel(), bb.ravel()], axis=1)
-    assert np.allclose(mesh, expect, atol=1e-6)
+    mesh = resample_to_hw_mesh(identity_cubic_lut(17))
+    assert HW_BANK_COUNTS == (729, 648, 648, 576, 648, 576, 576, 512)
+    # 前四个值来自 bank0..3；下一组再次是 bank0..3。
+    assert np.allclose(mesh[0], [0, 0, 0])
+    assert np.allclose(mesh[1], [1 / 16, 0, 0])
+    assert np.allclose(mesh[2], [0, 1 / 16, 0])
+    assert np.allclose(mesh[3], [1 / 16, 1 / 16, 0])
+    assert np.allclose(mesh[4], [2 / 16, 0, 0])
+    # bank1 和 bank3 的短尾由官方打印函数补零。
+    assert np.all(mesh[4 * 648 + 1 : 4 * 729 : 4] == 0)
+    assert np.all(mesh[4 * 576 + 3 : 4 * 729 : 4] == 0)
+    assert np.allclose(unpack_hw_mesh(mesh), identity_cubic_lut(17))
 
 
 def test_decode_paramnet_output_shape():

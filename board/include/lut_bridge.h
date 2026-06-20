@@ -8,19 +8,11 @@
 
 /* CoTF 立方 LUT → ISP CLUT 的纯逻辑桥，可在主机做单元测试。 */
 
-typedef enum {
-    LUT_CHANNEL_ORDER_RGB = 0,
-    LUT_CHANNEL_ORDER_BGR
-} lut_channel_order_t;
-
 typedef struct {
-    unsigned mesh_r;
-    unsigned mesh_g;
-    unsigned mesh_b;
-    lut_channel_order_t channel_order;
+    float strength; /* 0=identity，1=完整模型 LUT。 */
 } lut_bridge_cfg_t;
 
-/* 当前 17x18x18 仅为待 SDK 调优文档确认的候选 mesh，不得当作已标定事实。 */
+/* SS928 17v2：17^3 逻辑点、8 个奇偶 bank、4 路交织、R高/G中/B低。 */
 void lut_bridge_default_cfg(lut_bridge_cfg_t *cfg);
 
 /*

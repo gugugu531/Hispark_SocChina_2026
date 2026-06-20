@@ -37,6 +37,11 @@ typedef struct {
 int infer_init(const infer_cfg_t *cfg);
 int infer_run_nv21(const void *frame_info, float *lut_out, size_t lut_count,
                    infer_timing_t *timing);
+
+/* 固定输入/数值对拍入口：input 必须与 OM 输入缓冲大小完全一致。
+ * AIPP OM 输入原始 NV21；裸 OM 输入 NCHW FP16。 */
+int infer_run_buffer(const void *input, size_t input_size, float *lut_out, size_t lut_count,
+                     infer_timing_t *timing);
 int infer_deinit(void);
 
 #endif /* SOCCHINA_INFER_H */
