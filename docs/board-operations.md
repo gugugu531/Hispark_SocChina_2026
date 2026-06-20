@@ -351,3 +351,49 @@ systemctl show socchina-stream.service -p Result -p ExecMainStatus -p NRestarts
 
 - 是否满足无人值守启动；仍开放的限制。
 ```
+
+## 9. 规划中的板端 Web 控制台
+
+Web 控制台尚未实现。正式技术路线见
+[web-console-architecture.md](web-console-architecture.md)，运维层预期增加：
+
+```text
+socchina-mediamtx.service
+socchina-admin.service
+socchina-web.service
+```
+
+规划端口：
+
+| 端口 | 用途 | 暴露范围 |
+| --- | --- | --- |
+| `127.0.0.1:8555` | `socchina_app` 内部 RTSP 源 | 仅 loopback |
+| `8554` | MediaMTX 对外 RTSP | 部署网络 |
+| `8889` | WebRTC HTTP/WHEP | 浏览器 |
+| `8189/udp` | WebRTC ICE | 浏览器 |
+| `8888` | LL-HLS 回退 | 浏览器 |
+| `8080` | Web 页面与控制 API | 管理网络 |
+| `127.0.0.1:9997` | MediaMTX Control API | 仅 loopback |
+| `127.0.0.1:9998` | MediaMTX metrics | 仅 loopback |
+
+运维原则：
+
+- MediaMTX 和 Web 服务失败时，核心相机、内部 RTSP 和 HDMI 必须继续运行；
+- MediaMTX 是内部 RTSP 的唯一客户端，外部 RTSP 播放器改连 8554；
+- Web 服务不得以 root 运行，不得直接执行 shell 或写 `/etc/socchina/runtime.conf`；
+- 冷配置由受限 admin 服务执行校验、原子提交、重启、`socchina-health` 和自动回滚；
+- 热参数经 `/run/socchina/app-control.sock` 进入 control worker；
+- API/metrics/pprof 只监听 loopback；
+- 安装时生成凭据，仓库不保存账号、密码、token、证书或真实网络地址。
+
+实施后健康检查需扩展：
+
+```sh
+systemctl is-active socchina-mediamtx.service
+systemctl is-active socchina-admin.service
+systemctl is-active socchina-web.service
+curl -fsS http://127.0.0.1:9998/metrics
+curl -fsS http://127.0.0.1:8080/api/v1/health
+```
+
+以上命令和 unit 名当前只是设计契约，未实现前不得写入生产安装流程。

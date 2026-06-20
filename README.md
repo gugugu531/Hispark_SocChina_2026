@@ -42,6 +42,9 @@ ISP CLUT；连续三次普通刷新失败会关闭 CLUT 并回退规则 Gamma，
 [docs/quality-acceptance.md](docs/quality-acceptance.md)。
 
 完整数据通路与设计依据见 [docs/architecture.md](docs/architecture.md)。
+板端一体化实时视频与参数控制网页的计划架构见
+[docs/web-console-architecture.md](docs/web-console-architecture.md)；该模块尚未实现，不改变当前
+Config-R 主链。
 
 ## 目录结构
 
@@ -52,6 +55,7 @@ ISP CLUT；连续三次普通刷新失败会关闭 CLUT 并回退规则 Gamma，
 | `board/` | 板端应用（C/C++，交叉编译，CMake 构建）。 |
 | `models/` | 模型网络、ONNX 导出器、LUT 工具、AIPP 配置与测试。 |
 | `scripts/` | 环境、构建、部署、板端运行脚本。 |
+| `web/` | 规划中的板端 Web/API/管理服务和静态页面；实现后按技术路线创建。 |
 | `docs/` | 开发规范、系统架构、板端操作手册。 |
 
 模型侧分层为 `models/{networks,exporters,tools,configs,tests,weights}`；可执行 Python 入口使用
@@ -102,6 +106,7 @@ scripts/test_host.sh              # 本机 cc 编译并运行 SDK-free 单元测
 - [docs/development-guide.md](docs/development-guide.md) — 开发规范（环境/构建/编码/模型/板端/Git/文档）
 - [docs/architecture.md](docs/architecture.md) — 系统架构与完整数据通路
 - [docs/model-route-summary.md](docs/model-route-summary.md) — 模型路线稳定结论与当前主线
+- [docs/web-console-architecture.md](docs/web-console-architecture.md) — 板端一体化 Web 视频与控制台技术路线
 - [docs/TODO.md](docs/TODO.md) — 未完成清单与阶段化开发规划
 - [docs/board-operations.md](docs/board-operations.md) — 板端部署/运行/恢复手册
 - [docs/network-access.md](docs/network-access.md) — 受管网络、动态地址、Clash TUN 与 SSH

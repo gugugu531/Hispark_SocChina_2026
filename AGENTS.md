@@ -37,9 +37,10 @@ ISP AE 统计 ----------------------------------------------> 规则 Gamma/刷�
 3. `docs/TODO.md` —— 未完成部分与阶段化开发规划（开工前先看当前状态与优先级）。
 4. `docs/development-guide.md` —— 开发规范主文档（环境/构建/编码/模型/板端/Git/文档/测试）。
 5. `docs/board-operations.md` —— 板端部署/运行/恢复手册。
-6. `docs/network-access.md` —— 受管网络、电脑直连、动态地址、Clash TUN 与 SSH。
-7. `board/README.md` —— 板端代码组织与构建。
-8. `models/README.md` —— 模型环境与导出/转换约定。
+6. `docs/web-console-architecture.md` —— 板端一体化 Web 视频、控制与安全边界。
+7. `docs/network-access.md` —— 受管网络、电脑直连、动态地址、Clash TUN 与 SSH。
+8. `board/README.md` —— 板端代码组织与构建。
+9. `models/README.md` —— 模型环境与导出/转换约定。
 
 本仓库文档已覆盖关键路径与接口名，不要在已索引文档足够用之前就从搜索整个 SDK 开始。
 
@@ -50,6 +51,7 @@ ISP AE 统计 ----------------------------------------------> 规则 Gamma/刷�
 | `board/` | 板端应用（C/C++，交叉编译，CMake 构建）。 |
 | `models/` | 模型训练 / ONNX 导出 / ATC→OM 转换，环境依赖清单。 |
 | `scripts/` | 环境、构建、部署、运行脚本。 |
+| `web/` | 规划中的 Go Web/API/特权管理服务与原生静态页面；实现前先读 Web 技术路线。 |
 | `docs/` | 规范 / 架构 / 操作文档。 |
 
 板端代码采用拍平的常规嵌入式 Linux 结构：`board/{CMakeLists.txt, cmake/, include/, src/, tests/}`。
@@ -59,6 +61,7 @@ ISP AE 统计 ----------------------------------------------> 规则 Gamma/刷�
 - `src/` 平铺，每个数据通路阶段一个 `.c`（`capture/isp/vpss/infer/lut_bridge/display/stream/control/pipeline`），`main.c` 为主程序入口。
 - `src/*.c`（除 `main.c`）编成静态库 `socchina`，主程序与测试共用。
 - `tests/test_*.c` 每个一个测试入口，CMake glob 自动收集，无需手动登记。
+- Web 路线采用无转码 MediaMTX + Go 单文件服务；Web/API 不得直接持有 VPSS 帧或调用 ISP/ACL。
 - 构建产物、模型权重、采集数据、SDK/工具链一律不入库（见根 `.gitignore`）。
 
 ## 构建与测试

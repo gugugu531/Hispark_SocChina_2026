@@ -12,6 +12,7 @@
 | `board/` | 板端应用（C/C++，交叉编译，CMake 构建） |
 | `models/` | 模型训练 / 导出 / 转换，环境依赖清单 |
 | `scripts/` | 环境、构建、部署、运行脚本 |
+| `web/` | 板端 Web/API/管理服务和静态页面（按 `web-console-architecture.md` 实施） |
 | `docs/` | 规范 / 架构 / 操作文档 |
 
 约定：构建产物、生成物、模型权重、采集数据不入库（见根 `.gitignore`）。
@@ -38,6 +39,18 @@ board/ ── CMakeLists.txt · cmake/ · include/ · src/ · tests/
 - `include/` 放头文件；跨模块共享的帧结构/枚举放 `pipeline.h`；
 - `tests/test_*.c` 每个一个测试入口；
 - 新增功能直接加文件，CMake 自动收集（glob）。起步不预建空文件。
+
+Web 控制台实现后采用：
+
+```text
+web/ ── backend/ · admin/ · ui/
+```
+
+- `backend/`：非特权 Go Web/API/SSE 服务；
+- `admin/`：受限特权配置事务服务；
+- `ui/`：原生 HTML/CSS/JavaScript 与固定版本本地 vendor 资源；
+- MediaMTX 为外部 ARM64 单文件依赖，不提交二进制，只记录固定版本和校验值；
+- 不引入板端 Node/Python 运行时，不从公共 CDN 加载运行期资源。
 
 ## 2. 命名约定
 

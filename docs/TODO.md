@@ -191,12 +191,23 @@ ISP 硬件 CLUT 全分辨率施加（零 NPU）」**。完整验证与代码见 
    无客户端持续 drain、连续接收、断线重连、退出释放和 systemd 开机恢复均通过。
 2. 文档收尾、LICENSE、演示脚本。
 
-### 后续交互模块（不阻塞当前数据通路）
+### 后续交互与 Web 控制台（不阻塞当前数据通路）
 
-1. 接入 `/dev/input/event0`，提供增强开关、Linear/WDR 模式选择和当前状态展示。
-2. 展示 `RUNNING/DEGRADED/FAILED`、NN 是否启用、RTSP/HDMI 状态和关键流水线指标。
-3. 交互操作通过受控配置/服务接口生效，不允许直接跨线程修改 ISP/VPSS 资源。
-4. 不提供 Config-Q 抓拍、整图模型或严格同帧原图/增强图分屏。
+正式路线见 [web-console-architecture.md](web-console-architecture.md)，按以下阶段推进：
+
+1. **W0 视频 PoC**：MediaMTX 独占 loopback 内部 RTSP，无转码输出 WebRTC，LL-HLS 回退；
+   单/双客户端记录 CPU、RSS、网络和延迟。
+2. **W1 只读控制台**：Go 单文件 Web 服务、静态页面、应用状态 socket、REST/SSE、
+   `pipeline_metrics_t` 快照和 MediaMTX 会话状态。
+3. **W2 冷配置事务**：受限特权 admin 服务；HDMI、Linear/WDR、FPS、码率和模型加载配置；
+   generation、原子提交、健康检查和自动回滚。
+4. **W3 热控制**：NN CLUT、规则 Gamma、强度、高光门限、DRC/LDCI、安全预设和请求防抖；
+   命令必须经有界队列由 control worker 串行应用。
+5. **W4 安全与交付**：认证、CSRF、限流、systemd sandbox、开机恢复和安装/验收脚本。
+6. **本地触摸适配**：后续可让 `/dev/input/event0` 复用同一控制 API 和状态模型，
+   不另建直接操作 ISP/VPSS 的路径。
+
+明确不提供 Config-Q 抓拍、整图模型、严格同帧分屏、MJPEG 或 CPU 视频转码。
 
 ### 里程碑判据
 

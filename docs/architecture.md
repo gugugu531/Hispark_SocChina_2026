@@ -134,3 +134,25 @@ Config-R 固定 `chn0=1024x600` 显示、`chn1=1024x576` 串流、
   `board/README.md`）；切帧率收敛与画质细调待测。若后续不达预期，过曝防线退化为
   **AE 曝光控制 + DRC/CLUT 色调压缩**为主。
 - Resize/插值在 NNN 上实测异常，上采样统一用 ConvTranspose（见 `development-guide.md` §6）。
+
+## 8. Web 展示与控制平面
+
+规划中的 Web 控制台位于图像数据通路之外，不改变 VI/ISP/VPSS/VENC/ACL 的所有权：
+
+```text
+socchina_app 内部 RTSP -> MediaMTX -> WebRTC / LL-HLS / 外部 RTSP
+浏览器 -> socchina-web -> app-control.sock / admin.sock
+```
+
+边界：
+
+- MediaMTX 只做无转码协议转换和转发；
+- `socchina_app` 的内部 RTSP 改为 loopback 单客户端源，由 MediaMTX 独占；
+- 热参数通过有界命令队列交给 control worker 串行应用；
+- HDMI、WDR、FPS、码率和模型加载等冷参数通过校验、原子配置、systemd 重启、健康检查和回滚生效；
+- Web/API 与 MediaMTX 故障不能重启或阻塞核心图像链；
+- Web 端读取 `pipeline_metrics_t` 快照，不解析逐帧日志；
+- 不增加 MJPEG、FFmpeg 转码或浏览器侧 RTSP 解析。
+
+完整进程、端口、API、安全、性能预算与 W0–W4 实施阶段见
+[web-console-architecture.md](web-console-architecture.md)。

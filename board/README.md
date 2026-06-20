@@ -264,6 +264,10 @@ gst-launch-1.0 -q rtspsrc \
 - 本节记录的是首次纯串流门禁；后续 systemd/HDMI 双态验收已补齐并行场景：
   HDMI on 时显示约 30.1–30.5fps、stream drops=0，RTSP 同时连续播放通过。
 - 当前限制：单客户端、仅 RTP over RTSP/TCP，不提供鉴权、UDP transport 或音频。
+- 规划中的板端 Web 控制台不会在本模块内实现 WebRTC：内建 RTSP 将改为 loopback 内部源，
+  由 MediaMTX 作为唯一客户端并无转码转发为 WebRTC/LL-HLS/外部 RTSP。热参数通过应用控制
+  socket 进入 control worker，完整路线见
+  [`../docs/web-console-architecture.md`](../docs/web-console-architecture.md)。
 
 开机自启动、运行配置和 HDMI 持久化选择见
 [`../docs/board-operations.md`](../docs/board-operations.md) §8。默认服务参数等价于：

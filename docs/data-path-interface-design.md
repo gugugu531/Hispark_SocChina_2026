@@ -218,3 +218,7 @@ LUT 请求/成功/失败、瞬态/致命错误、降级次数，以及推理/完
   厂商 MPP sample 仅提供 VENC/落文件代码，没有可小范围复用的 RTSP server。实现已通过主机协议
   单测、SDK Release 交叉编译、纯串流播放/重连/资源验收和 HDMI 并行门禁；并行显示约
   30.1–30.5fps、stream drops=0，systemd 开机自动恢复也已通过。
+
+未来 Web 控制台不改变本契约：MediaMTX 作为内建 RTSP 的唯一客户端；Web 热控制通过有界队列进入
+control worker，冷配置通过独立特权服务事务化重启。HTTP/MediaMTX 线程不得持有 VPSS 帧或直接调用
+ISP/ACL。完整设计见 [web-console-architecture.md](web-console-architecture.md)。
