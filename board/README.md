@@ -223,8 +223,8 @@ gst-launch-1.0 -q rtspsrc \
 解读：
 
 - VENC→RTSP 最小闭环、断线重连、无客户端不堵塞和资源释放已通过纯串流门禁。
-- 按现场明确要求未开启 HDMI，因此 Issue #5 中“串流故障期间 HDMI ≥29.5fps”未执行，
-  不能据本次数据声称显示与串流并行验收通过。
+- 本节记录的是首次纯串流门禁；后续 systemd/HDMI 双态验收已补齐并行场景：
+  HDMI on 时显示约 30.1–30.5fps、stream drops=0，RTSP 同时连续播放通过。
 - 当前限制：单客户端、仅 RTP over RTSP/TCP，不提供鉴权、UDP transport 或音频。
 
 开机自启动、运行配置和 HDMI 持久化选择见

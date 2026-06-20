@@ -4,8 +4,8 @@
 > 30fps 跑通；CLUT 17v2 几何已由厂商资料和板端 sweep 确认（17³、8 bank、4 路交织）。param-net 的训练、
 > 推荐 YAML、ETA/断点恢复、LCDP 正式权重和 256x144+AIPP 板端推理已完成。当前主线剩余：
 > NN→Gamma/DRC/CLUT 安全参数桥、生产 control worker 接线和动态闭环画质验证。RTSP 的
-> VENC/协议实现、生产线程接线、纯串流板端播放/重连/资源验收已完成；按现场要求未开启 HDMI，
-> 故“串流同时 HDMI ≥29.5fps”仍未验。
+> VENC/协议实现、生产线程接线、RTSP+HDMI 并行验收和 systemd 开机自启动均已完成：
+> 1024x576 H.264 约 30.1fps/3Mbps，HDMI 并行显示约 30.1–30.5fps、stream drops=0。
 > 数据通路与模块定义见 [architecture.md](architecture.md)；规范见 [development-guide.md](development-guide.md)。
 > 阶段 C 的接口与协作契约见 [data-path-interface-design.md](data-path-interface-design.md)。
 
@@ -33,7 +33,7 @@
 | 8 参数桥 | `lut_bridge.c` / RGB CLUT 预览 | 🟡 板端预览 | 17v2 打包、有限值/范围检查、identity 强度混合已接正式模型；20 秒动态闭环 20/20 更新成功。强光抓帧暴露裁剪增加和 post-CLUT 反馈，长时展示暂回退 Gamma，待补高光/端点护栏 |
 | 9 后处理/合成 | `postproc.c` / `compose.c` | ⏸ 备选路线 | 仅整图 ExpoCurveNet 分屏演示需要，非 CoTF 主路径依赖 |
 | 10a 显示 | `display.c` | ✅ 已完成 | 板端冒烟 PASS，启动杂线已修（黑场预帧）；flicker 观感需现场目视确认 |
-| 10b 串流 | `stream.c` | ✅ 纯串流板端通过 | chn1→VENC H.264 CBR、单客户端 RTSP/RTP over TCP、断线重连和生产 stream worker 已实现；实测 1024x576 约 30.1fps、2954.5kbps、两次 10s GStreamer 重连成功、VENC 零积压。按现场要求 HDMI 关闭，并行帧率未验 |
+| 10b 串流 | `stream.c` | ✅ 已完成 | chn1→VENC H.264 CBR、单客户端 RTSP/RTP over TCP、断线重连和生产 stream worker 已实现；实测 1024x576 约 30.1fps、2954.5kbps、两次 10s GStreamer 重连成功、VENC 零积压；RTSP+HDMI 并行时显示约 30.1–30.5fps、stream drops=0 |
 | 11 控制 | `control.c` | 🟡 初版+接线 | 判决逻辑/LUT 刷新策略主机单测过；**场景自适应闭环已板端跑通**（`control_decide`→ISP 色调块）：集成式 `test_cotf_auto` 自带整链 **~31fps**、AE→判决→**Gamma tone**(默认,原生 1D,出图干净无伪色; `--block clut` 为对照),2026-06-19;独立控制面 `test_cotf_ctrl` cross-process 注入 OK |
 | — 共享 | `pipeline.h` | ✅ 契约完成 | 通道、尺寸、状态、错误码、输入模式和指标已固定；实现仍由 main/pipeline 接管 |
 | — 入口 | `main.c` | ✅ 生产整链 | **socchina_app 已板端跑通**（2026-06-19）：SYS/VB 初始化 + capture/vpss/display 起链 + **显示线程 30.5fps 直通** + **控制线程低频 AE→control_decide→Gamma tone** + SIGINT 优雅退出（逆序清理）。控制大脑现为规则判决，后续可换 infer.c 的 NN |
@@ -168,7 +168,7 @@ ISP 硬件 CLUT 全分辨率施加（零 NPU）」**。完整验证与代码见 
 3. 🟡 `lut_bridge.c`：17v2 RGB 打包、有限值/范围检查和 identity 强度混合已实现并板端预览；
    余：高光肩部、白点/原色端点、单调性/最大变化量护栏，以及生产刷新事务接线。
 4. ✅ AE 统计 + `control_should_refresh_lut` + 色调热刷新已接入低频 control worker（`main.c` 控制线程，2026-06-19）。
-5. ✅ `main.c` 已建立 display + control 双线程、逆序回滚与 SIGINT 优雅退出（可选 stream 线程后续加）。
+5. ✅ `main.c` 已建立 display + control + 可选 stream 线程、逆序回滚与 SIGINT/SIGTERM 优雅退出。
 6. 🟡 已测显示主链 30.5fps + 控制线程低频刷新；Gamma 刷新耗时/热刷稳定性细测与 flicker 目视待补。
 
 ### 阶段 D — 控制大脑与画质
@@ -182,9 +182,8 @@ ISP 硬件 CLUT 全分辨率施加（零 NPU）」**。完整验证与代码见 
 
 ### 阶段 E — 串流与收尾
 
-1. ✅ `stream.c`：VENC H.264 + 自带轻量 RTSP/RTP over TCP 已完成纯串流板端验收；
-   无客户端持续 drain、连续接收、断线重连和退出释放通过。余项仅为按现场要求暂未执行的
-   HDMI 并行 ≥29.5fps 验收。
+1. ✅ `stream.c`：VENC H.264 + 自带轻量 RTSP/RTP over TCP 已完成纯串流与 HDMI 并行验收；
+   无客户端持续 drain、连续接收、断线重连、退出释放和 systemd 开机恢复均通过。
 2. Config-Q 拍照高画质路径。
 3. 文档收尾、LICENSE、演示脚本。
 
