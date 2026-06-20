@@ -13,6 +13,21 @@ if [[ -z "${BOARD:-}" ]]; then
     echo "[p1] set BOARD to an SSH alias or board target" >&2
     exit 2
 fi
+scp_board_target() {
+    local target="${BOARD}"
+    local user=""
+    local host="${target}"
+    if [[ "${target}" == *@* ]]; then
+        user="${target%%@*}@"
+        host="${target#*@}"
+    fi
+    if [[ "${host}" == *:* && "${host}" != \[*\] ]]; then
+        printf '%s[%s]' "${user}" "${host}"
+    else
+        printf '%s%s' "${user}" "${host}"
+    fi
+}
+readonly SCP_BOARD="$(scp_board_target)"
 for file in "${BUILD_DIR}/socchina_app" "${MODEL}" \
     "${REPO_ROOT}/scripts/board/socchina-p1-validate"; do
     [[ -f "${file}" ]] || {
@@ -24,7 +39,7 @@ done
 echo "[p1] upload validation assets to ${BOARD}:${RUN_DIR}"
 ssh "${BOARD}" "mkdir -p '${RUN_DIR}'"
 scp "${BUILD_DIR}/socchina_app" "${MODEL}" \
-    "${REPO_ROOT}/scripts/board/socchina-p1-validate" "${BOARD}:${RUN_DIR}/"
+    "${REPO_ROOT}/scripts/board/socchina-p1-validate" "${SCP_BOARD}:${RUN_DIR}/"
 ssh -t "${BOARD}" \
     "chmod +x '${RUN_DIR}/socchina_app' '${RUN_DIR}/socchina-p1-validate' && \
      SOCCHINA_P1_DIR='${RUN_DIR}' '${RUN_DIR}/socchina-p1-validate' '${DURATION}'"

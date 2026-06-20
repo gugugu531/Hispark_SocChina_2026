@@ -21,14 +21,25 @@ fi
 source "${CONFIG}"
 
 : "${ENABLE_HDMI:=0}"
+: "${CONFIG_VERSION:=0}"
 : "${RTSP_PORT:=8554}"
 : "${STREAM_PATH:=live}"
 : "${BITRATE_KBPS:=3000}"
 : "${SENSOR_INDEX:=1}"
+: "${CAPTURE_MODE:=linear}"
+: "${TARGET_FPS:=30}"
 : "${TONE_STRENGTH:=0.25}"
 : "${ENABLE_NN_CONTROL:=0}"
+: "${NN_HIGH_CLIP_GUARD:=3.0}"
 : "${MODEL_PATH:=/root/socchina-2026/cotf_paramnet_256x144_lcdp_best_e0167_fp16_aipp.om}"
 
+if [[ "${CONFIG_VERSION}" != "0" && "${CONFIG_VERSION}" != "1" ]]; then
+    echo "[socchina-start] unsupported CONFIG_VERSION=${CONFIG_VERSION}; supported: 1 (or legacy 0)" >&2
+    exit 2
+fi
+if [[ "${CONFIG_VERSION}" == "0" ]]; then
+    echo "[socchina-start] legacy config without CONFIG_VERSION; applying schema v1 defaults" >&2
+fi
 if [[ "${ENABLE_HDMI}" != "0" && "${ENABLE_HDMI}" != "1" ]]; then
     echo "[socchina-start] ENABLE_HDMI must be 0 or 1" >&2
     exit 2
@@ -48,13 +59,37 @@ if [[ ! "${BITRATE_KBPS}" =~ ^[0-9]+$ ]] || ((BITRATE_KBPS < 128)); then
     echo "[socchina-start] invalid BITRATE_KBPS: ${BITRATE_KBPS}" >&2
     exit 2
 fi
-if [[ ! "${SENSOR_INDEX}" =~ ^[0-9]+$ ]]; then
+if [[ ! "${SENSOR_INDEX}" =~ ^[01]$ ]]; then
     echo "[socchina-start] invalid SENSOR_INDEX: ${SENSOR_INDEX}" >&2
+    exit 2
+fi
+if [[ "${CAPTURE_MODE}" != "linear" && "${CAPTURE_MODE}" != "wdr2to1" ]]; then
+    echo "[socchina-start] CAPTURE_MODE must be linear or wdr2to1" >&2
+    exit 2
+fi
+if [[ ! "${TARGET_FPS}" =~ ^[0-9]+$ ]] ||
+    ((TARGET_FPS < 1 || TARGET_FPS > 30)) ||
+    [[ "${CAPTURE_MODE}" == "wdr2to1" && "${TARGET_FPS}" -lt 5 ]]; then
+    echo "[socchina-start] invalid TARGET_FPS=${TARGET_FPS} for CAPTURE_MODE=${CAPTURE_MODE}" >&2
+    exit 2
+fi
+if ! awk -v value="${TONE_STRENGTH}" \
+    'BEGIN { exit !(value ~ /^[0-9]+([.][0-9]+)?$/ && value >= 0 && value <= 1) }'; then
+    echo "[socchina-start] TONE_STRENGTH must be within 0..1" >&2
+    exit 2
+fi
+if ! awk -v value="${NN_HIGH_CLIP_GUARD}" \
+    'BEGIN { exit !(value ~ /^[0-9]+([.][0-9]+)?$/ && value >= 0 && value <= 100) }'; then
+    echo "[socchina-start] NN_HIGH_CLIP_GUARD must be within 0..100" >&2
     exit 2
 fi
 if [[ ! "${STREAM_PATH}" =~ ^[A-Za-z0-9._~-]+$ ]]; then
     echo "[socchina-start] invalid STREAM_PATH: ${STREAM_PATH}" >&2
     exit 2
+fi
+if [[ "${1:-}" == "--check-config" ]]; then
+    echo "[socchina-start] configuration valid (schema=v1, source=${CONFIG_VERSION})"
+    exit 0
 fi
 
 for ((second = 0; second < DEVICE_WAIT_SECONDS; second++)); do
@@ -72,11 +107,16 @@ fi
 args=(
     --stream
     --sensor "${SENSOR_INDEX}"
+    --fps "${TARGET_FPS}"
     --strength "${TONE_STRENGTH}"
+    --nn-high-clip "${NN_HIGH_CLIP_GUARD}"
     --bitrate "${BITRATE_KBPS}"
     --rtsp-port "${RTSP_PORT}"
     --stream-path "${STREAM_PATH}"
 )
+if [[ "${CAPTURE_MODE}" == "wdr2to1" ]]; then
+    args+=(--wdr)
+fi
 if [[ "${ENABLE_HDMI}" == "0" ]]; then
     args+=(--no-display)
 fi
@@ -86,6 +126,6 @@ else
     args+=(--no-nn)
 fi
 
-echo "[socchina-start] RTSP port=${RTSP_PORT} path=/${STREAM_PATH} bitrate=${BITRATE_KBPS}kbps HDMI=${ENABLE_HDMI} NN=${ENABLE_NN_CONTROL}"
+echo "[socchina-start] schema=v1 sensor=${SENSOR_INDEX} mode=${CAPTURE_MODE} fps=${TARGET_FPS} RTSP port=${RTSP_PORT} path=/${STREAM_PATH} bitrate=${BITRATE_KBPS}kbps HDMI=${ENABLE_HDMI} NN=${ENABLE_NN_CONTROL}"
 cd "${APP_DIR}"
 exec stdbuf -oL -eL "${APP}" "${args[@]}"

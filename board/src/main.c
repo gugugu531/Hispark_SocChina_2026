@@ -41,10 +41,6 @@
 
 #define APP_CTRL_PERIOD_MS      100u  /* 控制环周期（~10Hz，低频；刷新由迟滞/限流再收敛） */
 #define APP_CTRL_WARMUP_MS      1000u /* AE 收敛前不读统计 */
-#define APP_TONE_STRENGTH       0.25f
-#define APP_STREAM_BITRATE_KBPS 3000u
-#define APP_RTSP_PORT           8554u
-#define APP_RTSP_PATH           "live"
 #define APP_CONTROL_TIMEOUT_MS  200
 #define APP_NN_FAILURE_LIMIT    3u
 #define APP_CLUT_UNITY_GAIN     1024u
@@ -333,16 +329,9 @@ static void* stream_worker(void* arg) {
 }
 
 int main(int argc, char** argv) {
-    capture_cfg_t cap_cfg = {CAPTURE_SENSOR_INDEX_DEFAULT, CAPTURE_MODE_LINEAR};
-    stream_cfg_t stream_cfg = {
-        PIPELINE_STREAM_WIDTH,   PIPELINE_STREAM_HEIGHT, PIPELINE_TARGET_FPS,
-        APP_STREAM_BITRATE_KBPS, APP_RTSP_PORT,          APP_RTSP_PATH,
-    };
-    float strength = APP_TONE_STRENGTH;
-    float high_clip_guard = APP_NN_HIGH_CLIP_GUARD;
-    const char *model_path = NULL;
-    int enable_display = 1;
-    int enable_stream = 0;
+    pipeline_config_t cfg;
+    capture_cfg_t cap_cfg;
+    stream_cfg_t stream_cfg;
     int enable_nn = 1;
     int rc = 1;
     int sys_up = 0, cap_up = 0, vpss_up = 0, bound = 0, disp_up = 0, stream_up = 0;
@@ -354,6 +343,7 @@ int main(int argc, char** argv) {
     uint64_t frames = 0;
     pthread_t ctrl_tid, stream_tid;
     app_control_ctx_t control_ctx = {0};
+    pipeline_state_t state = PIPELINE_STATE_STOPPED;
     ot_vb_cfg vb_cfg = {0};
     ot_pic_buf_attr buf_attr = {0};
     ot_vb_calc_cfg calc_cfg = {0};
@@ -364,50 +354,68 @@ int main(int argc, char** argv) {
         {0, 0, 0, 0},
     };
 
+    pipeline_config_defaults(&cfg);
+    cfg.nn_high_clip_guard = APP_NN_HIGH_CLIP_GUARD;
+    state = PIPELINE_STATE_STARTING;
+    LOG_INFO("pipeline lifecycle state=%s", pipeline_state_name(state));
     for (int i = 1; i < argc; i++) {
         if (strcmp(argv[i], "--sensor") == 0 && i + 1 < argc) {
-            cap_cfg.sensor_index = atoi(argv[++i]);
+            cfg.sensor_index = atoi(argv[++i]);
+        } else if (strcmp(argv[i], "--wdr") == 0) {
+            cfg.use_wdr = 1;
+        } else if (strcmp(argv[i], "--fps") == 0 && i + 1 < argc) {
+            cfg.target_fps = (unsigned)strtoul(argv[++i], NULL, 10);
         } else if (strcmp(argv[i], "--strength") == 0 && i + 1 < argc) {
-            strength = (float) atof(argv[++i]);
+            cfg.tone_strength = (float) atof(argv[++i]);
         } else if (strcmp(argv[i], "--stream") == 0) {
-            enable_stream = 1;
+            cfg.enable_stream = 1;
         } else if (strcmp(argv[i], "--no-display") == 0) {
-            enable_display = 0;
+            cfg.enable_display = 0;
         } else if (strcmp(argv[i], "--bitrate") == 0 && i + 1 < argc) {
-            stream_cfg.bitrate_kbps = (unsigned) strtoul(argv[++i], NULL, 10);
+            cfg.stream_bitrate_kbps = (unsigned) strtoul(argv[++i], NULL, 10);
         } else if (strcmp(argv[i], "--rtsp-port") == 0 && i + 1 < argc) {
-            stream_cfg.rtsp_port = (unsigned) strtoul(argv[++i], NULL, 10);
+            cfg.rtsp_port = (unsigned) strtoul(argv[++i], NULL, 10);
         } else if (strcmp(argv[i], "--stream-path") == 0 && i + 1 < argc) {
-            stream_cfg.stream_path = argv[++i];
+            cfg.stream_path = argv[++i];
         } else if (strcmp(argv[i], "--model") == 0 && i + 1 < argc) {
-            model_path = argv[++i];
+            cfg.model_path = argv[++i];
         } else if (strcmp(argv[i], "--no-nn") == 0) {
             enable_nn = 0;
         } else if (strcmp(argv[i], "--nn-high-clip") == 0 && i + 1 < argc) {
-            high_clip_guard = (float)atof(argv[++i]);
+            cfg.nn_high_clip_guard = (float)atof(argv[++i]);
+        } else {
+            LOG_ERR("unknown or incomplete option: %s", argv[i]);
+            return 2;
         }
     }
-    if (high_clip_guard < 0.0f) {
-        high_clip_guard = 0.0f;
-    }
-    if (high_clip_guard > 100.0f) {
-        high_clip_guard = 100.0f;
-    }
-    if (model_path == NULL) {
+    if (cfg.model_path == NULL) {
         enable_nn = 0;
     }
-    chn_cfg[PIPELINE_VPSS_CHN_DISPLAY].enable = enable_display;
-    chn_cfg[PIPELINE_VPSS_CHN_STREAM].enable = enable_stream;
+    if (pipeline_config_validate(&cfg) != PIPELINE_OK) {
+        LOG_ERR("invalid pipeline configuration");
+        return 2;
+    }
+    cap_cfg.sensor_index = cfg.sensor_index;
+    cap_cfg.mode = cfg.use_wdr ? CAPTURE_MODE_WDR_2TO1 : CAPTURE_MODE_LINEAR;
+    stream_cfg = (stream_cfg_t){
+        PIPELINE_STREAM_WIDTH, PIPELINE_STREAM_HEIGHT, cfg.target_fps,
+        cfg.stream_bitrate_kbps, cfg.rtsp_port, cfg.stream_path,
+    };
+    chn_cfg[PIPELINE_VPSS_CHN_DISPLAY].enable = cfg.enable_display;
+    chn_cfg[PIPELINE_VPSS_CHN_STREAM].enable = cfg.enable_stream;
     chn_cfg[PIPELINE_VPSS_CHN_CONTROL] =
         (vpss_chn_cfg_t){enable_nn, PIPELINE_CONTROL_WIDTH, PIPELINE_CONTROL_HEIGHT, 1};
-    control_ctx.strength = strength;
-    control_ctx.high_clip_guard = high_clip_guard;
+    control_ctx.strength = cfg.tone_strength;
+    control_ctx.high_clip_guard = cfg.nn_high_clip_guard;
     control_ctx.nn_enabled = enable_nn;
     control_health_init(&control_ctx.health);
 
-    LOG_INFO("%s v%s — CoTF realtime exposure correction (display=%s stream=%s nn=%s)",
-             SOCCHINA_APP_NAME, SOCCHINA_APP_VERSION, enable_display ? "on" : "off",
-             enable_stream ? "on" : "off", enable_nn ? model_path : "rule-gamma");
+    LOG_INFO("%s v%s — CoTF realtime exposure correction (sensor=%d mode=%s fps=%u "
+             "display=%s stream=%s nn=%s)",
+             SOCCHINA_APP_NAME, SOCCHINA_APP_VERSION, cfg.sensor_index,
+             cfg.use_wdr ? "wdr2to1" : "linear", cfg.target_fps,
+             cfg.enable_display ? "on" : "off", cfg.enable_stream ? "on" : "off",
+             enable_nn ? cfg.model_path : "rule-gamma");
 
     signal(SIGINT, on_sig);
     signal(SIGTERM, on_sig);
@@ -425,7 +433,7 @@ int main(int argc, char** argv) {
     ot_common_get_pic_buf_cfg(&buf_attr, &calc_cfg);
     vb_cfg.max_pool_cnt = 2;
     vb_cfg.common_pool[0].blk_size = calc_cfg.vb_size;
-    vb_cfg.common_pool[0].blk_cnt = 10 + (enable_stream ? 2 : 0) + (enable_nn ? 2 : 0);
+    vb_cfg.common_pool[0].blk_cnt = 10 + (cfg.enable_stream ? 2 : 0) + (enable_nn ? 2 : 0);
     CHECK_RET_GOTO(sample_comm_sys_init_with_vb_supplement(&vb_cfg, OT_VB_SUPPLEMENT_BNR_MOT_MASK), cleanup);
     sys_up = 1;
 
@@ -433,6 +441,9 @@ int main(int argc, char** argv) {
         goto cleanup;
     }
     cap_up = 1;
+    if (cfg.target_fps != PIPELINE_TARGET_FPS && capture_set_fps((float)cfg.target_fps) != 0) {
+        goto cleanup;
+    }
     if (vpss_init(0, in_w, in_h, chn_cfg) != 0) {
         goto cleanup;
     }
@@ -441,13 +452,13 @@ int main(int argc, char** argv) {
         goto cleanup;
     }
     bound = 1;
-    if (enable_display) {
+    if (cfg.enable_display) {
         if (display_init() != 0) {
             goto cleanup;
         }
         disp_up = 1;
     }
-    if (enable_stream) {
+    if (cfg.enable_stream) {
         if (stream_init(&stream_cfg) != 0) {
             goto cleanup;
         }
@@ -455,7 +466,7 @@ int main(int argc, char** argv) {
     }
     if (enable_nn) {
         infer_cfg_t infer_cfg = {
-            model_path, 0, PIPELINE_CONTROL_WIDTH, PIPELINE_CONTROL_HEIGHT,
+            cfg.model_path, 0, PIPELINE_CONTROL_WIDTH, PIPELINE_CONTROL_HEIGHT,
             PIPELINE_COTF_LUT_DIM, PIPELINE_INPUT_COPY,
         };
         if (infer_init(&infer_cfg) != 0) {
@@ -473,24 +484,26 @@ int main(int argc, char** argv) {
         goto cleanup;
     }
     ctrl_up = 1;
-    if (enable_stream) {
+    if (cfg.enable_stream) {
         if (pthread_create(&stream_tid, TD_NULL, stream_worker, TD_NULL) != 0) {
             LOG_ERR("stream thread create failed");
             goto cleanup_running;
         }
         stream_thread_up = 1;
     }
-    LOG_INFO("running: control %ums%s%s; Ctrl-C to stop", APP_CTRL_PERIOD_MS,
-             enable_display ? " + display 30fps" : "", enable_stream ? " + H.264/RTSP" : "");
+    state = control_ctx.health.degraded ? PIPELINE_STATE_DEGRADED : PIPELINE_STATE_RUNNING;
+    LOG_INFO("running: state=%s control %ums%s%s; Ctrl-C to stop", pipeline_state_name(state),
+             APP_CTRL_PERIOD_MS, cfg.enable_display ? " + display" : "",
+             cfg.enable_stream ? " + H.264/RTSP" : "");
 
     /* 显示线程（主）：全分辨率相机帧直通到 HDMI，~30fps。 */
     t0 = now_ms();
     t_last_log = t0;
     while (!g_stop) {
-        if (!enable_display) {
+        if (!cfg.enable_display) {
             usleep(100000);
             if (now_ms() - t_last_log >= 5000) {
-                if (enable_stream) {
+                if (cfg.enable_stream) {
                     LOG_INFO("stream %llu frames, %llu drops",
                              (unsigned long long) atomic_load(&g_stream_frames),
                              (unsigned long long) atomic_load(&g_stream_drops));
@@ -512,7 +525,7 @@ int main(int argc, char** argv) {
         if (now_ms() - t_last_log >= 5000) {
             LOG_INFO("display %llu frames, %.1f fps", (unsigned long long) frames,
                      frames * 1000.0 / (now_ms() - t0));
-            if (enable_stream) {
+            if (cfg.enable_stream) {
                 LOG_INFO("stream %llu frames, %llu drops", (unsigned long long) atomic_load(&g_stream_frames),
                          (unsigned long long) atomic_load(&g_stream_drops));
             }
@@ -520,11 +533,12 @@ int main(int argc, char** argv) {
         }
     }
     run_elapsed_ms = now_ms() - t0;
-    rc = control_ctx.fatal_error ? 1 : 0;
+    rc = control_ctx.fatal_error ? PIPELINE_EXIT_FATAL_RUNTIME : 0;
 
 cleanup_running:
     g_stop = 1;
 cleanup:
+    state = control_ctx.fatal_error ? PIPELINE_STATE_FAILED : PIPELINE_STATE_STOPPING;
     if (stream_thread_up) {
         (void) pthread_join(stream_tid, TD_NULL);
     }
@@ -569,12 +583,18 @@ cleanup:
                  (unsigned long long)control_ctx.infer_runs,
                  (unsigned long long)control_ctx.lut_updates,
                  (unsigned long long)control_ctx.lut_failures,
-                 control_ctx.health.degraded ? "DEGRADED" : "STOPPED",
+                 control_ctx.fatal_error
+                     ? pipeline_state_name(PIPELINE_STATE_FAILED)
+                     : (control_ctx.health.degraded
+                            ? pipeline_state_name(PIPELINE_STATE_DEGRADED)
+                            : pipeline_state_name(PIPELINE_STATE_STOPPED)),
                  percentile95(control_ctx.infer_samples, sample_count),
                  percentile95(control_ctx.transaction_samples, sample_count),
                  control_ctx.infer_max_ms, control_ctx.infer_total_max_ms,
                  control_ctx.transaction_max_ms, sample_count);
     }
+    state = (rc == 0) ? PIPELINE_STATE_STOPPED : PIPELINE_STATE_FAILED;
+    LOG_INFO("pipeline lifecycle final state=%s exit_code=%d", pipeline_state_name(state), rc);
     return rc;
 }
 

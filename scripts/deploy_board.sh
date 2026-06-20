@@ -13,6 +13,22 @@ if [[ -z "${BOARD:-}" ]]; then
 fi
 DEST="${DEST:-/root/socchina-2026}"
 
+scp_board_target() {
+    local target="${BOARD}"
+    local user=""
+    local host="${target}"
+    if [[ "${target}" == *@* ]]; then
+        user="${target%%@*}@"
+        host="${target#*@}"
+    fi
+    if [[ "${host}" == *:* && "${host}" != \[*\] ]]; then
+        printf '%s[%s]' "${user}" "${host}"
+    else
+        printf '%s%s' "${user}" "${host}"
+    fi
+}
+SCP_BOARD="$(scp_board_target)"
+
 if [ ! -x "${BUILD_DIR}/socchina_app" ]; then
     echo "[deploy] 未找到 ${BUILD_DIR}/socchina_app，请先运行 scripts/build_board.sh" >&2
     exit 1
@@ -32,5 +48,5 @@ for extra in "$@"; do
 done
 
 echo "[deploy] 传输 ${#FILES[@]} 个文件..."
-scp "${FILES[@]}" "${BOARD}:${DEST}/"
+scp "${FILES[@]}" "${SCP_BOARD}:${DEST}/"
 echo "[deploy] 完成。手动运行见 scripts/run_board.sh；安装开机服务见 scripts/install_board_service.sh"

@@ -9,6 +9,7 @@ Type=simple
 Environment=LD_LIBRARY_PATH=/opt/lib/npu
 ExecStart=/usr/local/sbin/socchina-start
 Restart=on-failure
+RestartPreventExitStatus=2 70
 RestartSec=3
 TimeoutStopSec=15
 KillSignal=SIGTERM

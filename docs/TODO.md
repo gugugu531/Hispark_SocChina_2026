@@ -37,8 +37,8 @@
 | 10a 显示 | `display.c` | ✅ 已完成 | 板端冒烟 PASS，启动杂线已修（黑场预帧）；flicker 观感需现场目视确认 |
 | 10b 串流 | `stream.c` | ✅ 已完成 | chn1→VENC H.264 CBR、单客户端 RTSP/RTP over TCP、断线重连和生产 stream worker 已实现；实测 1024x576 约 30.1fps、2954.5kbps、两次 10s GStreamer 重连成功、VENC 零积压；RTSP+HDMI 并行时显示约 30.1–30.5fps、stream drops=0 |
 | 11 控制 | `control.c` / `main.c` | ✅ P0 生产闭环 | AE→规则 Gamma 与 chn2→NN→bridge→CLUT 已接同一 worker；失败保旧 LUT，连续 3 次失败进入 sticky DEGRADED；post-CLUT 反馈加入 EMA、3 次确认和 10 周期冷却 |
-| — 共享 | `pipeline.h` | ✅ 契约完成 | 通道、尺寸、状态、错误码、输入模式和指标已固定；实现仍由 main/pipeline 接管 |
-| — 入口 | `main.c` | ✅ 生产整链 | **socchina_app 已板端跑通**（2026-06-19）：SYS/VB 初始化 + capture/vpss/display 起链 + **显示线程 30.5fps 直通** + **控制线程低频 AE→control_decide→Gamma tone** + SIGINT 优雅退出（逆序清理）。控制大脑现为规则判决，后续可换 infer.c 的 NN |
+| — 共享 | `pipeline.h` / `pipeline.c` | ✅ 契约完成 | 通道、尺寸、配置默认值/校验、状态、错误码和指标已固定；ACL/SMMU 致命退出码为 70 |
+| — 入口 | `main.c` | ✅ 生产整链 | SYS/VB + capture/vpss/display/stream/control/NN 生命周期已接通；支持 linear/WDR 2to1 与目标帧率，SIGINT/SIGTERM 逆序清理 |
 
 ### 2.2 模型侧（`models/`）
 
@@ -62,6 +62,9 @@
 - ✅ `socchina-stream.service` + runtime config + HDMI 控制命令已实现并完成服务启停、
   HDMI 双态和三轮重启排障（2026-06-20）。最终 unit 排序在厂商 `rc-local.service` 媒体模块
   加载之后，完整重启只启动一次、`NRestarts=0`，RTSP 自动恢复并通过 10 秒拉流。
+- ✅ 设备完整性（2026-06-20）：runtime config schema v1、linear/WDR 2to1/目标帧率生产配置、
+  严格参数校验、`socchina-health` 只读健康检查、ACL/SMMU 致命退出码 70 与 systemd
+  `RestartPreventExitStatus` 已实现；旧版无 schema 配置保持兼容并提示迁移。
 - ❌ 板端测试自动化：目前 `test_display` 靠手工 scp + ssh，部署脚本应统一接管。
 - ❌ `LICENSE` 内容待定（当前占位）。
 - ✅ `feat/display-hdmi` 已合入 `main` 并推送（2026-06-10）。
@@ -167,11 +170,11 @@ ISP 硬件 CLUT 全分辨率施加（零 NPU）」**。完整验证与代码见 
 1. ✅ 相机链硬件施加端已完成（CLUT 30fps + Gamma 31.2fps）；CLUT 17v2 identity 已通过。
 2. ✅ `infer.c`：正式 LCDP best OM 已用 VPSS chn2 256x144 NV21+AIPP 板端 30/30，
    exec 平均 1.13ms；固定输入 checkpoint→ONNX→裸 OM→AIPP OM 数值对拍通过。余项归入第 3 项安全桥。
-3. 🟡 `lut_bridge.c`：17v2 RGB 打包、有限值/范围检查和 identity 强度混合已实现并板端预览；
-   余：高光肩部、白点/原色端点、单调性/最大变化量护栏，以及生产刷新事务接线。
+3. ✅ `lut_bridge.c`：17v2 RGB 打包、有限值/范围、identity 强度、高光、端点、单调性和
+   最大变化量护栏已实现并接入生产刷新事务。
 4. ✅ AE 统计 + `control_should_refresh_lut` + 色调热刷新已接入低频 control worker（`main.c` 控制线程，2026-06-19）。
 5. ✅ `main.c` 已建立 display + control + 可选 stream 线程、逆序回滚与 SIGINT/SIGTERM 优雅退出。
-6. 🟡 已测显示主链 30.5fps + 控制线程低频刷新；Gamma 刷新耗时/热刷稳定性细测与 flicker 目视待补。
+6. 🟡 显示主链与控制线程短测已通过；10 分钟正式稳定性和 flicker 目视待补。
 
 ### 阶段 D — 控制大脑与画质
 

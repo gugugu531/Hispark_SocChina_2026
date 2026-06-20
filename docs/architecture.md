@@ -54,7 +54,8 @@ ISP 参数块位于公共图像链内，因此同一 ISP 输出天然是“已�
 
 - **Config-R（实时 30fps，主线）**：低频参数网络读取 VPSS 缩略图；ISP Gamma/DRC/CLUT
   对每帧全分辨率施加。规则判决→Gamma 与正式 NN、chn2+AIPP、17v2 bridge 已接入生产
-  control worker；连续失败降级回退和 post-CLUT 基础反馈抑制已实现，待正式画质与长时验收。
+  control worker；连续失败降级回退和 post-CLUT 基础反馈抑制已实现。生产配置可选择
+  linear/WDR 2to1 与目标帧率，待正式画质与长时验收。
 - **Config-R 备选**：`768x432 + 共享曲线 niter8` 整图 OM，单次执行约 `27.2ms`；适合快速演示，
   但仍需为整链开销留预算，且 NPU 每帧参与。
 - **Config-Q（拍照/低帧，高画质）**：更大输入（如 1024x640）、更多迭代、可叠加多帧堆栈；约 100ms 量级，用于按键抓拍增强。
@@ -78,13 +79,13 @@ ISP 参数块位于公共图像链内，因此同一 ISP 输出天然是“已�
 
 硬件 CLUT/Gamma 施加、ACL 推理和 30fps 主链均已分别验证。CLUT 几何已由厂商资料和板端 sweep
 确认：17³ 逻辑节点按三轴奇偶拆为 8 个 bank，并以 4 路交织写入 5508 项；RGB 轴序和
-R高/G中/B低位序的 identity 门禁已通过。剩余工作是生产参数桥和动态闭环画质验证。
+R高/G中/B低位序的 identity 门禁已通过。生产参数桥与失败降级已完成，剩余工作是动态闭环画质验证。
 
 ## 5. 模块与代码映射
 
 板端代码平铺在 `board/src/`。CoTF 主线需要 `capture/isp/vpss/infer/lut_bridge/control/display/stream`；
 `postproc/compose` 主要服务整图增强备选。头文件位于 `board/include/`，跨模块通道、状态和指标约定放
-`pipeline.h`；`main.c` 负责生命周期和线程编排。
+`pipeline.h`；`pipeline.c` 提供配置默认值、合法性和状态名契约，`main.c` 负责硬件生命周期和线程编排。
 
 Config-R 固定 `chn0=1024x600` 显示、`chn1=1024x576` 串流/整图备选互斥复用、
 `chn2=256x144` CoTF 控制缩略图。模块接口、帧所有权、刷新事务和并行开发完成定义见
@@ -103,6 +104,11 @@ Config-R 固定 `chn0=1024x600` 显示、`chn1=1024x576` 串流/整图备选互�
 4. ~~ISP 统计读取~~ ✅ 已验证（2026-06-11）：`ss_mpi_isp_get_ae_stats` 低频读取正常，
    `isp_get_luma_stats` 归约为 mean/clip% 直接供 `control_decide`（见 `board/README.md`）。
 5. VO 视频层的现场 flicker 观感待确认；VGS 分屏仅属于整图增强备选。
+
+设备运行完整性已经形成以下闭环：systemd 配置 schema v1 → 严格参数校验 → linear/WDR
+生产起链 → 统一状态日志与逆序释放 → 普通故障自动重试；ACL/SMMU 致命故障使用退出码 70，
+由 `RestartPreventExitStatus` 阻止重启风暴，等待板卡干净重启。`socchina-health` 用于只读核对配置、
+服务、MIPI、进程、RTSP、VPSS/NNN 与可选 HDMI 状态。
 
 ## 7. 已核实的 SDK 接口与关键约束
 

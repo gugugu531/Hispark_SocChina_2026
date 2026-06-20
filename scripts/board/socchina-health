@@ -1,0 +1,100 @@
+#!/usr/bin/env bash
+# 生产设备完整性检查：配置、服务、设备节点、监听端口与可选 HDMI 状态。
+set -u
+
+readonly CONFIG="${SOCCHINA_CONFIG:-/etc/socchina/runtime.conf}"
+readonly SERVICE="${SOCCHINA_SERVICE:-socchina-stream.service}"
+readonly STARTER="${SOCCHINA_STARTER:-/usr/local/sbin/socchina-start}"
+readonly MIPI_DEVICE="${SOCCHINA_MIPI_DEVICE:-/dev/ot_mipi_rx}"
+
+failures=0
+warnings=0
+
+pass() {
+    echo "[PASS] $*"
+}
+
+warn() {
+    echo "[WARN] $*" >&2
+    warnings=$((warnings + 1))
+}
+
+fail() {
+    echo "[FAIL] $*" >&2
+    failures=$((failures + 1))
+}
+
+if [[ -x "${STARTER}" ]] && "${STARTER}" --check-config >/dev/null; then
+    pass "runtime configuration"
+else
+    fail "runtime configuration"
+fi
+
+if systemctl is-enabled --quiet "${SERVICE}"; then
+    pass "${SERVICE} enabled"
+else
+    warn "${SERVICE} is not enabled"
+fi
+
+if systemctl is-active --quiet "${SERVICE}"; then
+    pass "${SERVICE} active"
+else
+    fail "${SERVICE} inactive"
+fi
+
+if [[ -e "${MIPI_DEVICE}" ]]; then
+    pass "MIPI device present"
+else
+    fail "MIPI device missing"
+fi
+
+if pgrep -x socchina_app >/dev/null; then
+    pass "socchina_app process present"
+else
+    fail "socchina_app process missing"
+fi
+
+if [[ -r "${CONFIG}" ]]; then
+    # shellcheck disable=SC1090
+    source "${CONFIG}"
+    : "${RTSP_PORT:=8554}"
+    : "${ENABLE_HDMI:=0}"
+    : "${ENABLE_NN_CONTROL:=0}"
+
+    if ss -lnt 2>/dev/null | awk -v port="${RTSP_PORT}" '
+        $4 ~ (":" port "$") { found = 1 }
+        END { exit !found }
+    '; then
+        pass "RTSP TCP port ${RTSP_PORT} listening"
+    else
+        fail "RTSP TCP port ${RTSP_PORT} not listening"
+    fi
+
+    if [[ "${ENABLE_HDMI}" == "1" ]]; then
+        if [[ -r /proc/umap/hdmi0 ]] &&
+            grep -Eq 'phy output enable[[:space:]]*:[[:space:]]*YES' /proc/umap/hdmi0; then
+            pass "HDMI PHY enabled"
+        else
+            fail "HDMI requested but PHY is not enabled"
+        fi
+    else
+        pass "HDMI intentionally disabled"
+    fi
+fi
+
+if [[ -r /proc/umap/vpss ]]; then
+    pass "VPSS status available"
+else
+    warn "VPSS status unavailable"
+fi
+
+if [[ "${ENABLE_NN_CONTROL:-0}" == "0" ]]; then
+    pass "NN control intentionally disabled"
+elif [[ -r /proc/umap/svp_nnn ]]; then
+    pass "NNN status available"
+else
+    fail "NN control enabled but NNN status unavailable"
+fi
+
+echo "[socchina-health] failures=${failures} warnings=${warnings}"
+((failures == 0))

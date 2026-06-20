@@ -10,7 +10,7 @@
 
 | 级别 | 路线 | 一句话 | 实时性 | 方向 | 状态 |
 | --- | --- | --- | --- | --- | --- |
-| **主推（开发中）** | CoTF-inspired 参数网 + ISP 参数块 | NN 低频出参数，ISP Gamma/DRC/CLUT 全分辨率施加 | ✅ 1024x576 可（NN 移出每帧路径） | 双向 | 正式权重、256x144+AIPP、17v2 bridge 和 RGB 实验预览已完成；生产闭环待完成 |
+| **主推（开发中）** | CoTF-inspired 参数网 + ISP 参数块 | NN 低频出参数，ISP Gamma/DRC/CLUT 全分辨率施加 | ✅ 1024x576 可（NN 移出每帧路径） | 双向 | 正式权重、256x144+AIPP、17v2 bridge、生产闭环与失败降级已完成；画质待验收 |
 | **备选（已验证可行）** | 曲线网络 ExpoCurveNet（整图增强） | 单段全分辨率 NN 直接出增强帧 | 🟡 仅 768x432（27ms，NPU 每帧满载） | 双向 | 结构去风险完，可直接训练 |
 | **兜底** | Zero-DCE（Lite） | 探索层已板端实测的单向低光增强 | ✅ 640x320≈30ms | **单向（仅提亮）** | 已有 OM 与实测基线，需场景门控 |
 
@@ -39,8 +39,8 @@
   8 个奇偶 bank 的 4 路交织存储，RGB/RGB identity 门禁已通过。
 - param-net 已用 LCDP 的 1415/100/218 对完成 200 epoch 正式训练；best epoch 167，
   val PSNR `19.7247dB`、独立 test PSNR `20.4813dB`（输入基线 `14.0203dB`）。
-- checkpoint→ONNX→FP16+AIPP OM→板端相机帧推理链已完成；17v2 C bridge 已完成实验验证，
-  但生产刷新事务、用途分流、降级回退和画质护栏尚未完成。
+- checkpoint→ONNX→FP16+AIPP OM→板端相机帧推理链已完成；17v2 C bridge、生产刷新事务、
+  Gamma/DRC/CLUT 用途分流、失败降级和基础画质护栏均已完成。
 - 修正后的 17v2 RGB bridge 已在 `test_paramnet_live` 动态预览：每 30 帧推理并热刷完整 CLUT，
   20 秒 604 帧、20/20 更新成功；强光场景仍有预裁剪、亮度压暗和 post-CLUT 反馈问题，当前长时
   展示回退 Gamma，RGB 路径待补高光/端点护栏后再做长期画质验收。

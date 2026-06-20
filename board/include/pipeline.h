@@ -25,6 +25,7 @@ typedef enum {
 #define PIPELINE_TARGET_FPS 30u
 #define PIPELINE_FRAME_TIMEOUT_MS 1000
 #define PIPELINE_CONTROL_POLL_FRAMES 3u /* 30fps 时约 10Hz 读取统计 */
+#define PIPELINE_EXIT_FATAL_RUNTIME 70  /* ACL/SMMU 上下文损坏，需要重启设备 */
 
 #define PIPELINE_COTF_LUT_DIM 17u
 #define PIPELINE_COTF_LUT_CHANNELS 3u
@@ -65,6 +66,11 @@ typedef struct {
     int enable_display;
     int enable_stream;
     unsigned control_poll_frames;
+    float tone_strength;
+    float nn_high_clip_guard;
+    unsigned stream_bitrate_kbps;
+    unsigned rtsp_port;
+    const char *stream_path;
 } pipeline_config_t;
 
 typedef struct {
@@ -88,6 +94,10 @@ typedef struct {
     float lut_apply_last_ms;
     float lut_apply_max_ms;
 } pipeline_metrics_t;
+
+void pipeline_config_defaults(pipeline_config_t *cfg);
+int pipeline_config_validate(const pipeline_config_t *cfg);
+const char *pipeline_state_name(pipeline_state_t state);
 
 /*
  * 借用帧规则：

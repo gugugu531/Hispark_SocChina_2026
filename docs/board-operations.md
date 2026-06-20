@@ -128,8 +128,8 @@ systemd
   Portal 认证完成。相机/VENC/RTSP 可先初始化并监听 IPv4/IPv6 通配地址，网络地址就绪后客户端再连接。
 - 默认 `ENABLE_HDMI=0`：只启用 VPSS chn1、VENC 和 RTSP，不创建 chn0，不初始化 VO/HDMI。
 - `ENABLE_HDMI=1`：同时创建 chn0，启用 VO/HDMI，并保留 RTSP。
-- `Restart=on-failure`，异常退出后 3 秒重试；启动频率不封顶，避免开机早期 sensor 短暂未就绪后
-  服务永久停在 failed。
+- `Restart=on-failure`，普通异常退出后 3 秒重试；配置错误状态 2 与 ACL/SMMU 致命状态 70
+  由 `RestartPreventExitStatus` 阻止自动重启，避免配置错误或坏硬件上下文形成重启风暴。
 - 包装器在启动媒体链前最多等待 `/dev/ot_mipi_rx` 30 秒，避免驱动设备节点尚未创建时过早调用
   MIPI/VI 并留下短暂 VB 冲突；超时后退出并交给 systemd 重试。
 - 正常 `stop/restart` 发送 SIGTERM，应用按 stream/VENC、display、VPSS、capture、SYS/VB 的逆序清理。
@@ -143,6 +143,7 @@ systemd
 | `deploy/systemd/runtime.conf` | 首次安装的默认配置 |
 | `scripts/board/socchina-start` | 配置校验与应用参数拼装 |
 | `scripts/board/socchina-display` | HDMI on/off/status 控制 |
+| `scripts/board/socchina-health` | 配置、服务、设备节点和媒体状态只读健康检查 |
 | `scripts/install_board_service.sh` | 主机侧幂等安装/更新入口 |
 
 ### 8.2 构建与安装
@@ -164,19 +165,28 @@ BOARD=hispark-remote scripts/install_board_service.sh
 2. 更新 `/root/socchina-2026/socchina_app`。
 3. 安装包装脚本到 `/usr/local/sbin/`。
 4. 安装 unit 到 `/etc/systemd/system/`。
-5. **仅当配置不存在时**创建 `/etc/socchina/runtime.conf`，更新版本不会覆盖现场选择。
+5. **仅当配置不存在时**创建 `/etc/socchina/runtime.conf`，更新版本不会覆盖现场选择；最新模板始终
+   安装到 `/usr/share/socchina/runtime.conf.example` 供人工迁移对照。
 6. `daemon-reload`，然后 `enable --now`。
 
 首次安装默认仅 RTSP：
 
 ```sh
+CONFIG_VERSION=1
 ENABLE_HDMI=0
 RTSP_PORT=8554
 STREAM_PATH=live
 BITRATE_KBPS=3000
 SENSOR_INDEX=1
-TONE_STRENGTH=0.7
+CAPTURE_MODE=linear
+TARGET_FPS=30
+TONE_STRENGTH=0.25
+ENABLE_NN_CONTROL=1
+NN_HIGH_CLIP_GUARD=3.0
 ```
+
+旧配置没有 `CONFIG_VERSION` 时按 legacy v0 兼容读取，并使用 schema v1 的缺省值；journal 会提示迁移。
+不支持的未来版本会以状态 2 拒绝启动。
 
 ### 8.3 日常使用
 
@@ -188,6 +198,7 @@ systemctl restart socchina-stream.service
 systemctl stop socchina-stream.service
 systemctl start socchina-stream.service
 journalctl -u socchina-stream.service -f
+socchina-health
 ```
 
 切换 HDMI：
@@ -236,7 +247,8 @@ grep -E "run status|rsen|phy output enable" /proc/umap/hdmi0
 - HDMI on 时应看到 `run status: OPEN START`、`phy output enable: YES`，VPSS 同时有 chn0/chn1。
 - 当前面板使用 DVI 模式，`hdmi enable: NO` 在 HDMI 输出已启动时也可能成立，不能单独作为开关判据。
 - 配置错误时 `socchina-start` 会以状态 2 退出，错误可从 journal 查看；修正配置后执行 restart。
-- 媒体栈进入 D 态或 ACL/SMMU 超时仍按 §4 干净重启板卡，不依赖 systemd 无限重试修复坏硬件上下文。
+- ACL/SMMU 致命错误时应用以状态 70 退出，unit 保持 failed 而不自动重试；按 §4 干净重启板卡。
+- `socchina-health` 返回非零表示至少一个设备完整性硬门失败；warning 不影响返回码。
 
 ### 8.5 开发与验收记录
 
@@ -286,6 +298,39 @@ gst-launch-1.0 -q \
 
 - 服务安装、配置持久化、RTSP/HDMI 双态和完整重启自恢复均已通过。
 - `hdmi enable: NO` 是当前 DVI 输出模式属性，不能表示服务是否启用了显示；以 run status/PHY 为准。
+
+#### 2026-06-20 设备完整性闭环
+
+目标：
+
+- 将 WDR/帧率、配置兼容、运行状态、健康检查和 NPU 致命恢复纳入生产入口。
+
+命令/路径：
+
+```sh
+/usr/local/sbin/socchina-start --check-config
+socchina-health
+systemctl show socchina-stream.service -p Result -p ExecMainStatus -p NRestarts
+```
+
+结果：
+
+- 配置 schema v1 支持 `CAPTURE_MODE=linear|wdr2to1`、`TARGET_FPS` 和 NN 高光门控；
+  legacy v0 配置保持兼容，不支持版本和非法范围拒绝启动。
+- `pipeline_config_t` 已有统一默认值与 SDK-free 校验；生产入口输出 STARTING/RUNNING/
+  DEGRADED/STOPPING/STOPPED/FAILED 生命周期状态。
+- ACL/SMMU 致命错误使用退出码 70，systemd 不自动重启；普通瞬态启动失败仍自动恢复。
+- `socchina-health` 统一核对配置、unit、MIPI 节点、应用进程、RTSP 端口、VPSS/NNN 和可选 HDMI。
+- 板端 WDR 生产入口短测 12 秒：`10bit vc-wdr init success`，RTSP 348 帧、0 drops，
+  退出 `state=STOPPED`、`exit_code=0`，服务随后恢复。
+- 正式安装保留 legacy 配置并通过兼容读取；健康检查在 RTSP 启动窗口首次失败，2 秒后重试为
+  `failures=0 warnings=0`。unit 为 active、`NRestarts=0`，非法 sensor 配置返回 2。
+- 主机脚本已支持直接 IPv6 目标的 `scp` 方括号格式，部署、安装与 P1 上传不再依赖 SSH 别名。
+
+解读：
+
+- 设备运行闭环从“应用能启动”提升为“配置可验证、状态可判定、故障恢复语义明确”。
+- WDR 强逆光画质、运动鬼影与长时稳定性仍属于验收项，不属于本次结构完整性实现。
 
 推荐后续每次修改服务时继续记录：
 

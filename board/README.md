@@ -266,15 +266,19 @@ gst-launch-1.0 -q rtspsrc \
 [`../docs/board-operations.md`](../docs/board-operations.md) §8。默认服务参数等价于：
 
 ```sh
-socchina_app --stream --no-display --bitrate 3000 --rtsp-port 8554 --stream-path live
+socchina_app --stream --no-display --sensor 1 --fps 30 --strength 0.25 \
+  --nn-high-clip 3.0 --bitrate 3000 --rtsp-port 8554 --stream-path live
 ```
 
 2026-06-20 完整重启终验：服务在厂商 `rc-local.service` 媒体模块加载完成后自动启动，
 本次 boot 仅启动一次、`NRestarts=0`；默认 HDMI off，RTSP 10 秒拉流通过。
+生产入口另支持 `--wdr`；systemd 配置使用 `CAPTURE_MODE=wdr2to1` 与 `TARGET_FPS=5..30`。
+配置/设备状态可用 `socchina-start --check-config` 和 `socchina-health` 检查。
 
 ### Config-R 接口契约（阶段 C）
 
-`include/pipeline.h`、`infer.h`、`lut_bridge.h`、`stream.h` 已固定通道、同步调用、帧所有权和输出布局。
+`include/pipeline.h`、`src/pipeline.c`、`infer.h`、`lut_bridge.h`、`stream.h` 已固定配置校验、
+状态/退出码、通道、同步调用、帧所有权和输出布局。
 完整线程模型、LUT 刷新事务、错误降级与并行开发验收见
 [`docs/data-path-interface-design.md`](../docs/data-path-interface-design.md)。
 

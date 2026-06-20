@@ -26,10 +26,10 @@ cc -std=c11 -Wall -Wextra -I"${BOARD}/include" \
 echo "== running test_lut_bridge =="
 "${bin}" || fail=1
 
-# 纯头文件契约测试，无对应 src 文件。
+# 流水线配置、状态与退出码契约测试。
 bin="${OUT}/test_pipeline_contract"
 cc -std=c11 -Wall -Wextra -I"${BOARD}/include" \
-    "${BOARD}/tests/test_pipeline_contract.c" -o "${bin}"
+    "${BOARD}/tests/test_pipeline_contract.c" "${BOARD}/src/pipeline.c" -o "${bin}"
 echo "== running test_pipeline_contract =="
 "${bin}" || fail=1
 

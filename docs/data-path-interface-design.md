@@ -54,7 +54,7 @@ Config-R 使用一个 VPSS 组（`grp0`）和三个固定角色通道：
 
 | 模块 | 输入 | 输出/副作用 | 不负责 |
 | --- | --- | --- | --- |
-| `main/pipeline` | `pipeline_config_t`、退出信号 | SYS/VB 与模块生命周期、线程创建/回收、汇总指标 | 图像算法和 SDK 细节 |
+| `main/pipeline` | `pipeline_config_t`、退出信号 | 配置默认值/校验、SYS/VB 与模块生命周期、线程创建/回收、汇总指标 | 图像算法和 SDK 细节 |
 | `capture` | sensor/WDR 配置 | VI/ISP 启停、VI→VPSS 绑定 | VPSS 取帧 |
 | `vpss` | 三通道配置 | 借出/归还 SDK 帧 | 跨线程队列 |
 | `display` | `chn0` 借用帧 | VO/HDMI 送显 | 归还 VPSS 帧 |
@@ -171,6 +171,9 @@ control worker 默认每 3 帧执行一次控制轮询，但只有 `control_shou
 建议每秒输出一行稳定指标：状态、display/stream 帧数、VPSS timeout、LUT 请求/成功/失败、最近和最大
 推理耗时、最近和最大 CLUT 写入耗时。日志不得逐帧打印。
 
+生产程序对 ACL/SMMU 致命错误返回 70；systemd 将 70 列为 `RestartPreventExitStatus`，避免坏上下文
+上的无限重启。配置错误返回 2，同样等待运维修正后显式 restart。其它启动期瞬态失败保留自动重试。
+
 ## 9. CLUT 上板验证门
 
 训练模型接入的验证门及当前状态：
@@ -180,7 +183,7 @@ control worker 默认每 3 帧执行一次控制轮询，但只有 `control_shou
 3. 🟡 热刷新：生产线程 30 秒测试为 30.11fps、6/6 更新、0 drops；推理 p95 2.86ms、
    事务 p95 4.86ms。10 分钟正式验收与现场 flicker 待测。
 4. 🟡 固定模型 LUT：Python/C identity 已对齐；仍需多组随机 LUT 逐项对拍。
-5. 🟡 动态模型 LUT：已接 `infer_run_nv21` 实验预览；待生产 worker、降级和画质护栏。
+5. 🟡 动态模型 LUT：生产 worker、降级和基础护栏已完成；待多场景画质终验。
 
 第 1–3 步失败时只修改 `lut_bridge_cfg_t`/桥接实现，不改模型输出契约。
 
@@ -201,9 +204,8 @@ control worker 默认每 3 帧执行一次控制轮询，但只有 `control_shou
 
 ## 11. 尚未关闭的设计问题
 
-- CLUT 逻辑网格和 17v2 存储已确认；Python/C bridge 已实现有限值、范围检查和 identity
-  强度混合，并通过 identity/轴序/位序门禁。仍需高光/端点/变化量护栏、随机 LUT 对拍、
-  失败保旧参数和生产低频刷新事务。
+- CLUT 逻辑网格和 17v2 存储已确认；Python/C bridge 已实现有限值、范围、identity 强度、
+  高光、端点、单调性和变化量护栏，并通过 identity/轴序/位序门禁。仍需随机 LUT 对拍和多场景画质终验。
 - chn2 位于 post-CLUT 路径，动态模型会读取自身增强结果。当前已加入 1/4 EMA、连续 3 次变化确认、
   刷新后 10 个控制周期冷却和 packed LUT 最大步长；仍需用动态场景验证收敛参数。
 - ACL 是否能安全直接导入 VPSS/VB 物理地址尚未验证；当前基线是缩略图 copy。
