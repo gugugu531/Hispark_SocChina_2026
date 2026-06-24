@@ -169,9 +169,10 @@ int stream_init(const stream_cfg_t* cfg) {
     }
 
     memset(&rtsp_cfg, 0, sizeof(rtsp_cfg));
-    rtsp_cfg.port = cfg->rtsp_port;
-    rtsp_cfg.fps = cfg->fps;
+    rtsp_cfg.port       = cfg->rtsp_port;
+    rtsp_cfg.fps        = cfg->fps;
     rtsp_cfg.stream_path = cfg->stream_path;
+    rtsp_cfg.bind_addr  = cfg->rtsp_bind_addr;
     rtsp_cfg.request_idr = request_idr;
     if (rtsp_server_start(&rtsp_cfg) != 0) {
         LOG_ERR("rtsp_server_start failed");

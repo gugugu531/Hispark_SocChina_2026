@@ -34,7 +34,11 @@ static int transact(int fd, const char* request, const char* expected) {
 }
 
 int main(void) {
-    rtsp_server_cfg_t cfg = {TEST_PORT, 30, "live", NULL, NULL};
+    rtsp_server_cfg_t cfg = {
+        .port        = TEST_PORT,
+        .fps         = 30,
+        .stream_path = "live",
+    };
     static const unsigned char h264_idr[] = {0, 0, 0, 1, 0x65, 0x88, 0x84};
     struct timespec wait = {0, 30000000};
     unsigned char rtp[64] = {0};

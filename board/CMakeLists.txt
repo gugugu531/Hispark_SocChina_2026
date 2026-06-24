@@ -22,20 +22,29 @@ if(ENABLE_SDK)
     if(NOT SS928_SDK_ROOT)
         message(FATAL_ERROR "ENABLE_SDK=ON 时必须设置 -DSS928_SDK_ROOT=<SDK 根目录>")
     endif()
-    # 兼容两种 SDK 目录布局：<root>/include[/hisilicon] 与 <root>/lib[/linux/hisilicon]
+    # 兼容两种 SDK 目录布局：
+    #   布局 A（SS928V100_SDK 原生 out/）：include/ lib/ 直接在 SS928_SDK_ROOT 下；
+    #                                       ACL 在 include/npu/，NPU 库在 lib/ 根目录
+    #   布局 B（重新打包）：include/hisilicon/，lib/linux/hisilicon/，npu 在各自子目录
     set(SDK_INC_DIRS "${SS928_SDK_ROOT}/include")
     if(EXISTS "${SS928_SDK_ROOT}/include/hisilicon")
         list(APPEND SDK_INC_DIRS "${SS928_SDK_ROOT}/include/hisilicon")
     endif()
     if(EXISTS "${SS928_SDK_ROOT}/include/hisilicon/npu")
-        list(APPEND SDK_INC_DIRS "${SS928_SDK_ROOT}/include/hisilicon/npu") # ACL（infer.c）
+        list(APPEND SDK_INC_DIRS "${SS928_SDK_ROOT}/include/hisilicon/npu") # 布局 B ACL
+    endif()
+    if(EXISTS "${SS928_SDK_ROOT}/include/npu")
+        list(APPEND SDK_INC_DIRS "${SS928_SDK_ROOT}/include/npu")           # 布局 A ACL
     endif()
     set(SDK_LIB_DIRS "${SS928_SDK_ROOT}/lib")
+    if(EXISTS "${SS928_SDK_ROOT}/lib/npu")
+        list(APPEND SDK_LIB_DIRS "${SS928_SDK_ROOT}/lib/npu")               # 布局 A NPU
+    endif()
     if(EXISTS "${SS928_SDK_ROOT}/lib/linux/hisilicon")
         list(APPEND SDK_LIB_DIRS "${SS928_SDK_ROOT}/lib/linux/hisilicon")
     endif()
     if(EXISTS "${SS928_SDK_ROOT}/lib/linux/hisilicon/npu")
-        list(APPEND SDK_LIB_DIRS "${SS928_SDK_ROOT}/lib/linux/hisilicon/npu") # libascendcl 等
+        list(APPEND SDK_LIB_DIRS "${SS928_SDK_ROOT}/lib/linux/hisilicon/npu") # 布局 B NPU
     endif()
     target_include_directories(socchina PUBLIC ${SDK_INC_DIRS})
     target_link_directories(socchina PUBLIC ${SDK_LIB_DIRS})

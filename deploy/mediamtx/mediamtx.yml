@@ -1,0 +1,94 @@
+###############################################
+# SocChina MediaMTX 配置
+# 角色：从 socchina_app 内建 RTSP (127.0.0.1:8555/internal) 拉流，
+#       对外提供 RTSP/LL-HLS/WebRTC 分发，不做转码。
+# 版本：MediaMTX v1.19.1
+###############################################
+
+logLevel: info
+logDestinations: [stdout]
+
+readTimeout: 10s
+writeTimeout: 10s
+writeQueueSize: 512
+udpMaxPayloadSize: 1452
+
+###############################################
+# 认证：内网演示，全放行
+###############################################
+authMethod: internal
+authInternalUsers:
+  - user: any
+    pass:
+    ips: []
+    permissions:
+      - action: publish
+      - action: read
+      - action: playback
+
+###############################################
+# API（仅 loopback，供 socchina-web 健康检查）
+###############################################
+api: true
+apiAddress: 127.0.0.1:9997
+
+metrics: false
+
+###############################################
+# RTSP（对外 :8554，供 VLC / GStreamer）
+###############################################
+rtsp: true
+rtspAddress: :8554
+rtspEncryption: no
+rtspAuthMethods: [basic]
+# 内建 RTSP (socchina_app) 用 TCP，拉流也用 TCP 避免 UDP 路由问题
+rtspTransports: [tcp]
+
+# RTSPS 不用
+rtspsAddress: :8322
+
+# SRT 不用
+srt: false
+
+###############################################
+# LL-HLS（对外 :8888，供浏览器 HLS 回退）
+###############################################
+hls: true
+hlsAddress: :8888
+hlsEncryption: false
+hlsAlwaysRemux: false
+hlsVariant: lowLatency
+hlsSegmentCount: 7
+hlsSegmentDuration: 1s
+hlsPartDuration: 200ms
+hlsSegmentMaxSize: 50M
+hlsAllowOrigins: ["*"]
+
+###############################################
+# WebRTC（对外 :8889，供浏览器实时预览）
+###############################################
+webrtc: true
+webrtcAddress: :8889
+webrtcEncryption: false
+webrtcAllowOrigins: ["*"]
+# 局域网演示：从网卡自动获取 ICE candidate，不需要 STUN/TURN
+webrtcLocalUDPAddress: :8189
+webrtcIPsFromInterfaces: true
+webrtcICEServers2: []
+
+###############################################
+# 流路径
+###############################################
+paths:
+  # live：从 socchina_app 内建 RTSP 拉流，对外发布
+  live:
+    source: rtsp://127.0.0.1:8555/internal
+    sourceProtocol: tcp
+    # 拉流失败后重试间隔
+    sourceOnDemand: false
+    # 断流后持续重连
+    sourceRedoTimeout: 5s
+
+  # 禁止其他路径发布（只允许 mediamtx 自己拉 socchina_app 的流）
+  all_others:
+    source: publisher

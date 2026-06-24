@@ -4,12 +4,13 @@
 /* VENC + RTSP 边界。编码器拥有自己的 VPSS chn1 帧，不与显示线程共享借用帧。 */
 
 typedef struct {
-    unsigned width;
-    unsigned height;
-    unsigned fps;
-    unsigned bitrate_kbps;
-    unsigned rtsp_port;
+    unsigned    width;
+    unsigned    height;
+    unsigned    fps;
+    unsigned    bitrate_kbps;
+    unsigned    rtsp_port;
     const char *stream_path;
+    const char *rtsp_bind_addr; /* NULL = 所有接口 ([::]); "127.0.0.1" = 仅回环（MediaMTX 模式） */
 } stream_cfg_t;
 
 int stream_init(const stream_cfg_t *cfg);

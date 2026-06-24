@@ -50,6 +50,19 @@ venv/
 *.bmp
 *.log
 
+# ===== Web 构建产物 =====
+build/web/
+web/backend/socchina-web
+web/admin/socchina-admin
+web/authproxy/socchina-auth
+*.exe
+
+# ===== Go =====
+go.sum
+
+# 说明：MediaMTX ARM64 单文件发行版不入库（运行时部署到板端 /opt/socchina/mediamtx），
+# 版本与校验值记录在 deploy/README.md；仓库内 deploy/mediamtx/ 仅存配置 mediamtx.yml。
+
 # ===== 编辑器 / 系统 =====
 .vscode/
 .idea/
