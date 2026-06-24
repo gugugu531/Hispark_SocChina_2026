@@ -85,6 +85,11 @@ typedef struct {
     float strength;
     float high_clip_guard;
     int nn_enabled;
+    int enhancement_enabled;   /* 全局增强总开关（默认开） */
+    int tone_enabled;          /* 规则 Gamma 色调开关（默认开） */
+    int drc_mode;              /* 0 off / 1 auto / 2 manual（默认 auto） */
+    int drc_strength;          /* 0..1023（manual 时生效） */
+    int ldci_mode;             /* 0 off / 1 auto（默认 auto） */
     int fatal_error;
     control_health_t health;
     app_runtime_metrics_t *metrics;
@@ -161,41 +166,61 @@ static void ctrl_status_fn(void *opaque, char *buf, size_t buflen)
     pipeline_metrics_t snap;
 
     metrics_snapshot(sctx->metrics, elapsed, &snap);
+    /* 产出不含最外层花括号的成员列表（pipeline/processing/outputs），
+     * 由 app_control 的 handle_client 拼进 {"id":N,"ok":true,<此处>}。
+     * 键名与 web 控制台契约一致；额外字段（lut_updates 等）放进 pipeline 对象供调试，
+     * JSON 消费方忽略未知字段。 */
     snprintf(buf, buflen,
-             "{\"state\":\"%s\","
-             "\"display_fps\":%.1f,"
-             "\"display_frames\":%llu,"
-             "\"display_drops\":%llu,"
-             "\"stream_frames\":%llu,"
+             "\"pipeline\":{"
+             "\"state\":\"%s\","
+             "\"capture_mode\":\"%s\","
+             "\"target_fps\":%u,"
+             "\"display_fps\":%.2f,"
              "\"stream_drops\":%llu,"
-             "\"control_polls\":%llu,"
-             "\"infer_runs\":%llu,"
-             "\"lut_updates\":%llu,"
-             "\"lut_failures\":%llu,"
+             "\"timeouts\":%llu,"
              "\"transient_errors\":%llu,"
              "\"fatal_errors\":%llu,"
-             "\"infer_last_ms\":%.2f,"
-             "\"infer_p95_ms\":%.2f,"
-             "\"tone_strength\":%.3f,"
+             "\"lut_updates\":%llu,"
+             "\"lut_failures\":%llu"
+             "},"
+             "\"processing\":{"
              "\"nn_enabled\":%s,"
-             "\"high_clip_guard\":%.2f}",
+             "\"nn_degraded\":%s,"
+             "\"enhancement_enabled\":%s,"
+             "\"tone_enabled\":%s,"
+             "\"tone_strength\":%.2f,"
+             "\"high_clip_guard\":%.1f,"
+             "\"drc_mode\":%d,"
+             "\"ldci_mode\":%d,"
+             "\"infer_p95_ms\":%.2f,"
+             "\"transaction_p95_ms\":%.2f"
+             "},"
+             "\"outputs\":{"
+             "\"hdmi\":%s,"
+             "\"rtsp\":%s"
+             "}",
              pipeline_state_name(snap.state),
+             "linear", /* TODO: capture_mode 待从运行配置透传（沿用 PR#8 占位） */
+             snap.display_fps > 0 ? 30u : 0u,
              snap.display_fps,
-             (unsigned long long)snap.display_frames,
-             (unsigned long long)snap.display_drops,
-             (unsigned long long)snap.stream_frames,
              (unsigned long long)snap.stream_drops,
-             (unsigned long long)snap.control_polls,
-             (unsigned long long)snap.infer_runs,
-             (unsigned long long)snap.lut_updates,
-             (unsigned long long)snap.lut_failures,
+             (unsigned long long)snap.frame_timeouts,
              (unsigned long long)snap.transient_errors,
              (unsigned long long)snap.fatal_errors,
-             snap.infer_last_ms,
-             snap.infer_p95_ms,
-             sctx->ctrl->strength,
+             (unsigned long long)snap.lut_updates,
+             (unsigned long long)snap.lut_failures,
              sctx->ctrl->nn_enabled ? "true" : "false",
-             sctx->ctrl->high_clip_guard);
+             snap.degraded_events > 0 ? "true" : "false",
+             sctx->ctrl->enhancement_enabled ? "true" : "false",
+             sctx->ctrl->tone_enabled ? "true" : "false",
+             (double)sctx->ctrl->strength,
+             (double)sctx->ctrl->high_clip_guard,
+             sctx->ctrl->drc_mode,
+             sctx->ctrl->ldci_mode,
+             snap.infer_p95_ms,
+             snap.transaction_p95_ms,
+             snap.display_frames > 0 ? "true" : "false",
+             snap.stream_frames > 0 ? "true" : "false");
 }
 
 static void on_sig(int s) {
@@ -270,6 +295,8 @@ static void* control_worker(void* arg) {
     static uint32_t packed_lut[PIPELINE_ISP_CLUT_NODE_COUNT];
     static uint32_t previous_lut[PIPELINE_ISP_CLUT_NODE_COUNT];
     int have_previous_lut = 0;
+    int params_dirty = 0;  /* 手动改动强制立即刷新；NN 重开无帧时跨周期保留 */
+    int nn_retry = 0;
     lut_bridge_cfg_t bridge_cfg;
 
     lut_bridge_default_cfg(&bridge_cfg);
@@ -283,8 +310,11 @@ static void* control_worker(void* arg) {
     while (!g_stop) {
         expo_mode_t mode;
         int refresh;
+        float effective_strength;
+        int   effective_nn;
 
-        /* 从控制 socket 消费最新参数（last-write-wins） */
+        /* 从控制 socket / 触摸菜单消费最新参数（last-write-wins）；
+         * drain 返回 1 即"本周期有手动改动" → 置 params_dirty 强制立即刷新。 */
         {
             app_ctrl_params_t p;
             if (app_ctrl_drain(&p)) {
@@ -292,10 +322,19 @@ static void* control_worker(void* arg) {
                     ctx->strength      = p.tone_strength;
                     bridge_cfg.strength = p.tone_strength;
                 }
-                if (p.has_nn_clut_enabled) ctx->nn_enabled      = p.nn_clut_enabled;
-                if (p.has_high_clip_guard)  ctx->high_clip_guard = p.high_clip_guard;
-                LOG_INFO("[ctrl] params applied from socket: strength=%.3f nn=%d guard=%.2f",
-                         ctx->strength, ctx->nn_enabled, ctx->high_clip_guard);
+                if (p.has_nn_clut_enabled)     ctx->nn_enabled          = p.nn_clut_enabled;
+                if (p.has_high_clip_guard)     ctx->high_clip_guard     = p.high_clip_guard;
+                if (p.has_enhancement_enabled) ctx->enhancement_enabled = p.enhancement_enabled;
+                if (p.has_tone_enabled)        ctx->tone_enabled        = p.tone_enabled;
+                if (p.has_drc_mode)            ctx->drc_mode            = p.drc_mode;
+                if (p.has_drc_strength)        ctx->drc_strength        = p.drc_strength;
+                if (p.has_ldci_mode)           ctx->ldci_mode           = p.ldci_mode;
+                params_dirty = 1;
+                LOG_INFO("[ctrl] params applied: strength=%.3f nn=%d guard=%.2f enh=%d tone=%d "
+                         "drc=%d ldci=%d",
+                         ctx->strength, ctx->nn_enabled, ctx->high_clip_guard,
+                         ctx->enhancement_enabled, ctx->tone_enabled, ctx->drc_mode,
+                         ctx->ldci_mode);
             }
         }
 
@@ -305,22 +344,51 @@ static void* control_worker(void* arg) {
             atomic_fetch_add(&metrics->transient_errors, 1);
             continue;
         }
-        refresh = control_feedback_observe(&feedback, &raw_stats, &cur);
+        /* 手动改动或反馈环判定变化都触发刷新；稳定场景下手动滑块亦立即生效。 */
+        refresh = params_dirty || control_feedback_observe(&feedback, &raw_stats, &cur);
         if (!refresh) {
             continue;
         }
-        mode = control_decide(&cur);
 
-        /* Gamma/DRC/CLUT 按用途分流：当前模型只产 RGB 3D-LUT；曝光色调仍由规则 Gamma 负责。
-         * DRC 保持 ISP 自动配置，避免用 RGB LUT 冒充动态范围局部参数。 */
-        if (isp_gamma_apply_tone(mode_to_tone(mode), ctx->strength) != 0) {
+        /* 全局增强总开关与色调开关：关闭时强制旁路对应处理。 */
+        effective_strength = ctx->strength;
+        effective_nn       = ctx->nn_enabled;
+        if (!ctx->enhancement_enabled) { effective_strength = 0.0f; effective_nn = 0; }
+        if (!ctx->tone_enabled)        { effective_strength = 0.0f; }
+
+        mode = control_decide(&cur);
+        /* 用户手动给了非零强度但自动判为 BYPASS 时，提升为 BRIGHTEN，
+         * 否则正常光照下 tone_strength 滑块无可见效果。 */
+        if (mode == EXPO_MODE_BYPASS && effective_strength > 0.0f) {
+            mode = EXPO_MODE_BRIGHTEN;
+        }
+
+        /* NN 刚被重开但还没有可用 LUT 时，保留 params_dirty 重试，避免丢失"打开 NN"的意图。 */
+        if (params_dirty && effective_nn && !have_previous_lut && nn_retry < 10) {
+            nn_retry++;
+        } else {
+            params_dirty = 0;
+            nn_retry = 0;
+        }
+
+        /* Gamma/DRC/CLUT 按用途分流：当前模型只产 RGB 3D-LUT；曝光色调由规则 Gamma 负责。
+         * DRC/LDCI 保持 ISP 自动配置，避免用 RGB LUT 冒充动态范围局部参数。 */
+        if (isp_gamma_apply_tone(mode_to_tone(mode), effective_strength) != 0) {
             atomic_fetch_add(&metrics->transient_errors, 1);
             LOG_WARN("[ctrl] gamma update rejected; keeping previous ISP parameters");
             continue;
         }
 
+        /* 用户关闭 NN（或增强总开关）时清除上次残留的 CLUT，否则画面保持上次 AI 色彩。 */
+        if (!effective_nn && have_previous_lut) {
+            (void)isp_set_clut(ISP_BLOCK_OFF, APP_CLUT_UNITY_GAIN, APP_CLUT_UNITY_GAIN,
+                               APP_CLUT_UNITY_GAIN);
+            have_previous_lut = 0;
+            LOG_INFO("[ctrl] NN CLUT disabled by user; ISP CLUT -> identity");
+        }
+
         /* 已明显过曝时旁路 RGB LUT，避免模型继续推高 pre-CLUT 已裁剪区域。 */
-        if (ctx->nn_enabled && !ctx->health.degraded &&
+        if (effective_nn && !ctx->health.degraded &&
             cur.clip_high_pct > ctx->high_clip_guard) {
             (void)isp_set_clut(ISP_BLOCK_OFF, APP_CLUT_UNITY_GAIN, APP_CLUT_UNITY_GAIN,
                                APP_CLUT_UNITY_GAIN);
@@ -332,7 +400,7 @@ static void* control_worker(void* arg) {
             continue;
         }
 
-        if (ctx->nn_enabled && !ctx->health.degraded) {
+        if (effective_nn && !ctx->health.degraded) {
             ot_video_frame_info control_frame;
             infer_timing_t timing = {0};
             long transaction_start_us = now_us();
@@ -568,6 +636,11 @@ int main(int argc, char** argv) {
     control_ctx.strength = cfg.tone_strength;
     control_ctx.high_clip_guard = cfg.nn_high_clip_guard;
     control_ctx.nn_enabled = enable_nn;
+    control_ctx.enhancement_enabled = 1;  /* 默认全局增强开 */
+    control_ctx.tone_enabled = 1;         /* 默认色调开 */
+    control_ctx.drc_mode = 1;             /* auto */
+    control_ctx.drc_strength = 512;
+    control_ctx.ldci_mode = 1;            /* auto */
     control_ctx.metrics = &runtime_metrics;
     control_health_init(&control_ctx.health);
 

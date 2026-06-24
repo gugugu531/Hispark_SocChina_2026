@@ -73,7 +73,9 @@ if(ENABLE_SDK)
         USER_BIT_64 KERNEL_BIT_64 OT_ACODEC_TYPE_HDMI OT_ACODEC_TYPE_INNER
         OT_VQE_USE_STATIC_MODULE_REGISTER OT_AAC_USE_STATIC_MODULE_REGISTER OT_AAC_HAVE_SBR_LIB
         SENSOR0_TYPE=OV_OS08A20_MIPI_8M_30FPS_12BIT
-        SENSOR1_TYPE=SONY_IMX347_SLAVE_MIPI_4M_30FPS_12BIT)
+        SENSOR1_TYPE=SONY_IMX347_SLAVE_MIPI_4M_30FPS_12BIT
+        SENSOR2_TYPE=HISI_GS1860_MIPI_1M_30FPS_10BIT
+        SENSOR3_TYPE=HISI_GS1860_MIPI_1M_30FPS_10BIT)
     target_compile_options(vendor_comm PRIVATE -w) # 厂商代码不套用本仓库告警等级
 
     # 静态链接 MPP 库（与厂商 sample 一致）。vendor_comm 须排在 group 之前。
@@ -85,7 +87,8 @@ if(ENABLE_SDK)
         -l:libss_extend_stats.a -l:libss_drc.a -l:libss_ldci.a -l:libss_crb.a -l:libss_bnr.a
         -l:libss_calcflicker.a -l:libss_ir_auto.a -l:libss_acs.a
         -l:libsns_os08a20.a -l:libsns_os05a10_2l_slave.a -l:libsns_imx347_slave.a
-        -l:libsns_imx485.a -l:libsns_os04a10.a -l:libsns_os08b10.a
+        -l:libsns_imx347_2l_slave.a -l:libsns_imx485.a -l:libsns_os04a10.a -l:libsns_os08b10.a
+        -l:libsns_sc450ai.a -l:libsns_sc450ai_2l.a -l:libsns_gs1860.a
         -l:libss_voice_engine.a -l:libss_upvqe.a -l:libss_dnvqe.a
         -l:libaac_comm.a -l:libaac_enc.a -l:libaac_dec.a -l:libaac_sbr_enc.a -l:libaac_sbr_dec.a
         -Wl,--end-group

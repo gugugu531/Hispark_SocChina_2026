@@ -1,0 +1,40 @@
+[Unit]
+Description=SocChina privileged admin service
+Documentation=https://github.com/gugugu531/Hispark_SocChina_2026
+After=local-fs.target network.target socchina-web.service
+Wants=socchina-web.service
+StartLimitIntervalSec=0
+
+# 冷配置、systemd 和回滚需要特权。
+# 只允许固定操作白名单：config.validate/apply/rollback、hdmi.set、service.restart/status。
+# 禁止任意 shell 命令、用户指定任意 unit 或文件路径。
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/socchina-admin -config /etc/socchina/admin.conf
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=10
+KillSignal=SIGTERM
+SuccessExitStatus=0 143
+
+# socket 目录
+RuntimeDirectory=socchina
+RuntimeDirectoryMode=0750
+
+# admin 需要写入配置和操作 systemd
+ProtectSystem=full
+ReadWritePaths=/etc/socchina /var/lib/socchina /run/socchina
+NoNewPrivileges=yes
+PrivateTmp=yes
+RestrictAddressFamilies=AF_UNIX
+RestrictNamespaces=yes
+LockPersonality=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+RemoveIPC=yes
+SystemCallArchitectures=native
+MemoryDenyWriteExecute=yes
+
+[Install]
+WantedBy=multi-user.target

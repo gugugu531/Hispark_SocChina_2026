@@ -9,25 +9,40 @@
  *
  * 协议（一行一个 JSON，以 \n 分隔）：
  *   请求: {"id":N,"op":"status"}
- *         {"id":N,"op":"set","params":{"tone_strength":0.25,"nn_clut_enabled":true}}
- *   响应: {"id":N,"ok":true,"status":{...}}
+ *         {"id":N,"op":"set","tone_strength":0.25,"nn_clut_enabled":true,
+ *                 "nn_high_clip_guard":3.0,"enhancement_enabled":true,"tone_enabled":true,
+ *                 "drc_mode":"auto","drc_strength":512,"ldci_mode":"auto"}
+ *   响应: {"id":N,"ok":true,"pipeline":{...},"processing":{...},"outputs":{...}}
  *         {"id":N,"ok":true,"queued":true}
  *         {"id":N,"ok":false,"error":"..."}
  *
  * 同一参数的新值覆盖尚未被 control_worker 消费的旧值（last-write-wins per field）。
+ * 状态响应载荷由 main.c 的 status_fn 产出，键名与 web 控制台契约一致。
  */
 
 typedef struct {
     int   has_tone_strength;
-    float tone_strength;       /* 0.0 .. 1.0 */
+    float tone_strength;          /* 0.0 .. 1.0 */
     int   has_nn_clut_enabled;
     int   nn_clut_enabled;
     int   has_high_clip_guard;
-    float high_clip_guard;     /* > 0.0 */
+    float high_clip_guard;        /* 0.0 .. 100.0（高光裁剪百分比门限） */
+    int   has_enhancement_enabled;
+    int   enhancement_enabled;    /* 全局增强总开关 */
+    int   has_tone_enabled;
+    int   tone_enabled;           /* 规则 Gamma 色调开关 */
+    int   has_drc_mode;
+    int   drc_mode;               /* 0 off / 1 auto / 2 manual */
+    int   has_drc_strength;
+    int   drc_strength;           /* 0 .. 1023 */
+    int   has_ldci_mode;
+    int   ldci_mode;              /* 0 off / 1 auto */
 } app_ctrl_params_t;
 
-/* 由 main.c 提供：将当前 pipeline 状态序列化为完整 JSON 对象（含外层 {}）写入 buf。
- * buflen > 0。必须线程安全（从 socket 线程调用）。 */
+/* 由 main.c 提供：将当前 pipeline 状态序列化为 JSON 对象成员列表写入 buf，
+ * 不含最外层花括号（如 "pipeline":{...},"processing":{...},"outputs":{...}）；
+ * 由 handle_client 拼进 {"id":N,"ok":true,<此处>}。buflen > 0。
+ * 必须线程安全（从 socket 线程调用）。 */
 typedef void (*app_ctrl_status_fn)(void *opaque, char *buf, size_t buflen);
 
 typedef struct {

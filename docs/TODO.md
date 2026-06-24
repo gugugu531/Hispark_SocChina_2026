@@ -199,6 +199,14 @@ ISP 硬件 CLUT 全分辨率施加（零 NPU）」**。完整验证与代码见 
 
 ### 后续交互与 Web 控制台（不阻塞当前数据通路）
 
+> **整合状态（2026-06-24，`feat/control-console-integrated` 分支）**：W0–W4 与本地触摸菜单
+> 已在该分支完成代码整合并交叉编译通过（aarch64），主机单测全绿（含扩展后的
+> `test_app_control`）。传输层统一为 `board/src/app_control.c`（独立 socket 线程 + drain 槽 +
+> `app_ctrl_push` 供触摸进程内复用），控制环热更新语义（`refresh = params_dirty || feedback`、
+> BYPASS→BRIGHTEN 兜底、NN 重开重试、增强/色调两级总开关、关 NN 复位 CLUT）取自原 PR#8，
+> Web/admin/auth Go 层与 UI 取自原 PR#8 并已清除明文凭据与硬编码板卡地址。
+> **未完成：Go 层交叉构建与板端联机验收（W0–W4 端到端）、触摸菜单板端目视。** 合入 main 前需补。
+
 正式路线见 [web-console-architecture.md](web-console-architecture.md)，按以下阶段推进：
 
 1. **W0 视频 PoC**：MediaMTX 独占 loopback 内部 RTSP，无转码输出 WebRTC，LL-HLS 回退；

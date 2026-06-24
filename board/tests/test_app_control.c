@@ -50,9 +50,10 @@ static ssize_t transact(int fd, const char *req, char *buf, size_t cap) {
 
 /* ---- 状态回调 stub ---- */
 
+/* 新契约：status_fn 产出不含最外层花括号的成员列表，由 handle_client 拼进顶层对象。 */
 static void stub_status(void *opaque, char *buf, size_t buflen) {
     (void)opaque;
-    snprintf(buf, buflen, "{\"state\":\"RUNNING\",\"display_fps\":30.0}");
+    snprintf(buf, buflen, "\"pipeline\":{\"state\":\"RUNNING\",\"display_fps\":30.00}");
 }
 
 /* ---- worker 线程 ---- */
@@ -86,7 +87,7 @@ static void test_status(void) {
     ssize_t n = transact(fd, "{\"id\":1,\"op\":\"status\"}\n", resp, sizeof(resp));
     assert(n > 0);
     assert(strstr(resp, "\"ok\":true") != NULL);
-    assert(strstr(resp, "\"status\"") != NULL);
+    assert(strstr(resp, "\"pipeline\"") != NULL);   /* 顶层拼接，无 "status" 包裹 */
     assert(strstr(resp, "RUNNING") != NULL);
     assert(strstr(resp, "\"id\":1") != NULL);
     close(fd);
@@ -190,6 +191,50 @@ static void test_guard_validation(void) {
     puts("PASS test_guard_validation");
 }
 
+/* ---- テスト6: 扩展参数面（web 控制台契约）---- */
+
+static void test_extended_params(void) {
+    int fd = connect_sock();
+    assert(fd >= 0);
+
+    char resp[512];
+    /* nn_high_clip_guard 键（web 契约）+ 枚举 + 总开关 + drc_strength */
+    (void)transact(fd,
+        "{\"id\":7,\"op\":\"set\",\"nn_high_clip_guard\":3.5,"
+        "\"enhancement_enabled\":false,\"tone_enabled\":true,"
+        "\"drc_mode\":\"auto\",\"drc_strength\":700,\"ldci_mode\":\"off\"}\n",
+        resp, sizeof(resp));
+    close(fd);
+
+    app_ctrl_params_t p = {0};
+    int got = app_ctrl_drain(&p);
+    assert(got == 1);
+    assert(p.has_high_clip_guard == 1);                       /* nn_high_clip_guard 键被识别 */
+    assert(p.high_clip_guard > 3.49f && p.high_clip_guard < 3.51f);
+    assert(p.has_enhancement_enabled == 1 && p.enhancement_enabled == 0);
+    assert(p.has_tone_enabled == 1 && p.tone_enabled == 1);
+    assert(p.has_drc_mode == 1 && p.drc_mode == 1);           /* auto -> 1 */
+    assert(p.has_drc_strength == 1 && p.drc_strength == 700);
+    assert(p.has_ldci_mode == 1 && p.ldci_mode == 0);         /* off -> 0 */
+    puts("PASS test_extended_params");
+}
+
+/* ---- テスト7: clip guard 上限越界（> 100 拒绝）---- */
+
+static void test_guard_upper_bound(void) {
+    int fd = connect_sock();
+    assert(fd >= 0);
+    char resp[512];
+    (void)transact(fd,
+                   "{\"id\":8,\"op\":\"set\",\"nn_high_clip_guard\":150.0}\n",
+                   resp, sizeof(resp));
+    close(fd);
+    app_ctrl_params_t p = {0};
+    (void)app_ctrl_drain(&p);
+    assert(p.has_high_clip_guard == 0);  /* 150 > 100 被忽略 */
+    puts("PASS test_guard_upper_bound");
+}
+
 int main(void) {
     start_worker();
 
@@ -198,6 +243,8 @@ int main(void) {
     test_last_write_wins();
     test_unknown_op();
     test_guard_validation();
+    test_extended_params();
+    test_guard_upper_bound();
 
     stop_worker();
     puts("all app_control tests passed");

@@ -98,6 +98,31 @@ static int parse_bool(const char *json, const char *key, int *out)
     return -1;
 }
 
+/* 把 *p 中带 has_* 标记的字段并入挂起槽（last-write-wins per field）。
+ * set 分支与 app_ctrl_push 共用，集中维护字段集。 */
+static void merge_pending(const app_ctrl_params_t *p)
+{
+    pthread_mutex_lock(&g_ctrl.lock);
+    if (p->has_tone_strength)       { g_ctrl.pending_params.has_tone_strength = 1;
+                                      g_ctrl.pending_params.tone_strength = p->tone_strength; }
+    if (p->has_nn_clut_enabled)     { g_ctrl.pending_params.has_nn_clut_enabled = 1;
+                                      g_ctrl.pending_params.nn_clut_enabled = p->nn_clut_enabled; }
+    if (p->has_high_clip_guard)     { g_ctrl.pending_params.has_high_clip_guard = 1;
+                                      g_ctrl.pending_params.high_clip_guard = p->high_clip_guard; }
+    if (p->has_enhancement_enabled) { g_ctrl.pending_params.has_enhancement_enabled = 1;
+                                      g_ctrl.pending_params.enhancement_enabled = p->enhancement_enabled; }
+    if (p->has_tone_enabled)        { g_ctrl.pending_params.has_tone_enabled = 1;
+                                      g_ctrl.pending_params.tone_enabled = p->tone_enabled; }
+    if (p->has_drc_mode)            { g_ctrl.pending_params.has_drc_mode = 1;
+                                      g_ctrl.pending_params.drc_mode = p->drc_mode; }
+    if (p->has_drc_strength)        { g_ctrl.pending_params.has_drc_strength = 1;
+                                      g_ctrl.pending_params.drc_strength = p->drc_strength; }
+    if (p->has_ldci_mode)           { g_ctrl.pending_params.has_ldci_mode = 1;
+                                      g_ctrl.pending_params.ldci_mode = p->ldci_mode; }
+    g_ctrl.pending = 1;
+    pthread_mutex_unlock(&g_ctrl.lock);
+}
+
 /* ---- 逐字节读行（控制通路频率极低，开销可忽略）---- */
 
 static ssize_t read_line(int fd, char *buf, size_t cap)
@@ -149,16 +174,20 @@ static void handle_client(int fd)
             if (g_ctrl.cfg.status_fn != NULL) {
                 g_ctrl.cfg.status_fn(g_ctrl.cfg.status_opaque, body, sizeof(body));
             }
+            /* status_fn 产出不含外层花括号的成员列表，此处拼进顶层对象，
+             * 与 web 控制台契约一致（pipeline/processing/outputs 在顶层）。 */
             snprintf(resp, sizeof(resp),
-                     "{\"id\":%llu,\"ok\":true,\"status\":%s}\n",
+                     "{\"id\":%llu,\"ok\":true%s%s}\n",
                      (unsigned long long)req_id,
-                     (body[0] != '\0') ? body : "{}");
+                     (body[0] != '\0') ? "," : "",
+                     (body[0] != '\0') ? body : "");
             send_str(fd, resp);
 
         } else if (strcmp(op, "set") == 0) {
             app_ctrl_params_t p = {0};
             float fv;
             int   iv;
+            char  ev[16];
 
             if (parse_float(line, "\"tone_strength\"", &fv) == 0 &&
                 fv >= 0.0f && fv <= 1.0f) {
@@ -169,35 +198,54 @@ static void handle_client(int fd)
                 p.has_nn_clut_enabled = 1;
                 p.nn_clut_enabled     = iv;
             }
-            if (parse_float(line, "\"high_clip_guard\"", &fv) == 0 && fv > 0.0f) {
+            /* clip guard：web 控制台发 "nn_high_clip_guard"，兼容旧键 "high_clip_guard" */
+            if ((parse_float(line, "\"nn_high_clip_guard\"", &fv) == 0 ||
+                 parse_float(line, "\"high_clip_guard\"", &fv) == 0) &&
+                fv >= 0.0f && fv <= 100.0f) {
                 p.has_high_clip_guard = 1;
                 p.high_clip_guard     = fv;
             }
+            if (parse_bool(line, "\"enhancement_enabled\"", &iv) == 0) {
+                p.has_enhancement_enabled = 1;
+                p.enhancement_enabled     = iv;
+            }
+            if (parse_bool(line, "\"tone_enabled\"", &iv) == 0) {
+                p.has_tone_enabled = 1;
+                p.tone_enabled     = iv;
+            }
+            if (parse_string(line, "\"drc_mode\"", ev, sizeof(ev)) == 0) {
+                int m = -1;
+                if      (strcmp(ev, "off")    == 0) m = 0;
+                else if (strcmp(ev, "auto")   == 0) m = 1;
+                else if (strcmp(ev, "manual") == 0) m = 2;
+                if (m >= 0) { p.has_drc_mode = 1; p.drc_mode = m; }
+            }
+            if (parse_float(line, "\"drc_strength\"", &fv) == 0 &&
+                fv >= 0.0f && fv <= 1023.0f) {
+                p.has_drc_strength = 1;
+                p.drc_strength     = (int)fv;
+            }
+            if (parse_string(line, "\"ldci_mode\"", ev, sizeof(ev)) == 0) {
+                int m = -1;
+                if      (strcmp(ev, "off")  == 0) m = 0;
+                else if (strcmp(ev, "auto") == 0) m = 1;
+                if (m >= 0) { p.has_ldci_mode = 1; p.ldci_mode = m; }
+            }
 
-            pthread_mutex_lock(&g_ctrl.lock);
-            if (p.has_tone_strength) {
-                g_ctrl.pending_params.has_tone_strength = 1;
-                g_ctrl.pending_params.tone_strength     = p.tone_strength;
-            }
-            if (p.has_nn_clut_enabled) {
-                g_ctrl.pending_params.has_nn_clut_enabled = 1;
-                g_ctrl.pending_params.nn_clut_enabled     = p.nn_clut_enabled;
-            }
-            if (p.has_high_clip_guard) {
-                g_ctrl.pending_params.has_high_clip_guard = 1;
-                g_ctrl.pending_params.high_clip_guard     = p.high_clip_guard;
-            }
-            g_ctrl.pending = 1;
-            pthread_mutex_unlock(&g_ctrl.lock);
+            merge_pending(&p);
 
             snprintf(resp, sizeof(resp),
                      "{\"id\":%llu,\"ok\":true,\"queued\":true}\n",
                      (unsigned long long)req_id);
             send_str(fd, resp);
-            LOG_INFO("[app_ctrl] set queued: strength=%s nn=%s guard=%s",
-                     p.has_tone_strength    ? "yes" : "-",
-                     p.has_nn_clut_enabled  ? "yes" : "-",
-                     p.has_high_clip_guard  ? "yes" : "-");
+            LOG_INFO("[app_ctrl] set queued: strength=%s nn=%s guard=%s enh=%s tone=%s drc=%s ldci=%s",
+                     p.has_tone_strength       ? "yes" : "-",
+                     p.has_nn_clut_enabled     ? "yes" : "-",
+                     p.has_high_clip_guard     ? "yes" : "-",
+                     p.has_enhancement_enabled ? "yes" : "-",
+                     p.has_tone_enabled        ? "yes" : "-",
+                     p.has_drc_mode            ? "yes" : "-",
+                     p.has_ldci_mode           ? "yes" : "-");
 
         } else {
             snprintf(resp, sizeof(resp),
@@ -298,21 +346,7 @@ int app_ctrl_drain(app_ctrl_params_t *out)
 void app_ctrl_push(const app_ctrl_params_t *p)
 {
     if (p == NULL) return;
-    pthread_mutex_lock(&g_ctrl.lock);
-    if (p->has_tone_strength) {
-        g_ctrl.pending_params.has_tone_strength = 1;
-        g_ctrl.pending_params.tone_strength     = p->tone_strength;
-    }
-    if (p->has_nn_clut_enabled) {
-        g_ctrl.pending_params.has_nn_clut_enabled = 1;
-        g_ctrl.pending_params.nn_clut_enabled     = p->nn_clut_enabled;
-    }
-    if (p->has_high_clip_guard) {
-        g_ctrl.pending_params.has_high_clip_guard = 1;
-        g_ctrl.pending_params.high_clip_guard     = p->high_clip_guard;
-    }
-    g_ctrl.pending = 1;
-    pthread_mutex_unlock(&g_ctrl.lock);
+    merge_pending(p);
 }
 
 void app_ctrl_stop(void)
