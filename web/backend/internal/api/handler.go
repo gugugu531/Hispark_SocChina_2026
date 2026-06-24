@@ -83,8 +83,8 @@ func (h *Handler) RegisterRoutes() {
 	// W3 热控制
 	http.HandleFunc("/api/v1/control", h.controlHandler)
 	http.HandleFunc("/api/v1/presets/", h.presetsHandler)
-		http.HandleFunc("/api/v1/defaults", h.defaultsHandler)
-		http.HandleFunc("/api/v1/service/restart", h.serviceRestartHandler)
+	http.HandleFunc("/api/v1/defaults", h.defaultsHandler)
+	http.HandleFunc("/api/v1/service/restart", h.serviceRestartHandler)
 }
 
 // StartBroadcast begins the periodic SSE broadcast loop. Must be called
@@ -350,6 +350,7 @@ func (h *Handler) hdmiToggle(w http.ResponseWriter, r *http.Request) {
 	}
 	writeJSON(w, http.StatusOK, map[string]interface{}{"hdmi": body.Enable})
 }
+
 // --- W3 hot-control handlers ---
 
 func (h *Handler) controlHandler(w http.ResponseWriter, r *http.Request) {
@@ -452,4 +453,3 @@ func (h *Handler) serviceRestartHandler(w http.ResponseWriter, r *http.Request) 
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"status": "service restarting"})
 }
-

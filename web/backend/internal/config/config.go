@@ -8,13 +8,13 @@ import (
 
 // Cfg holds the web console configuration.
 type Cfg struct {
-	ListenAddr      string
-	StaticDir       string
-	AppControlSock  string
-	AdminSock       string
-	MediamtxAPI     string
-	HLSOrigin       string // MediaMTX LL-HLS origin, e.g. http://127.0.0.1:8888
-	SSEIntervalSec  int
+	ListenAddr     string
+	StaticDir      string
+	AppControlSock string
+	AdminSock      string
+	MediamtxAPI    string
+	HLSOrigin      string // MediaMTX LL-HLS origin, e.g. http://127.0.0.1:8888
+	SSEIntervalSec int
 }
 
 // Load reads a simple KEY=VALUE config file. Returns usable defaults when the file

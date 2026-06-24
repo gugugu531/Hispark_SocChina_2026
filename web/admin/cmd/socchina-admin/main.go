@@ -29,10 +29,10 @@ type request struct {
 }
 
 type response struct {
-	ID      int         `json:"id"`
-	OK      bool        `json:"ok"`
-	Error   string      `json:"error,omitempty"`
-	Result  interface{} `json:"result,omitempty"`
+	ID     int         `json:"id"`
+	OK     bool        `json:"ok"`
+	Error  string      `json:"error,omitempty"`
+	Result interface{} `json:"result,omitempty"`
 }
 
 var engine = configtx.New()
@@ -181,4 +181,3 @@ func marshalParams(p map[string]interface{}) []byte {
 	b, _ := json.Marshal(p)
 	return b
 }
-

@@ -12,11 +12,11 @@ import (
 
 // PathInfo mirrors a single path entry from the MediaMTX API (v3).
 type PathInfo struct {
-	Name     string   `json:"name"`
-	Ready    bool     `json:"ready"`
-	Tracks   []string `json:"tracks"`
-	BytesRec int64    `json:"bytesReceived"`
-	BytesOut int64    `json:"bytesSent"`
+	Name     string        `json:"name"`
+	Ready    bool          `json:"ready"`
+	Tracks   []string      `json:"tracks"`
+	BytesRec int64         `json:"bytesReceived"`
+	BytesOut int64         `json:"bytesSent"`
 	Readers  []interface{} `json:"readers"`
 }
 

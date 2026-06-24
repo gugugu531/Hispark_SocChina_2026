@@ -41,7 +41,14 @@ else
     echo "[build-web] 信息: web/admin/go.mod 不存在，跳过 socchina-admin（尚未实现）"
 fi
 
-if [ -x "${BUILD_DIR}/socchina-web" ] || [ -x "${BUILD_DIR}/socchina-admin" ]; then
+echo "[build-web] 构建 socchina-auth (ARM64)..."
+if [ -f "${REPO_ROOT}/web/authproxy/go.mod" ]; then
+    (cd "${REPO_ROOT}/web/authproxy" && go build -ldflags "${LDFLAGS}" -o "${BUILD_DIR}/socchina-auth" .)
+else
+    echo "[build-web] 信息: web/authproxy/go.mod 不存在，跳过 socchina-auth（尚未实现）"
+fi
+
+if [ -x "${BUILD_DIR}/socchina-web" ] || [ -x "${BUILD_DIR}/socchina-admin" ] || [ -x "${BUILD_DIR}/socchina-auth" ]; then
     file "${BUILD_DIR}"/* 2>/dev/null || true
     echo "[build-web] 完成，产物目录：${BUILD_DIR}"
 else

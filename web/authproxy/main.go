@@ -7,7 +7,8 @@
 //   - 反向代理到后端 web 控制台
 //
 // 用法：SOCCHINA_PASS=<密码> socchina-auth [-addr :8080] [-backend http://127.0.0.1:8090]
-//   登录密码必须经 -pass 或环境变量 SOCCHINA_PASS 提供，无硬编码默认值。
+//
+//	登录密码必须经 -pass 或环境变量 SOCCHINA_PASS 提供，无硬编码默认值。
 package main
 
 import (
@@ -121,7 +122,9 @@ func main() {
 			var body map[string]string
 			json.NewDecoder(r.Body).Decode(&body)
 			params := map[string]interface{}{}
-			for k, v := range body { params[k] = v }
+			for k, v := range body {
+				params[k] = v
+			}
 			w.Write(adminCall("config.validate", params))
 		default:
 			w.Write([]byte(`{"error":"method not allowed"}`))
@@ -132,7 +135,9 @@ func main() {
 		var body map[string]string
 		json.NewDecoder(r.Body).Decode(&body)
 		params := map[string]interface{}{}
-		for k, v := range body { params[k] = v }
+		for k, v := range body {
+			params[k] = v
+		}
 		w.Write(adminCall("config.apply", params))
 	})
 	http.HandleFunc("/api/v1/config/rollback", func(w http.ResponseWriter, r *http.Request) {
@@ -234,8 +239,8 @@ func main() {
 
 // --- rate limiter ---
 var (
-	rateMap   = map[string]*rateBucket{}
-	rateMu    sync.Mutex
+	rateMap = map[string]*rateBucket{}
+	rateMu  sync.Mutex
 )
 
 type rateBucket struct {
@@ -274,7 +279,9 @@ func adminCall(op string, params map[string]interface{}) []byte {
 	conn.Write(append(b, '\n'))
 	var buf [4096]byte
 	n, _ := conn.Read(buf[:])
-	if n > 0 && buf[n-1] == '\n' { n-- }
+	if n > 0 && buf[n-1] == '\n' {
+		n--
+	}
 	return buf[:n]
 }
 

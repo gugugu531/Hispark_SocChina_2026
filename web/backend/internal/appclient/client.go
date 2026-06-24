@@ -198,11 +198,11 @@ func (c *Client) SendControl(params map[string]interface{}) error {
 // PresetDefs maps preset names to parameter sets (§5.3).
 // Includes all documented hot params; C server ignores unsupported keys silently.
 var PresetDefs = map[string]map[string]interface{}{
-	"stable": {"enhancement_enabled": true,  "tone_enabled": true,  "tone_strength": 0.25, "nn_clut_enabled": false, "nn_high_clip_guard": 3,   "drc_mode": "auto", "drc_strength": 512, "ldci_mode": "auto"},
-	"dark":   {"enhancement_enabled": true,  "tone_enabled": true,  "tone_strength": 0.60, "nn_clut_enabled": true,  "nn_high_clip_guard": 15,  "drc_mode": "auto", "drc_strength": 512, "ldci_mode": "auto"},
-	"wdr":    {"enhancement_enabled": true,  "tone_enabled": true,  "tone_strength": 0.25, "nn_clut_enabled": true,  "nn_high_clip_guard": 8,   "drc_mode": "auto", "drc_strength": 512, "ldci_mode": "auto"},
-	"bypass": {"enhancement_enabled": false, "tone_enabled": false, "tone_strength": 0.0,  "nn_clut_enabled": false, "nn_high_clip_guard": 3,   "drc_mode": "off",  "drc_strength": 0,   "ldci_mode": "off"},
-	"custom": {"enhancement_enabled": true,  "tone_enabled": true,  "tone_strength": 0.25, "nn_clut_enabled": true,  "nn_high_clip_guard": 3,   "drc_mode": "auto", "drc_strength": 512, "ldci_mode": "auto"},
+	"stable": {"enhancement_enabled": true, "tone_enabled": true, "tone_strength": 0.25, "nn_clut_enabled": false, "nn_high_clip_guard": 3, "drc_mode": "auto", "drc_strength": 512, "ldci_mode": "auto"},
+	"dark":   {"enhancement_enabled": true, "tone_enabled": true, "tone_strength": 0.60, "nn_clut_enabled": true, "nn_high_clip_guard": 15, "drc_mode": "auto", "drc_strength": 512, "ldci_mode": "auto"},
+	"wdr":    {"enhancement_enabled": true, "tone_enabled": true, "tone_strength": 0.25, "nn_clut_enabled": true, "nn_high_clip_guard": 8, "drc_mode": "auto", "drc_strength": 512, "ldci_mode": "auto"},
+	"bypass": {"enhancement_enabled": false, "tone_enabled": false, "tone_strength": 0.0, "nn_clut_enabled": false, "nn_high_clip_guard": 3, "drc_mode": "off", "drc_strength": 0, "ldci_mode": "off"},
+	"custom": {"enhancement_enabled": true, "tone_enabled": true, "tone_strength": 0.25, "nn_clut_enabled": true, "nn_high_clip_guard": 3, "drc_mode": "auto", "drc_strength": 512, "ldci_mode": "auto"},
 }
 
 var (

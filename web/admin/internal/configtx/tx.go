@@ -16,15 +16,15 @@ import (
 )
 
 const (
-	runtimeConf   = "/etc/socchina/runtime.conf"
-	configDir     = "/var/lib/socchina/config"
-	lastGoodConf  = "/var/lib/socchina/config/last-good.conf"
-	previousConf  = "/var/lib/socchina/config/previous.conf"
-	pendingConf   = "/var/lib/socchina/config/runtime.conf.pending"
-	generationF   = "/var/lib/socchina/config/generation"
-	startCmd      = "/usr/local/sbin/socchina-start"
-	healthCmd     = "/usr/local/bin/socchina-health"
-	serviceUnit   = "socchina-stream.service"
+	runtimeConf  = "/etc/socchina/runtime.conf"
+	configDir    = "/var/lib/socchina/config"
+	lastGoodConf = "/var/lib/socchina/config/last-good.conf"
+	previousConf = "/var/lib/socchina/config/previous.conf"
+	pendingConf  = "/var/lib/socchina/config/runtime.conf.pending"
+	generationF  = "/var/lib/socchina/config/generation"
+	startCmd     = "/usr/local/sbin/socchina-start"
+	healthCmd    = "/usr/local/bin/socchina-health"
+	serviceUnit  = "socchina-stream.service"
 )
 
 // Raw is a key=value snapshot of runtime.conf.
@@ -53,14 +53,14 @@ func (e *Engine) Validate(candidate Raw) error {
 
 // Apply executes a full cold-config transaction:
 //
-//	1. Validate
-//	2. Write pending
-//	3. Check config
-//	4. Backup current → last-good
-//	5. Atomic rename pending → runtime.conf
-//	6. Restart service
-//	7. Wait for health
-//	8. On failure: rollback
+//  1. Validate
+//  2. Write pending
+//  3. Check config
+//  4. Backup current → last-good
+//  5. Atomic rename pending → runtime.conf
+//  6. Restart service
+//  7. Wait for health
+//  8. On failure: rollback
 func (e *Engine) Apply(candidate Raw) error {
 	e.mu.Lock()
 	defer e.mu.Unlock()
