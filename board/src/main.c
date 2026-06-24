@@ -550,6 +550,7 @@ int main(int argc, char** argv) {
     int ctrl_up = 0, stream_thread_up = 0, app_ctrl_up = 0;
     unsigned in_w = 0, in_h = 0;
     long t0 = 0, t_last_log;
+    long t_last_menu = 0;  /* 菜单送显节流时间戳 */
     long run_elapsed_ms = 0;
     pthread_t ctrl_tid, stream_tid, app_ctrl_tid;
     app_control_ctx_t control_ctx = {0};
@@ -563,8 +564,11 @@ int main(int argc, char** argv) {
     /* Touch menu */
     ot_pic_buf_attr     menu_buf_attr  = {0};
     ot_vb_calc_cfg      menu_calc_cfg  = {0};
-    ot_vb_blk           menu_blk       = OT_VB_INVALID_HANDLE;
-    ot_video_frame_info menu_fi        = {0};
+    /* 双缓冲：VO 显示其中一块时渲染另一块，避免边显示边重写造成撕裂（RESET 行附近的晃动黑条） */
+    ot_vb_blk           menu_blk[2]    = {OT_VB_INVALID_HANDLE, OT_VB_INVALID_HANDLE};
+    ot_video_frame_info menu_fi[2]     = {{0}, {0}};
+    td_u8              *menu_virt[2]   = {TD_NULL, TD_NULL};
+    int                 menu_buf_idx   = 0;
     int touch_fd    = -1;
     int menu_active = 0;
     int prev_pressed = 0;
@@ -671,12 +675,8 @@ int main(int argc, char** argv) {
     CHECK_RET_GOTO(sample_comm_sys_init_with_vb_supplement(&vb_cfg, OT_VB_SUPPLEMENT_BNR_MOT_MASK), cleanup);
     sys_up = 1;
 
-    /* Allocate one persistent VB block for the touch menu overlay frame */
+    /* Allocate two persistent VB blocks for the touch menu overlay (double buffer) */
     if (cfg.enable_display) {
-        td_phys_addr_t mphys;
-        td_u8 *mvirt;
-        ot_video_frame *mf;
-
         menu_buf_attr.width        = DISPLAY_WIDTH;
         menu_buf_attr.height       = DISPLAY_HEIGHT;
         menu_buf_attr.align        = OT_DEFAULT_ALIGN;
@@ -685,44 +685,66 @@ int main(int argc, char** argv) {
         menu_buf_attr.compress_mode = OT_COMPRESS_MODE_NONE;
         ot_common_get_pic_buf_cfg(&menu_buf_attr, &menu_calc_cfg);
 
-        menu_blk = ss_mpi_vb_get_blk(OT_VB_INVALID_POOL_ID, menu_calc_cfg.vb_size, TD_NULL);
-        if (menu_blk == OT_VB_INVALID_HANDLE) {
-            LOG_WARN("[menu] no VB block for menu frame; touch menu disabled");
-        } else {
-            mphys = ss_mpi_vb_handle_to_phys_addr(menu_blk);
+        for (int i = 0; i < 2; i++) {
+            td_phys_addr_t mphys;
+            td_u8 *mvirt;
+            ot_video_frame *mf;
+
+            menu_blk[i] = ss_mpi_vb_get_blk(OT_VB_INVALID_POOL_ID, menu_calc_cfg.vb_size, TD_NULL);
+            if (menu_blk[i] == OT_VB_INVALID_HANDLE) {
+                LOG_WARN("[menu] no VB block for menu frame %d; touch menu disabled", i);
+                break;
+            }
+            mphys = ss_mpi_vb_handle_to_phys_addr(menu_blk[i]);
             mvirt = (td_u8 *)ss_mpi_sys_mmap(mphys, menu_calc_cfg.vb_size);
             if (mphys == 0 || mvirt == TD_NULL) {
-                LOG_WARN("[menu] VB mmap failed; touch menu disabled");
-                (void)ss_mpi_vb_release_blk(menu_blk);
-                menu_blk = OT_VB_INVALID_HANDLE;
-            } else {
-                memset(mvirt, 0, menu_calc_cfg.vb_size);
-                menu_fi.mod_id  = OT_ID_USER;
-                menu_fi.pool_id = ss_mpi_vb_handle_to_pool_id(menu_blk);
-                mf = &menu_fi.video_frame;
-                mf->width            = DISPLAY_WIDTH;
-                mf->height           = DISPLAY_HEIGHT;
-                mf->field            = OT_VIDEO_FIELD_FRAME;
-                mf->pixel_format     = OT_PIXEL_FORMAT_YVU_SEMIPLANAR_420;
-                mf->video_format     = OT_VIDEO_FORMAT_LINEAR;
-                mf->compress_mode    = OT_COMPRESS_MODE_NONE;
-                mf->dynamic_range    = OT_DYNAMIC_RANGE_SDR8;
-                mf->color_gamut      = OT_COLOR_GAMUT_BT601;
-                mf->header_stride[0] = menu_calc_cfg.head_stride;
-                mf->header_stride[1] = menu_calc_cfg.head_stride;
-                mf->header_phys_addr[0] = mphys;
-                mf->header_phys_addr[1] = mphys + menu_calc_cfg.head_y_size;
-                mf->header_virt_addr[0] = mvirt;
-                mf->header_virt_addr[1] = mvirt + menu_calc_cfg.head_y_size;
-                mf->stride[0]        = menu_calc_cfg.main_stride;
-                mf->stride[1]        = menu_calc_cfg.main_stride;
-                mf->phys_addr[0]     = mphys + menu_calc_cfg.head_size;
-                mf->phys_addr[1]     = mf->phys_addr[0] + menu_calc_cfg.main_y_size;
-                mf->virt_addr[0]     = mvirt + menu_calc_cfg.head_size;
-                mf->virt_addr[1]     = mvirt + menu_calc_cfg.head_size + menu_calc_cfg.main_y_size;
-                LOG_INFO("[menu] VB block ready: vb_size=%u main_stride=%u head_size=%u",
-                         menu_calc_cfg.vb_size, menu_calc_cfg.main_stride, menu_calc_cfg.head_size);
+                LOG_WARN("[menu] VB mmap failed for frame %d; touch menu disabled", i);
+                (void)ss_mpi_vb_release_blk(menu_blk[i]);
+                menu_blk[i] = OT_VB_INVALID_HANDLE;
+                break;
             }
+            menu_virt[i] = mvirt;
+            memset(mvirt, 0, menu_calc_cfg.vb_size);
+            menu_fi[i].mod_id  = OT_ID_USER;
+            menu_fi[i].pool_id = ss_mpi_vb_handle_to_pool_id(menu_blk[i]);
+            mf = &menu_fi[i].video_frame;
+            mf->width            = DISPLAY_WIDTH;
+            mf->height           = DISPLAY_HEIGHT;
+            mf->field            = OT_VIDEO_FIELD_FRAME;
+            mf->pixel_format     = OT_PIXEL_FORMAT_YVU_SEMIPLANAR_420;
+            mf->video_format     = OT_VIDEO_FORMAT_LINEAR;
+            mf->compress_mode    = OT_COMPRESS_MODE_NONE;
+            mf->dynamic_range    = OT_DYNAMIC_RANGE_SDR8;
+            mf->color_gamut      = OT_COLOR_GAMUT_BT601;
+            mf->header_stride[0] = menu_calc_cfg.head_stride;
+            mf->header_stride[1] = menu_calc_cfg.head_stride;
+            mf->header_phys_addr[0] = mphys;
+            mf->header_phys_addr[1] = mphys + menu_calc_cfg.head_y_size;
+            mf->header_virt_addr[0] = mvirt;
+            mf->header_virt_addr[1] = mvirt + menu_calc_cfg.head_y_size;
+            mf->stride[0]        = menu_calc_cfg.main_stride;
+            mf->stride[1]        = menu_calc_cfg.main_stride;
+            mf->phys_addr[0]     = mphys + menu_calc_cfg.head_size;
+            mf->phys_addr[1]     = mf->phys_addr[0] + menu_calc_cfg.main_y_size;
+            mf->virt_addr[0]     = mvirt + menu_calc_cfg.head_size;
+            mf->virt_addr[1]     = mvirt + menu_calc_cfg.head_size + menu_calc_cfg.main_y_size;
+        }
+        /* 需要两块缓冲都就绪才启用双缓冲菜单；否则回收已分配的并禁用菜单 */
+        if (menu_blk[0] == OT_VB_INVALID_HANDLE || menu_blk[1] == OT_VB_INVALID_HANDLE) {
+            for (int i = 0; i < 2; i++) {
+                if (menu_virt[i] != TD_NULL) {
+                    (void)ss_mpi_sys_munmap((td_void *)menu_fi[i].video_frame.header_virt_addr[0],
+                                            menu_calc_cfg.vb_size);
+                    menu_virt[i] = TD_NULL;
+                }
+                if (menu_blk[i] != OT_VB_INVALID_HANDLE) {
+                    (void)ss_mpi_vb_release_blk(menu_blk[i]);
+                    menu_blk[i] = OT_VB_INVALID_HANDLE;
+                }
+            }
+        } else {
+            LOG_INFO("[menu] VB double-buffer ready: vb_size=%u main_stride=%u head_size=%u",
+                     menu_calc_cfg.vb_size, menu_calc_cfg.main_stride, menu_calc_cfg.head_size);
         }
     }
 
@@ -746,7 +768,7 @@ int main(int argc, char** argv) {
             goto cleanup;
         }
         disp_up = 1;
-        if (menu_blk != OT_VB_INVALID_HANDLE) {
+        if (menu_blk[0] != OT_VB_INVALID_HANDLE) {
             touch_fd = touch_open("/dev/input/event0", DISPLAY_WIDTH, DISPLAY_HEIGHT);
             if (touch_fd < 0)
                 LOG_WARN("[menu] touch open failed; touch menu disabled");
@@ -833,7 +855,7 @@ int main(int argc, char** argv) {
         }
 
         /* 非阻塞触摸轮询（每帧头部运行，菜单开关均需要） */
-        if (touch_fd >= 0 && menu_blk != OT_VB_INVALID_HANDLE) {
+        if (touch_fd >= 0 && menu_blk[0] != OT_VB_INVALID_HANDLE) {
             touch_event_t tev;
             while (touch_poll(touch_fd, &tev) == 1) {
                 if (tev.pressed && !prev_pressed) {  /* 仅响应上升沿 */
@@ -902,8 +924,20 @@ int main(int argc, char** argv) {
         }
 
         /* 菜单覆盖路径：渲染菜单帧并直接送到 VO，跳过 VPSS */
-        if (menu_active && menu_blk != OT_VB_INVALID_HANDLE) {
+        if (menu_active && menu_blk[0] != OT_VB_INVALID_HANDLE) {
             menu_state_t ms;
+            ot_video_frame_info *mfi;
+            /* 节流到相机同款 ~30fps：菜单以 60fps 自旋送显时 VO 帧交换与面板刷新拍频，
+             * 撕裂缝在垂直方向滚动（滚动黑条）。按显示帧间隔限速即可消除，相机路径同速率已验证无撕裂。 */
+            long nowm = now_ms();
+            long menu_interval_ms = 1000L / (cfg.target_fps ? (long)cfg.target_fps : 30L);
+            if (nowm - t_last_menu < menu_interval_ms) {
+                usleep(2000);  /* 让出 CPU；触摸已在上方轮询，下一轮再判 */
+                continue;
+            }
+            t_last_menu = nowm;
+            /* 渲染到 VO 当前未显示的那一块（back buffer），发送后再翻转，避免边显示边重写的撕裂 */
+            mfi = &menu_fi[menu_buf_idx];
             unsigned sc = runtime_metrics.timing_samples < APP_TIMING_SAMPLES
                           ? runtime_metrics.timing_samples : APP_TIMING_SAMPLES;
             long el = now_ms() - t0;
@@ -918,14 +952,15 @@ int main(int argc, char** argv) {
             ms.infer_p95   = percentile95(runtime_metrics.infer_samples, sc);
             ms.stream_frames = (unsigned long long)atomic_load(&runtime_metrics.stream_frames);
             ms.lut_updates   = (unsigned long long)atomic_load(&runtime_metrics.lut_updates);
-            menu_render_into((uint8_t *)menu_fi.video_frame.virt_addr[0],
-                             (uint8_t *)menu_fi.video_frame.virt_addr[1],
-                             (int)menu_fi.video_frame.stride[0], &ms);
-            (void)ss_mpi_sys_flush_cache(menu_fi.video_frame.phys_addr[0],
-                                         (td_void *)menu_fi.video_frame.virt_addr[0],
+            menu_render_into((uint8_t *)mfi->video_frame.virt_addr[0],
+                             (uint8_t *)mfi->video_frame.virt_addr[1],
+                             (int)mfi->video_frame.stride[0], &ms);
+            (void)ss_mpi_sys_flush_cache(mfi->video_frame.phys_addr[0],
+                                         (td_void *)mfi->video_frame.virt_addr[0],
                                          menu_calc_cfg.main_size);
-            if (display_send_frame(&menu_fi, -1) == 0) {
+            if (display_send_frame(mfi, -1) == 0) {
                 atomic_fetch_add(&runtime_metrics.display_frames, 1);
+                menu_buf_idx ^= 1;  /* 翻转到另一块，下一帧渲染 back buffer */
             } else {
                 atomic_fetch_add(&runtime_metrics.display_drops, 1);
             }
@@ -994,11 +1029,13 @@ cleanup:
         CHECK_RET(stream_deinit());
     }
     touch_close(touch_fd);
-    if (menu_blk != OT_VB_INVALID_HANDLE) {
-        (void)ss_mpi_sys_munmap(
-            (td_void *)menu_fi.video_frame.header_virt_addr[0],
-            menu_calc_cfg.vb_size);
-        (void)ss_mpi_vb_release_blk(menu_blk);
+    for (int i = 0; i < 2; i++) {
+        if (menu_blk[i] != OT_VB_INVALID_HANDLE) {
+            (void)ss_mpi_sys_munmap(
+                (td_void *)menu_fi[i].video_frame.header_virt_addr[0],
+                menu_calc_cfg.vb_size);
+            (void)ss_mpi_vb_release_blk(menu_blk[i]);
+        }
     }
     if (disp_up) {
         CHECK_RET(display_deinit());
