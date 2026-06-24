@@ -17,35 +17,58 @@ file(GLOB LIB_SRC CONFIGURE_DEPENDS src/*.c)
 list(REMOVE_ITEM LIB_SRC "${CMAKE_CURRENT_SOURCE_DIR}/src/main.c")
 add_library(socchina STATIC ${LIB_SRC})
 target_include_directories(socchina PUBLIC include)
+# rtsp_server 需要 pthread（SDK-free 和 SDK 模式均需）
+find_package(Threads REQUIRED)
+target_link_libraries(socchina PUBLIC Threads::Threads)
 
 if(ENABLE_SDK)
     if(NOT SS928_SDK_ROOT)
         message(FATAL_ERROR "ENABLE_SDK=ON 时必须设置 -DSS928_SDK_ROOT=<SDK 根目录>")
     endif()
-    # 兼容两种 SDK 目录布局：<root>/include[/hisilicon] 与 <root>/lib[/linux/hisilicon]
-    set(SDK_INC_DIRS "${SS928_SDK_ROOT}/include")
+    # 兼容 SDK 目录布局差异：
+    #   V1: <root>/include[/hisilicon], <root>/lib[/linux/hisilicon], <root>/src/common
+    #   V2: <root>/out/include,         <root>/out/lib,               <root>/sample/common
+    if(EXISTS "${SS928_SDK_ROOT}/out/include")
+        set(SDK_INC_DIRS "${SS928_SDK_ROOT}/out/include")
+    else()
+        set(SDK_INC_DIRS "${SS928_SDK_ROOT}/include")
+    endif()
     if(EXISTS "${SS928_SDK_ROOT}/include/hisilicon")
         list(APPEND SDK_INC_DIRS "${SS928_SDK_ROOT}/include/hisilicon")
     endif()
     if(EXISTS "${SS928_SDK_ROOT}/include/hisilicon/npu")
-        list(APPEND SDK_INC_DIRS "${SS928_SDK_ROOT}/include/hisilicon/npu") # ACL（infer.c）
+        list(APPEND SDK_INC_DIRS "${SS928_SDK_ROOT}/include/hisilicon/npu")
     endif()
-    set(SDK_LIB_DIRS "${SS928_SDK_ROOT}/lib")
+    # V2 SDK: NPU headers in out/include/npu
+    if(EXISTS "${SS928_SDK_ROOT}/out/include/npu")
+        list(APPEND SDK_INC_DIRS "${SS928_SDK_ROOT}/out/include/npu")
+    endif()
+    if(EXISTS "${SS928_SDK_ROOT}/out/lib")
+        set(SDK_LIB_DIRS "${SS928_SDK_ROOT}/out/lib")
+    else()
+        set(SDK_LIB_DIRS "${SS928_SDK_ROOT}/lib")
+    endif()
     if(EXISTS "${SS928_SDK_ROOT}/lib/linux/hisilicon")
         list(APPEND SDK_LIB_DIRS "${SS928_SDK_ROOT}/lib/linux/hisilicon")
     endif()
     if(EXISTS "${SS928_SDK_ROOT}/lib/linux/hisilicon/npu")
-        list(APPEND SDK_LIB_DIRS "${SS928_SDK_ROOT}/lib/linux/hisilicon/npu") # libascendcl 等
+        list(APPEND SDK_LIB_DIRS "${SS928_SDK_ROOT}/lib/linux/hisilicon/npu")
+    endif()
+    # V2 SDK: ACL lib in out/lib/npu
+    if(EXISTS "${SS928_SDK_ROOT}/out/lib/npu")
+        list(APPEND SDK_LIB_DIRS "${SS928_SDK_ROOT}/out/lib/npu")
     endif()
     target_include_directories(socchina PUBLIC ${SDK_INC_DIRS})
     target_link_directories(socchina PUBLIC ${SDK_LIB_DIRS})
     target_compile_definitions(socchina PUBLIC WITH_SS928_SDK=1)
 
-    # 厂商 sample_comm 层（MIPI/sensor 注册/ISP 线程/VPSS 起链封装，capture/vpss 模块依赖）。
-    # 要求 SS928_SDK_ROOT 指向含 src/common 的 MPP sample 包。
-    set(VENDOR_COMM_DIR "${SS928_SDK_ROOT}/src/common")
-    if(NOT EXISTS "${VENDOR_COMM_DIR}/sample_comm.h")
-        message(FATAL_ERROR "未找到 ${VENDOR_COMM_DIR}/sample_comm.h：SS928_SDK_ROOT 需指向含 src/common 的 MPP sample 包")
+    # 厂商 sample_comm 层（V1: src/common, V2: sample/common）
+    if(EXISTS "${SS928_SDK_ROOT}/sample/common/sample_comm.h")
+        set(VENDOR_COMM_DIR "${SS928_SDK_ROOT}/sample/common")
+    elseif(EXISTS "${SS928_SDK_ROOT}/src/common/sample_comm.h")
+        set(VENDOR_COMM_DIR "${SS928_SDK_ROOT}/src/common")
+    else()
+        message(FATAL_ERROR "未找到 sample_comm.h：请确认 SS928_SDK_ROOT (${SS928_SDK_ROOT}) 指向含 sample/common 或 src/common 的 MPP 目录")
     endif()
     add_library(vendor_comm STATIC
         "${VENDOR_COMM_DIR}/sample_comm_sys.c"
@@ -78,8 +101,7 @@ if(ENABLE_SDK)
         -l:libss_extend_stats.a -l:libss_drc.a -l:libss_ldci.a -l:libss_crb.a -l:libss_bnr.a
         -l:libss_calcflicker.a -l:libss_ir_auto.a -l:libss_acs.a
         -l:libsns_os08a20.a -l:libsns_os05a10_2l_slave.a -l:libsns_imx347_slave.a
-        -l:libsns_imx347_2l_slave.a -l:libsns_imx485.a -l:libsns_os04a10.a -l:libsns_os08b10.a
-        -l:libsns_sc450ai.a -l:libsns_sc450ai_2l.a -l:libsns_gs1860.a
+        -l:libsns_imx485.a -l:libsns_os04a10.a -l:libsns_os08b10.a
         -l:libss_voice_engine.a -l:libss_upvqe.a -l:libss_dnvqe.a
         -l:libaac_comm.a -l:libaac_enc.a -l:libaac_dec.a -l:libaac_sbr_enc.a -l:libaac_sbr_dec.a
         -Wl,--end-group

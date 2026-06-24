@@ -1,3 +1,4 @@
+#include "app_control_sock.h"
 #include "control.h"
 #include "log.h"
 #include "version.h"
@@ -22,6 +23,7 @@
 #include <stdatomic.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/stat.h>
 #include <time.h>
 #include <unistd.h>
 
@@ -83,6 +85,12 @@ typedef struct {
     int fatal_error;
     control_health_t health;
     app_runtime_metrics_t *metrics;
+    app_control_sock_t *app_sock;
+    int drc_mode;
+    int enhancement_enabled;
+    int tone_enabled;
+    int drc_strength;
+    int ldci_mode;
 } app_control_ctx_t;
 
 static float percentile95(const float *samples, unsigned count);
@@ -223,32 +231,76 @@ static void* control_worker(void* arg) {
     (void) isp_gamma_apply_tone(ISP_TONE_BYPASS, ctx->strength); /* 缓存默认 Gamma */
     usleep(APP_CTRL_WARMUP_MS * 1000);                           /* 等 AE 收敛 */
 
+    int params_dirty = 0;
+    int nn_retry = 0;
     while (!g_stop) {
         expo_mode_t mode;
         int refresh;
+        pipeline_metrics_t snap;
 
         usleep(APP_CTRL_PERIOD_MS * 1000);
+        /* Process app-control socket commands each cycle */
+        metrics_snapshot(metrics, (long)(APP_CTRL_PERIOD_MS), &snap);
+        app_control_sock_poll(ctx->app_sock, &snap, &ctx->strength,
+                              &ctx->high_clip_guard, &ctx->nn_enabled, &ctx->drc_mode,
+                              &params_dirty, &ctx->enhancement_enabled, &ctx->tone_enabled,
+                              &ctx->drc_strength, &ctx->ldci_mode);
         atomic_fetch_add(&metrics->control_polls, 1);
         if (isp_get_luma_stats(&raw_stats) != 0) {
             atomic_fetch_add(&metrics->transient_errors, 1);
             continue;
         }
-        refresh = control_feedback_observe(&feedback, &raw_stats, &cur);
+        refresh = params_dirty || control_feedback_observe(&feedback, &raw_stats, &cur);
         if (!refresh) {
             continue;
         }
+
+        /* 全局增强开关：关闭时强制旁路所有处理 */
+        float effective_strength = ctx->strength;
+        int effective_nn = ctx->nn_enabled;
+        if (!ctx->enhancement_enabled) {
+            effective_strength = 0.0f;
+            effective_nn = 0;
+        }
+        if (!ctx->tone_enabled) {
+            effective_strength = 0.0f;
+        }
+
         mode = control_decide(&cur);
+
+        /* 用户手动调节后，即使自动判决为 BYPASS 也应用用户强度，
+         * 否则正常光照下 tone_strength 滑块无可见效果。 */
+        if (mode == EXPO_MODE_BYPASS && effective_strength > 0.0f) {
+            mode = EXPO_MODE_BRIGHTEN;
+        }
+
+        /* NN 刚被用户重新打开但没有可用 LUT 时，不清除 params_dirty，
+         * 给 vpss_get_frame 多次机会直到成功获取帧并生成新 LUT。 */
+        if (params_dirty && effective_nn && !have_previous_lut && nn_retry < 10) {
+            nn_retry++;
+        } else {
+            params_dirty = 0;
+            nn_retry = 0;
+        }
 
         /* Gamma/DRC/CLUT 按用途分流：当前模型只产 RGB 3D-LUT；曝光色调仍由规则 Gamma 负责。
          * DRC 保持 ISP 自动配置，避免用 RGB LUT 冒充动态范围局部参数。 */
-        if (isp_gamma_apply_tone(mode_to_tone(mode), ctx->strength) != 0) {
+        if (isp_gamma_apply_tone(mode_to_tone(mode), effective_strength) != 0) {
             atomic_fetch_add(&metrics->transient_errors, 1);
             LOG_WARN("[ctrl] gamma update rejected; keeping previous ISP parameters");
             continue;
         }
 
+        /* 用户关闭 NN 时清除上次残留的 CLUT，否则画面保持上次 AI 色彩。 */
+        if (!effective_nn && have_previous_lut) {
+            (void)isp_set_clut(ISP_BLOCK_OFF, APP_CLUT_UNITY_GAIN, APP_CLUT_UNITY_GAIN,
+                               APP_CLUT_UNITY_GAIN);
+            have_previous_lut = 0;
+            LOG_INFO("[ctrl] NN CLUT disabled by user; ISP CLUT -> identity");
+        }
+
         /* 已明显过曝时旁路 RGB LUT，避免模型继续推高 pre-CLUT 已裁剪区域。 */
-        if (ctx->nn_enabled && !ctx->health.degraded &&
+        if (effective_nn && !ctx->health.degraded &&
             cur.clip_high_pct > ctx->high_clip_guard) {
             (void)isp_set_clut(ISP_BLOCK_OFF, APP_CLUT_UNITY_GAIN, APP_CLUT_UNITY_GAIN,
                                APP_CLUT_UNITY_GAIN);
@@ -260,7 +312,7 @@ static void* control_worker(void* arg) {
             continue;
         }
 
-        if (ctx->nn_enabled && !ctx->health.degraded) {
+        if (effective_nn && !ctx->health.degraded) {
             ot_video_frame_info control_frame;
             infer_timing_t timing = {0};
             long transaction_start_us = now_us();
@@ -333,6 +385,7 @@ static void* control_worker(void* arg) {
                 metrics->timing_samples++;
                 memcpy(previous_lut, packed_lut, sizeof(previous_lut));
                 have_previous_lut = 1;
+                nn_retry = 0;
                 control_feedback_commit(&feedback);
                 LOG_INFO("[ctrl] NN+CLUT v%llu -> %s luma=%.1f low=%.1f%% high=%.1f%% "
                          "exec=%.2fms infer_total=%.2fms transaction=%.2fms",
@@ -447,6 +500,8 @@ int main(int argc, char** argv) {
             cfg.rtsp_port = (unsigned) strtoul(argv[++i], NULL, 10);
         } else if (strcmp(argv[i], "--stream-path") == 0 && i + 1 < argc) {
             cfg.stream_path = argv[++i];
+        } else if (strcmp(argv[i], "--rtsp-bind") == 0 && i + 1 < argc) {
+            cfg.rtsp_bind_addr = argv[++i];
         } else if (strcmp(argv[i], "--model") == 0 && i + 1 < argc) {
             cfg.model_path = argv[++i];
         } else if (strcmp(argv[i], "--no-nn") == 0) {
@@ -470,6 +525,7 @@ int main(int argc, char** argv) {
     stream_cfg = (stream_cfg_t){
         PIPELINE_STREAM_WIDTH, PIPELINE_STREAM_HEIGHT, cfg.target_fps,
         cfg.stream_bitrate_kbps, cfg.rtsp_port, cfg.stream_path,
+        cfg.rtsp_bind_addr,
     };
     chn_cfg[PIPELINE_VPSS_CHN_DISPLAY].enable = cfg.enable_display;
     chn_cfg[PIPELINE_VPSS_CHN_STREAM].enable = cfg.enable_stream;
@@ -551,6 +607,16 @@ int main(int argc, char** argv) {
         }
     }
 
+    /* Start app-control socket for web console (W3). Use /tmp to avoid systemd RuntimeDirectory cleanup. */
+    if (cfg.enable_stream) {
+        control_ctx.app_sock = app_control_sock_start("/tmp/socchina-app-control.sock");
+    }
+    control_ctx.drc_mode = 1; /* auto */
+    control_ctx.enhancement_enabled = 1;
+    control_ctx.tone_enabled = 1;
+    control_ctx.drc_strength = 512;
+    control_ctx.ldci_mode = 1; /* auto */
+
     if (pthread_create(&ctrl_tid, TD_NULL, control_worker, &control_ctx) != 0) {
         LOG_ERR("control thread create failed");
         goto cleanup;
@@ -629,6 +695,9 @@ cleanup:
     }
     if (ctrl_up) {
         (void) pthread_join(ctrl_tid, TD_NULL);
+    }
+    if (control_ctx.app_sock != NULL) {
+        app_control_sock_stop(control_ctx.app_sock);
     }
     if (infer_up) {
         CHECK_RET(infer_deinit());

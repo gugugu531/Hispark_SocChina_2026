@@ -22,6 +22,7 @@ source "${CONFIG}"
 
 : "${ENABLE_HDMI:=0}"
 : "${CONFIG_VERSION:=0}"
+: "${RTSP_BIND_ADDR:=}"
 : "${RTSP_PORT:=8554}"
 : "${STREAM_PATH:=live}"
 : "${BITRATE_KBPS:=3000}"
@@ -87,6 +88,12 @@ if [[ ! "${STREAM_PATH}" =~ ^[A-Za-z0-9._~-]+$ ]]; then
     echo "[socchina-start] invalid STREAM_PATH: ${STREAM_PATH}" >&2
     exit 2
 fi
+if [[ -n "${RTSP_BIND_ADDR:-}" ]]; then
+    if ! [[ "${RTSP_BIND_ADDR}" =~ ^[0-9.:]+$ ]]; then
+        echo "[socchina-start] invalid RTSP_BIND_ADDR: ${RTSP_BIND_ADDR}" >&2
+        exit 2
+    fi
+fi
 if [[ "${1:-}" == "--check-config" ]]; then
     echo "[socchina-start] configuration valid (schema=v1, source=${CONFIG_VERSION})"
     exit 0
@@ -125,7 +132,10 @@ if [[ "${ENABLE_NN_CONTROL}" == "1" ]]; then
 else
     args+=(--no-nn)
 fi
+if [[ -n "${RTSP_BIND_ADDR:-}" ]]; then
+    args+=(--rtsp-bind "${RTSP_BIND_ADDR}")
+fi
 
-echo "[socchina-start] schema=v1 sensor=${SENSOR_INDEX} mode=${CAPTURE_MODE} fps=${TARGET_FPS} RTSP port=${RTSP_PORT} path=/${STREAM_PATH} bitrate=${BITRATE_KBPS}kbps HDMI=${ENABLE_HDMI} NN=${ENABLE_NN_CONTROL}"
+echo "[socchina-start] schema=v1 sensor=${SENSOR_INDEX} mode=${CAPTURE_MODE} fps=${TARGET_FPS} RTSP ${RTSP_BIND_ADDR:+bind=${RTSP_BIND_ADDR} }port=${RTSP_PORT} path=/${STREAM_PATH} bitrate=${BITRATE_KBPS}kbps HDMI=${ENABLE_HDMI} NN=${ENABLE_NN_CONTROL}"
 cd "${APP_DIR}"
 exec stdbuf -oL -eL "${APP}" "${args[@]}"

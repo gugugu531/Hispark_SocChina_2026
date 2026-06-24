@@ -10,6 +10,7 @@ typedef struct {
     unsigned bitrate_kbps;
     unsigned rtsp_port;
     const char *stream_path;
+    const char *rtsp_bind_addr;  /* NULL 或 "" 表示所有接口；否则为 loopback 地址 */
 } stream_cfg_t;
 
 int stream_init(const stream_cfg_t *cfg);

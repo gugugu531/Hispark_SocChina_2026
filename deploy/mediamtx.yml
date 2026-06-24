@@ -1,0 +1,21 @@
+# MediaMTX 配置 — 板端视频网关
+# 安装后路径：/etc/socchina/mediamtx.yml
+#
+# 作为 socchina_app 内部 RTSP (127.0.0.1:8555/internal) 的唯一客户端，
+# 向浏览器转发 WebRTC / LL-HLS（不做转码）。
+
+logLevel: info
+rtspAddress: :8554
+rtspTransport: tcp
+hlsAddress: :8888
+webrtcAddress: :8889
+
+api: yes
+apiAddress: 127.0.0.1:9997
+metrics: yes
+metricsAddress: 127.0.0.1:9998
+
+paths:
+  live:
+    source: rtsp://127.0.0.1:8555/internal
+    sourceProtocol: tcp

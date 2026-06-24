@@ -39,6 +39,7 @@
 | 11 控制 | `control.c` / `main.c` | ✅ P0 生产闭环 | AE→规则 Gamma 与 chn2→NN→bridge→CLUT 已接同一 worker；失败保旧 LUT，连续 3 次失败进入 sticky DEGRADED；post-CLUT 反馈加入 EMA、3 次确认和 10 周期冷却 |
 | — 共享 | `pipeline.h` / `pipeline.c` | ✅ 契约完成 | 通道、尺寸、配置默认值/校验、状态、错误码和 `pipeline_metrics_t` 已固定；ACL/SMMU 致命退出码为 70 |
 | — 入口 | `main.c` | ✅ 生产整链 | SYS/VB + capture/vpss/display/stream/control/NN 生命周期已接通；统一汇总帧数、drop/timeout、控制事务、瞬态/致命错误、降级与 p95；支持 linear/WDR 2to1 与目标帧率 |
+| — Web socket | `app_control_sock.c` | ✅ 已完成 | 监听 `/tmp/socchina-app-control.sock`，解析 8 热参数，`params_dirty` 强制刷新；修复 `nn_high_clip_guard` 偏移 bug；NN 关闭清除 CLUT、重开重试（2026-06-24） |
 
 ### 2.2 模型侧（`models/`）
 
@@ -63,6 +64,22 @@
 - ✅ 设备完整性（2026-06-20）：runtime config schema v1、linear/WDR 2to1/目标帧率生产配置、
   严格参数校验、`socchina-health` 只读健康检查、ACL/SMMU 致命退出码 70 与 systemd
   `RestartPreventExitStatus` 已实现；旧版无 schema 配置保持兼容并提示迁移。
+- ✅ **Web 控制台 W0–W4 全部完成并板端验收（2026-06-24）**：Go 单文件 ARM64 后端（REST +
+  SSE + HLS 反向代理 + Unix socket 客户端）+ 原生深色仪表盘前端（8 参数热控制面板、3 预设、
+  200ms 防抖、WebRTC/HLS/RTSP 视频三协议切换）+ socchina-admin 冷配置事务引擎（generation/ETag、
+  原子提交、健康检查、自动回滚）+ 认证代理（密码登录、session cookie、CSRF、写限流）。
+  API 全 13 端点、systemd 5 服务（stream / mediamtx / web / admin / authproxy）。详见
+  `web/README.md` 和 `docs/web-console-architecture.md`。
+- ✅ Web 构建与部署脚本（2026-06-24）：`scripts/build_web.sh`（交叉编译 Go→ARM64）、
+  `scripts/install_board_web.sh`（部署二进制+静态资源+配置到板）、`scripts/validate_board_web.sh`
+  （部署后自动验收）。
+- ✅ 板端 **app-control Unix socket**（`board/src/app_control_sock.c`，2026-06-24）：监听
+  `/tmp/socchina-app-control.sock`，解析 `tone_strength` / `nn_high_clip_guard` /
+  `nn_clut_enabled` / `drc_mode` / `enhancement_enabled` / `tone_enabled` / `drc_strength` /
+  `ldci_mode` 八个热参数；set 操作置 `params_dirty` 标志强制下一控制周期立即刷新 ISP。
+  修复 `nn_high_clip_guard` 解析偏移量 bug（`p+20`→`p+21`，原始终解析为 0.0 导致 NN CLUT
+  永远被高光保护旁路）。`main.c` 增加 `enhancement_enabled`/`tone_enabled` 门控、NN 关闭时
+  清除 CLUT 为 identity、NN 重开时 10 次重试抓 VPSS chn2 帧。
 - ❌ 板端测试自动化：目前 `test_display` 靠手工 scp + ssh，部署脚本应统一接管。
 - ❌ `LICENSE` 内容待定（当前占位）。
 - ✅ `feat/display-hdmi` 已合入 `main` 并推送（2026-06-10）。
@@ -191,21 +208,29 @@ ISP 硬件 CLUT 全分辨率施加（零 NPU）」**。完整验证与代码见 
    无客户端持续 drain、连续接收、断线重连、退出释放和 systemd 开机恢复均通过。
 2. 文档收尾、LICENSE、演示脚本。
 
-### 后续交互与 Web 控制台（不阻塞当前数据通路）
+### 后续交互与 Web 控制台（代码完成，板端已验收 2026-06-24）
 
-正式路线见 [web-console-architecture.md](web-console-architecture.md)，按以下阶段推进：
+正式路线见 [web-console-architecture.md](web-console-architecture.md)，四个阶段全部代码完成并板端跑通。
 
-1. **W0 视频 PoC**：MediaMTX 独占 loopback 内部 RTSP，无转码输出 WebRTC，LL-HLS 回退；
-   单/双客户端记录 CPU、RSS、网络和延迟。
-2. **W1 只读控制台**：Go 单文件 Web 服务、静态页面、应用状态 socket、REST/SSE、
-   `pipeline_metrics_t` 快照和 MediaMTX 会话状态。
-3. **W2 冷配置事务**：受限特权 admin 服务；HDMI、Linear/WDR、FPS、码率和模型加载配置；
-   generation、原子提交、健康检查和自动回滚。
-4. **W3 热控制**：NN CLUT、规则 Gamma、强度、高光门限、DRC/LDCI、安全预设和请求防抖；
-   命令必须经有界队列由 control worker 串行应用。
-5. **W4 安全与交付**：认证、CSRF、限流、systemd sandbox、开机恢复和安装/验收脚本。
-6. **本地触摸适配**：后续可让 `/dev/input/event0` 复用同一控制 API 和状态模型，
-   不另建直接操作 ISP/VPSS 的路径。
+1. ✅ **W0 视频 PoC** — MediaMTX ARM64 部署，WebRTC/HLS/RTSP 三协议输出。
+2. ✅ **W1 只读控制台** — Go 后端（REST + SSE + HLS 代理），原生前端深色仪表盘。
+3. ✅ **W2 冷配置事务** — socchina-admin Unix socket 服务，generation/ETag 乐观锁，
+   atomic commit + 健康检查 + 自动回滚。
+4. ✅ **W3 热控制** — 8 参数实时调节面板，3 预设，200ms 防抖，PATCH /api/v1/control。
+5. ✅ **W4 安全交付** — 密码登录 + session cookie + CSRF token + 写操作限流，
+   authproxy 全量代理到后端（UI 单一来源），systemd sandbox。
+6. ⏸ **本地触摸适配** — `/dev/input/event0` 可复用同一控制 API，未实现。
+
+**板端配套 C 代码改动**（`board/`）：
+- 新增 `app_control_sock.h/c`：Unix socket 服务，解析 8 个热参数，`params_dirty`
+  标志在 socket 写入后强制下一控制周期跳过反馈观察器立即刷新 ISP。
+- `main.c`：`enhancement_enabled`/`tone_enabled` 门控逻辑；用户手动调节后在正常光照
+  下也应用 Gamma（BYPASS→BRIGHTEN）；NN 关闭时清除 ISP CLUT 为 identity；
+  NN 重开时 10 次重试抓 VPSS chn2 帧直到 LUT 生成成功。
+- 修复 `nn_high_clip_guard` 解析偏移量 bug（`p+20`→`p+21`，原始终解析为 0.0）。
+
+**关键配置**：`/etc/socchina/runtime.conf` 必须含 `ENABLE_NN_CONTROL=1`，
+否则启动脚本传 `--no-nn`，VPSS chn2 不会创建，NN 推理无法运行。
 
 明确不提供 Config-Q 抓拍、整图模型、严格同帧分屏、MJPEG 或 CPU 视频转码。
 

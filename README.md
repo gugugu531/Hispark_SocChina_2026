@@ -55,7 +55,8 @@ Config-R 主链。
 | `board/` | 板端应用（C/C++，交叉编译，CMake 构建）。 |
 | `models/` | 模型网络、ONNX 导出器、LUT 工具、AIPP 配置与测试。 |
 | `scripts/` | 环境、构建、部署、板端运行脚本。 |
-| `web/` | 规划中的板端 Web/API/管理服务和静态页面；实现后按技术路线创建。 |
+| `web/` | 板端 Web/API/管理服务和静态页面（🚧 W0 进行中）。 |
+| `deploy/` | systemd 服务、MediaMTX 配置、Web 配置、部署说明。 |
 | `docs/` | 开发规范、系统架构、板端操作手册。 |
 
 模型侧分层为 `models/{networks,exporters,tools,configs,tests,weights}`；可执行 Python 入口使用

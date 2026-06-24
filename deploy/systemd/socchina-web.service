@@ -1,0 +1,42 @@
+[Unit]
+Description=SocChina web console
+Documentation=https://github.com/gugugu531/Hispark_SocChina_2026
+After=local-fs.target network.target socchina-stream.service socchina-mediamtx.service
+Wants=socchina-stream.service socchina-mediamtx.service
+StartLimitIntervalSec=0
+
+# Web 服务依赖 admin socket，但不强依赖视频网关。
+# Web/MediaMTX 重启不得重启 socchina-stream.service。
+
+[Service]
+Type=simple
+User=socchina-web
+Group=socchina
+ExecStart=/usr/local/bin/socchina-web -config /etc/socchina/web.conf
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=10
+KillSignal=SIGTERM
+SuccessExitStatus=0 143
+
+# socket 目录
+RuntimeDirectory=socchina
+RuntimeDirectoryMode=0750
+
+# sandbox
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+ReadWritePaths=/run/socchina
+PrivateTmp=yes
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+RestrictNamespaces=yes
+LockPersonality=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+RemoveIPC=yes
+SystemCallArchitectures=native
+MemoryDenyWriteExecute=yes
+
+[Install]
+WantedBy=multi-user.target

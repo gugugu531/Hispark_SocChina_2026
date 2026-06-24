@@ -26,6 +26,7 @@ void pipeline_config_defaults(pipeline_config_t *cfg)
     cfg->stream_bitrate_kbps = PIPELINE_DEFAULT_BITRATE_KBPS;
     cfg->rtsp_port = PIPELINE_DEFAULT_RTSP_PORT;
     cfg->stream_path = PIPELINE_DEFAULT_RTSP_PATH;
+    cfg->rtsp_bind_addr = NULL; /* 默认绑定所有接口；W0 可设为 "127.0.0.1" */
 }
 
 int pipeline_config_validate(const pipeline_config_t *cfg)
@@ -63,6 +64,13 @@ int pipeline_config_validate(const pipeline_config_t *cfg)
             int valid = (*p >= 'a' && *p <= 'z') || (*p >= 'A' && *p <= 'Z') ||
                         (*p >= '0' && *p <= '9') || strchr("._~-", *p) != NULL;
             if (!valid) {
+                return PIPELINE_ERR_INVALID;
+            }
+        }
+    }
+    if (cfg->rtsp_bind_addr != NULL && cfg->rtsp_bind_addr[0] != '\0') {
+        for (p = cfg->rtsp_bind_addr; *p != '\0'; ++p) {
+            if (!((*p >= '0' && *p <= '9') || *p == '.' || *p == ':')) {
                 return PIPELINE_ERR_INVALID;
             }
         }

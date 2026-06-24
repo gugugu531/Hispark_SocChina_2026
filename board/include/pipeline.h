@@ -71,6 +71,7 @@ typedef struct {
     unsigned stream_bitrate_kbps;
     unsigned rtsp_port;
     const char *stream_path;
+    const char *rtsp_bind_addr;  /* NULL/"" = 所有接口(W0前默认)；"127.0.0.1" = loopback(W0 MediaMTX模式) */
 } pipeline_config_t;
 
 typedef struct {

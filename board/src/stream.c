@@ -172,6 +172,7 @@ int stream_init(const stream_cfg_t* cfg) {
     rtsp_cfg.port = cfg->rtsp_port;
     rtsp_cfg.fps = cfg->fps;
     rtsp_cfg.stream_path = cfg->stream_path;
+    rtsp_cfg.bind_addr = cfg->rtsp_bind_addr;
     rtsp_cfg.request_idr = request_idr;
     if (rtsp_server_start(&rtsp_cfg) != 0) {
         LOG_ERR("rtsp_server_start failed");
@@ -183,8 +184,10 @@ int stream_init(const stream_cfg_t* cfg) {
     }
     g_stream.drain_started = 1;
     g_stream.initialized = 1;
-    LOG_INFO("stream up: H.264 %ux%u@%u %ukbps rtsp://<board>:%u/%s", cfg->width, cfg->height, cfg->fps,
-             cfg->bitrate_kbps, cfg->rtsp_port, cfg->stream_path);
+    LOG_INFO("stream up: H.264 %ux%u@%u %ukbps rtsp://%s:%u/%s (RTP over TCP)", cfg->width, cfg->height,
+             cfg->fps, cfg->bitrate_kbps,
+             (cfg->rtsp_bind_addr != NULL && cfg->rtsp_bind_addr[0] != '\0') ? cfg->rtsp_bind_addr : "<board>",
+             cfg->rtsp_port, cfg->stream_path);
     return 0;
 
 cleanup:

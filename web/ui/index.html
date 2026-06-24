@@ -1,0 +1,148 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>SocChina · 实时图像增强</title>
+<link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+
+<!-- ── 顶部栏 ── -->
+<header>
+  <h1>SOCCHINA</h1>
+  <span id="state-badge" class="badge">—</span>
+  <span class="header-info">
+    <span id="clock">--:--:--</span>
+    <span id="connection-dot" class="dot disconnected" title="SSE"></span>
+  </span>
+</header>
+
+<!-- ── 视频区域 ── -->
+<section id="video-panel">
+  <div id="video-container">
+    <video id="live-video" muted autoplay playsinline></video>
+    <div id="video-placeholder" class="placeholder">
+      <span>视频流建立中…</span>
+      <small id="video-mode">WebRTC 优先</small>
+    </div>
+  </div>
+  <div id="video-controls">
+    <button id="btn-fullscreen" title="全屏">⛶</button>
+    <button id="btn-webrtc" class="vid-mode-btn active" title="WebRTC 低延迟">WebRTC</button>
+    <button id="btn-hls" class="vid-mode-btn" title="HLS 兼容回退">HLS</button>
+    <button id="btn-rtsp" class="vid-mode-btn" title="复制 RTSP 地址">RTSP</button>
+    <button id="btn-reconnect" title="重连">↻</button>
+    <span id="video-latency" class="latency"></span>
+  </div>
+</section>
+
+<!-- ── 状态卡片 ── -->
+<main id="dashboard">
+
+  <!-- 流水线状态 -->
+  <section class="card">
+    <h2>流水线状态</h2>
+    <div class="kv">
+      <span class="label">运行状态</span><span id="p-state" class="value">—</span>
+      <span class="label">采集模式</span><span id="p-mode" class="value">—</span>
+      <span class="label">目标帧率</span><span id="p-target-fps" class="value">—</span>
+      <span class="label">实时帧率</span><span id="p-display-fps" class="value">—</span>
+      <span class="label">串流丢帧</span><span id="p-stream-drops" class="value">—</span>
+      <span class="label">超时次数</span><span id="p-timeouts" class="value">—</span>
+      <span class="label">瞬态错误</span><span id="p-transient" class="value">—</span>
+      <span class="label">致命错误</span><span id="p-fatal" class="value">—</span>
+    </div>
+  </section>
+
+  <!-- 图像处理 -->
+  <section class="card">
+    <h2>图像处理</h2>
+    <div class="kv">
+      <span class="label">神经网络 3D LUT</span><span id="pr-nn" class="value">—</span>
+      <span class="label">推理降级</span><span id="pr-degraded" class="value">—</span>
+      <span class="label">色调映射强度</span><span id="pr-tone" class="value">—</span>
+      <span class="label">高光裁剪阈值</span><span id="pr-clip" class="value">—</span>
+      <span class="label">推理延迟 (p95)</span><span id="pr-infer-p95" class="value">—</span>
+      <span class="label">事务延迟 (p95)</span><span id="pr-txn-p95" class="value">—</span>
+    </div>
+  </section>
+
+  <!-- 输出通道 -->
+  <section class="card">
+    <h2>输出通道</h2>
+    <div class="kv">
+      <span class="label">HDMI 显示</span><span id="o-hdmi" class="value">—</span>
+      <span class="label">RTSP 串流</span><span id="o-rtsp" class="value">—</span>
+      <span class="label">WebRTC 会话</span><span id="o-webrtc" class="value">—</span>
+      <span class="label">HLS 会话</span><span id="o-hls" class="value">—</span>
+      <span class="label">在线观看者</span><span id="o-viewers" class="value">—</span>
+    </div>
+  </section>
+
+  <!-- 链路健康 -->
+  <section class="card">
+    <h2>链路健康</h2>
+    <div class="kv">
+      <span class="label">应用控制 Socket</span><span id="h-app" class="value">—</span>
+      <span class="label">MediaMTX 网关</span><span id="h-media" class="value">—</span>
+      <span class="label">管理 Socket</span><span id="h-admin" class="value">—</span>
+    </div>
+  </section>
+
+  <!-- 实时参数控制 (W3) -->
+  <section class="card" id="hot-control-card">
+    <h2>实时参数控制</h2>
+    <div class="presets" id="preset-bar"></div>
+    <div class="kv" id="hot-controls"></div>
+    <div class="cfg-actions">
+      <button id="btn-hot-apply" class="btn warn">应用参数</button>
+      <span id="hot-status" class="cfg-status"></span>
+    </div>
+  </section>
+
+  <!-- 冷配置 (W2) -->
+  <section class="card">
+    <h2>系统配置 · 重启后生效</h2>
+    <div class="kv">
+      <span class="label">采集模式</span>
+      <select id="cfg-mode" class="value cfg-input">
+        <option value="linear">linear</option>
+        <option value="wdr2to1">wdr2to1</option>
+      </select>
+      <span class="label">目标 FPS</span>
+      <select id="cfg-fps" class="value cfg-input">
+        <option value="30">30</option>
+        <option value="25">25</option>
+        <option value="15">15</option>
+        <option value="10">10</option>
+      </select>
+      <span class="label">编码码率 (kbps)</span>
+      <input id="cfg-bitrate" class="value cfg-input" type="number" min="128" max="10000" step="100">
+      <span class="label">HDMI 显示</span>
+      <select id="cfg-hdmi" class="value cfg-input">
+        <option value="0">关闭</option>
+        <option value="1">开启</option>
+      </select>
+    </div>
+    <div class="cfg-actions">
+      <button id="btn-apply" class="btn warn">应用并重启</button>
+      <button id="btn-rollback" class="btn">回滚</button>
+      <span id="cfg-status" class="cfg-status"></span>
+    </div>
+    <div id="cfg-progress" class="cfg-progress hidden">
+      <span id="cfg-progress-text">—</span>
+    </div>
+  </section>
+
+</main>
+
+<!-- ── 底部 ── -->
+<footer>
+  <small>SOCCHINA · SS928 CoTF · <span id="footer-version">—</span></small>
+</footer>
+
+<script src="/vendor/hls.min.js"></script>
+<script src="/app.js"></script>
+</body>
+</html>

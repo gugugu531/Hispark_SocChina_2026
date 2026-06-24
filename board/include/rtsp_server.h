@@ -10,6 +10,7 @@ typedef struct {
     unsigned port;
     unsigned fps;
     const char* stream_path;
+    const char* bind_addr;   /* NULL 或 "" 表示绑定所有接口；否则为 "127.0.0.1" 或 "::1" 等 */
     rtsp_idr_callback_t request_idr;
     void* request_idr_opaque;
 } rtsp_server_cfg_t;

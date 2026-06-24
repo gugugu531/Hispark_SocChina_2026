@@ -1,0 +1,36 @@
+[Unit]
+Description=SocChina MediaMTX video gateway
+Documentation=https://github.com/bluenviron/mediamtx
+After=local-fs.target network.target socchina-stream.service
+Wants=socchina-stream.service
+StartLimitIntervalSec=0
+
+# MediaMTX 在核心流未就绪时持续重连，不让其失败拉低核心服务。
+# 核心流重启后 MediaMTX 自动恢复 source。
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/mediamtx /etc/socchina/mediamtx.yml
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=10
+KillSignal=SIGTERM
+SuccessExitStatus=0 143
+
+# sandbox
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+ReadWritePaths=/tmp
+PrivateTmp=yes
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+RestrictNamespaces=yes
+LockPersonality=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+RemoveIPC=yes
+SystemCallArchitectures=native
+MemoryDenyWriteExecute=yes
+
+[Install]
+WantedBy=multi-user.target

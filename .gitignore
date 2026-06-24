@@ -50,6 +50,19 @@ venv/
 *.bmp
 *.log
 
+# ===== Web 构建产物 =====
+build/web/
+web/backend/socchina-web
+web/admin/socchina-admin
+*.exe
+
+# ===== Go =====
+go.sum
+
+# ===== 外部二进制（引用不入库）=====
+# MediaMTX ARM64 单文件发行版不入库；版本与校验值记录在 deploy/README.md
+deploy/mediamtx
+
 # ===== 编辑器 / 系统 =====
 .vscode/
 .idea/

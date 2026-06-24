@@ -395,8 +395,12 @@ static int send_nalu_locked(const uint8_t* nalu, size_t len, int last_nalu) {
 }
 
 int rtsp_server_start(const rtsp_server_cfg_t* cfg) {
-    struct sockaddr_in6 addr;
+    struct sockaddr_in addr4;
+    struct sockaddr_in6 addr6;
+    struct sockaddr* sa;
+    socklen_t sa_len;
     int reuse = 1;
+    int family;
     int v6only = 0;
 
     if (cfg == NULL || cfg->port == 0 || cfg->fps == 0 || cfg->stream_path == NULL ||
@@ -408,17 +412,57 @@ int rtsp_server_start(const rtsp_server_cfg_t* cfg) {
         return 0;
     }
 
-    memset(&addr, 0, sizeof(addr));
-    addr.sin6_family = AF_INET6;
-    addr.sin6_addr = in6addr_any;
-    addr.sin6_port = htons((uint16_t) cfg->port);
-    g_rtsp.listen_fd = socket(AF_INET6, SOCK_STREAM, 0);
+    /* 决定绑定地址：指定地址绑定到特定接口，否则绑定所有接口 */
+    if (cfg->bind_addr != NULL && cfg->bind_addr[0] != '\0' &&
+        strcmp(cfg->bind_addr, "127.0.0.1") == 0) {
+        memset(&addr4, 0, sizeof(addr4));
+        addr4.sin_family = AF_INET;
+        addr4.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+        addr4.sin_port = htons((uint16_t) cfg->port);
+        family = AF_INET;
+        sa = (struct sockaddr*) &addr4;
+        sa_len = sizeof(addr4);
+    } else if (cfg->bind_addr != NULL && cfg->bind_addr[0] != '\0') {
+        /* 通用 IPv4/IPv6 地址 */
+        if (inet_pton(AF_INET, cfg->bind_addr, &addr4.sin_addr) == 1) {
+            memset(&addr4, 0, sizeof(addr4));
+            addr4.sin_family = AF_INET;
+            addr4.sin_port = htons((uint16_t) cfg->port);
+            family = AF_INET;
+            sa = (struct sockaddr*) &addr4;
+            sa_len = sizeof(addr4);
+        } else if (inet_pton(AF_INET6, cfg->bind_addr, &addr6.sin6_addr) == 1) {
+            memset(&addr6, 0, sizeof(addr6));
+            addr6.sin6_family = AF_INET6;
+            addr6.sin6_port = htons((uint16_t) cfg->port);
+            family = AF_INET6;
+            sa = (struct sockaddr*) &addr6;
+            sa_len = sizeof(addr6);
+            v6only = 1;
+        } else {
+            LOG_ERR("rtsp_server: cannot parse bind_addr '%s'", cfg->bind_addr);
+            return -1;
+        }
+    } else {
+        /* 默认：绑定所有接口 */
+        memset(&addr6, 0, sizeof(addr6));
+        addr6.sin6_family = AF_INET6;
+        addr6.sin6_addr = in6addr_any;
+        addr6.sin6_port = htons((uint16_t) cfg->port);
+        family = AF_INET6;
+        sa = (struct sockaddr*) &addr6;
+        sa_len = sizeof(addr6);
+    }
+
+    g_rtsp.listen_fd = socket(family, SOCK_STREAM, 0);
     if (g_rtsp.listen_fd < 0) {
         return -1;
     }
     (void) setsockopt(g_rtsp.listen_fd, SOL_SOCKET, SO_REUSEADDR, &reuse, sizeof(reuse));
-    (void) setsockopt(g_rtsp.listen_fd, IPPROTO_IPV6, IPV6_V6ONLY, &v6only, sizeof(v6only));
-    if (bind(g_rtsp.listen_fd, (struct sockaddr*) &addr, sizeof(addr)) != 0 ||
+    if (family == AF_INET6) {
+        (void) setsockopt(g_rtsp.listen_fd, IPPROTO_IPV6, IPV6_V6ONLY, &v6only, sizeof(v6only));
+    }
+    if (bind(g_rtsp.listen_fd, sa, sa_len) != 0 ||
         listen(g_rtsp.listen_fd, 2) != 0 || set_nonblock(g_rtsp.listen_fd) != 0) {
         close(g_rtsp.listen_fd);
         g_rtsp.listen_fd = -1;
@@ -440,7 +484,11 @@ int rtsp_server_start(const rtsp_server_cfg_t* cfg) {
         return -1;
     }
     g_rtsp.running = 1;
-    LOG_INFO("rtsp listening on [::]:%u/%s (RTP over TCP)", g_rtsp.port, g_rtsp.path);
+    if (cfg->bind_addr != NULL && cfg->bind_addr[0] != '\0') {
+        LOG_INFO("rtsp listening on %s:%u/%s (RTP over TCP)", cfg->bind_addr, g_rtsp.port, g_rtsp.path);
+    } else {
+        LOG_INFO("rtsp listening on [::]:%u/%s (RTP over TCP)", g_rtsp.port, g_rtsp.path);
+    }
     return 0;
 }
 

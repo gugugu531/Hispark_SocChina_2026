@@ -40,17 +40,28 @@ board/ ── CMakeLists.txt · cmake/ · include/ · src/ · tests/
 - `tests/test_*.c` 每个一个测试入口；
 - 新增功能直接加文件，CMake 自动收集（glob）。起步不预建空文件。
 
-Web 控制台实现后采用：
+Web 控制台（已实现，2026-06-24）：
 
 ```text
-web/ ── backend/ · admin/ · ui/
+web/ ── backend/ · admin/ · ui/ · authproxy/
 ```
 
-- `backend/`：非特权 Go Web/API/SSE 服务；
-- `admin/`：受限特权配置事务服务；
-- `ui/`：原生 HTML/CSS/JavaScript 与固定版本本地 vendor 资源；
+- `backend/`：非特权 Go Web/API/SSE 服务，交叉编译为 ARM64 单文件二进制；
+- `admin/`：受限特权冷配置事务服务（Unix socket，白名单操作）；
+- `authproxy/`：登录/session/CSRF/限流反向代理，合并前端与 API 到单一入口 `:8080`；
+- `ui/`：原生 HTML/CSS/JavaScript（无 Node 构建链），深色金色主题；
 - MediaMTX 为外部 ARM64 单文件依赖，不提交二进制，只记录固定版本和校验值；
 - 不引入板端 Node/Python 运行时，不从公共 CDN 加载运行期资源。
+
+构建与部署：
+
+```sh
+scripts/build_web.sh                                    # 交叉编译 Go → ARM64
+BOARD=hispark-remote scripts/install_board_web.sh       # 部署到板
+BOARD=hispark-remote scripts/validate_board_web.sh      # 验收
+```
+
+详细架构、API、端口与运维见 `docs/web-console-architecture.md` 和 `web/README.md`。
 
 ## 2. 命名约定
 

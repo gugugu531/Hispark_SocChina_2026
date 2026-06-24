@@ -135,14 +135,22 @@ Config-R 固定 `chn0=1024x600` 显示、`chn1=1024x576` 串流、
   **AE 曝光控制 + DRC/CLUT 色调压缩**为主。
 - Resize/插值在 NNN 上实测异常，上采样统一用 ConvTranspose（见 `development-guide.md` §6）。
 
-## 8. Web 展示与控制平面
+## 8. Web 展示与控制平面（已实现，2026-06-24）
 
-规划中的 Web 控制台位于图像数据通路之外，不改变 VI/ISP/VPSS/VENC/ACL 的所有权：
+Web 控制台位于图像数据通路之外，不改变 VI/ISP/VPSS/VENC/ACL 的所有权，
+已全部四阶段（W0–W4）代码完成并板端验收。
 
 ```text
-socchina_app 内部 RTSP -> MediaMTX -> WebRTC / LL-HLS / 外部 RTSP
-浏览器 -> socchina-web -> app-control.sock / admin.sock
+socchina_app 内部 RTSP (:8555) -> MediaMTX -> WebRTC (:8889) / LL-HLS (:8888) / RTSP (:8554)
+浏览器 -> socchina-auth (:8080) -> socchina-web (:8090)
+                                         ├── /tmp/socchina-app-control.sock -> socchina_app
+                                         └── /tmp/socchina-admin.sock -> socchina-admin
 ```
+
+板端新增 `board/src/app_control_sock.c`（Unix socket 监听，8 热参数解析，
+`params_dirty` 强制刷新 ISP）。`main.c` 增加 enhancement/tone 门控、
+NN 关闭清除 CLUT、重开重试逻辑。关键配置：`ENABLE_NN_CONTROL=1`
+在 `/etc/socchina/runtime.conf`，否则 NN 不加载。
 
 边界：
 
@@ -155,4 +163,5 @@ socchina_app 内部 RTSP -> MediaMTX -> WebRTC / LL-HLS / 外部 RTSP
 - 不增加 MJPEG、FFmpeg 转码或浏览器侧 RTSP 解析。
 
 完整进程、端口、API、安全、性能预算与 W0–W4 实施阶段见
-[web-console-architecture.md](web-console-architecture.md)。
+[web-console-architecture.md](web-console-architecture.md)；实现细节与坑点见
+[web/README.md](../../web/README.md)。

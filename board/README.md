@@ -13,7 +13,8 @@ board/
 └── tests/       # 单元/驱动测试: test_<名字>.c, 各编一个可执行 + ctest
 ```
 
-- `src/` 平铺，每个功能一个 `.c`（+ `include/` 里对应 `.h`）；`main.c` 是主程序入口。
+- `src/` 平铺，每个功能一个 `.c`（+ `include/` 里对应 `.h`）。**app_control_sock** 为 Web 控制台
+  Unix socket 监听模块（解析 8 热参数，置 `params_dirty` 强制刷新 ISP）。`main.c` 是主程序入口。
 - `src/*.c`（除 `main.c`）编成静态库 `socchina`，主程序与测试共用。
 - `tests/test_*.c` 每个自动编成可执行并注册到 `ctest`。
 - 新增功能：往 `src/` 加 `.c`、`include/` 加 `.h`、（可选）`tests/` 加 `test_*.c`，无需改 CMake（glob 自动收集）。
