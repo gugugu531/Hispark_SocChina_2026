@@ -24,8 +24,10 @@ void pipeline_config_defaults(pipeline_config_t *cfg)
     cfg->tone_strength = PIPELINE_DEFAULT_TONE_STRENGTH;
     cfg->nn_high_clip_guard = PIPELINE_DEFAULT_HIGH_CLIP_GUARD;
     cfg->stream_bitrate_kbps = PIPELINE_DEFAULT_BITRATE_KBPS;
-    cfg->rtsp_port = PIPELINE_DEFAULT_RTSP_PORT;
-    cfg->stream_path = PIPELINE_DEFAULT_RTSP_PATH;
+    cfg->rtsp_port      = PIPELINE_DEFAULT_RTSP_PORT;
+    cfg->stream_path    = PIPELINE_DEFAULT_RTSP_PATH;
+    cfg->rtsp_bind_addr = NULL; /* 默认：所有接口 */
+    cfg->ctrl_sock_path = NULL; /* 默认：不开启控制 socket */
 }
 
 int pipeline_config_validate(const pipeline_config_t *cfg)

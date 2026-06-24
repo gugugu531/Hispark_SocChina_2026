@@ -39,4 +39,10 @@ cc -std=c11 -Wall -Wextra -pthread -I"${BOARD}/include" \
 echo "== running test_rtsp_server =="
 "${bin}" || fail=1
 
+bin="${OUT}/test_app_control"
+cc -std=c11 -Wall -Wextra -pthread -I"${BOARD}/include" \
+    "${BOARD}/tests/test_app_control.c" "${BOARD}/src/app_control.c" -o "${bin}"
+echo "== running test_app_control =="
+"${bin}" || fail=1
+
 exit "${fail}"

@@ -10,6 +10,7 @@ typedef struct {
     unsigned port;
     unsigned fps;
     const char* stream_path;
+    const char* bind_addr;       /* NULL = 所有接口 ([::]); "127.0.0.1" = IPv4 回环 */
     rtsp_idr_callback_t request_idr;
     void* request_idr_opaque;
 } rtsp_server_cfg_t;

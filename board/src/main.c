@@ -1,5 +1,7 @@
 #include "control.h"
 #include "log.h"
+#include "menu_render.h"
+#include "touch.h"
 #include "version.h"
 
 /*
@@ -25,6 +27,7 @@
 #include <time.h>
 #include <unistd.h>
 
+#include "app_control.h"
 #include "capture.h"
 #include "display.h"
 #include "infer.h"
@@ -38,6 +41,8 @@
 #include "ot_common_video.h"
 #include "ot_type.h"
 #include "sample_comm.h"
+#include "ss_mpi_sys.h"
+#include "ss_mpi_vb.h"
 
 #define APP_CTRL_PERIOD_MS      100u  /* 控制环周期（~10Hz，低频；刷新由迟滞/限流再收敛） */
 #define APP_CTRL_WARMUP_MS      1000u /* AE 收敛前不读统计 */
@@ -128,10 +133,13 @@ static void metrics_snapshot(const app_runtime_metrics_t *runtime, long elapsed_
     out->transaction_p95_ms = percentile95(runtime->transaction_samples, sample_count);
 }
 
-static void on_sig(int s) {
-    (void) s;
-    g_stop = 1;
-}
+/* ---- control socket 状态回调 ---- */
+
+typedef struct {
+    app_runtime_metrics_t *metrics;
+    app_control_ctx_t     *ctrl;
+    long                   t0;
+} app_status_ctx_t;
 
 static long now_ms(void) {
     struct timespec ts;
@@ -144,6 +152,55 @@ static long now_us(void)
     struct timespec ts;
     clock_gettime(CLOCK_MONOTONIC, &ts);
     return ts.tv_sec * 1000000L + ts.tv_nsec / 1000L;
+}
+
+static void ctrl_status_fn(void *opaque, char *buf, size_t buflen)
+{
+    app_status_ctx_t  *sctx = (app_status_ctx_t *)opaque;
+    long               elapsed = now_ms() - sctx->t0;
+    pipeline_metrics_t snap;
+
+    metrics_snapshot(sctx->metrics, elapsed, &snap);
+    snprintf(buf, buflen,
+             "{\"state\":\"%s\","
+             "\"display_fps\":%.1f,"
+             "\"display_frames\":%llu,"
+             "\"display_drops\":%llu,"
+             "\"stream_frames\":%llu,"
+             "\"stream_drops\":%llu,"
+             "\"control_polls\":%llu,"
+             "\"infer_runs\":%llu,"
+             "\"lut_updates\":%llu,"
+             "\"lut_failures\":%llu,"
+             "\"transient_errors\":%llu,"
+             "\"fatal_errors\":%llu,"
+             "\"infer_last_ms\":%.2f,"
+             "\"infer_p95_ms\":%.2f,"
+             "\"tone_strength\":%.3f,"
+             "\"nn_enabled\":%s,"
+             "\"high_clip_guard\":%.2f}",
+             pipeline_state_name(snap.state),
+             snap.display_fps,
+             (unsigned long long)snap.display_frames,
+             (unsigned long long)snap.display_drops,
+             (unsigned long long)snap.stream_frames,
+             (unsigned long long)snap.stream_drops,
+             (unsigned long long)snap.control_polls,
+             (unsigned long long)snap.infer_runs,
+             (unsigned long long)snap.lut_updates,
+             (unsigned long long)snap.lut_failures,
+             (unsigned long long)snap.transient_errors,
+             (unsigned long long)snap.fatal_errors,
+             snap.infer_last_ms,
+             snap.infer_p95_ms,
+             sctx->ctrl->strength,
+             sctx->ctrl->nn_enabled ? "true" : "false",
+             sctx->ctrl->high_clip_guard);
+}
+
+static void on_sig(int s) {
+    (void) s;
+    g_stop = 1;
 }
 
 static int compare_float(const void *a, const void *b)
@@ -226,6 +283,21 @@ static void* control_worker(void* arg) {
     while (!g_stop) {
         expo_mode_t mode;
         int refresh;
+
+        /* 从控制 socket 消费最新参数（last-write-wins） */
+        {
+            app_ctrl_params_t p;
+            if (app_ctrl_drain(&p)) {
+                if (p.has_tone_strength) {
+                    ctx->strength      = p.tone_strength;
+                    bridge_cfg.strength = p.tone_strength;
+                }
+                if (p.has_nn_clut_enabled) ctx->nn_enabled      = p.nn_clut_enabled;
+                if (p.has_high_clip_guard)  ctx->high_clip_guard = p.high_clip_guard;
+                LOG_INFO("[ctrl] params applied from socket: strength=%.3f nn=%d guard=%.2f",
+                         ctx->strength, ctx->nn_enabled, ctx->high_clip_guard);
+            }
+        }
 
         usleep(APP_CTRL_PERIOD_MS * 1000);
         atomic_fetch_add(&metrics->control_polls, 1);
@@ -407,18 +479,27 @@ int main(int argc, char** argv) {
     int rc = 1;
     int sys_up = 0, cap_up = 0, vpss_up = 0, bound = 0, disp_up = 0, stream_up = 0;
     int infer_up = 0;
-    int ctrl_up = 0, stream_thread_up = 0;
+    int ctrl_up = 0, stream_thread_up = 0, app_ctrl_up = 0;
     unsigned in_w = 0, in_h = 0;
     long t0 = 0, t_last_log;
     long run_elapsed_ms = 0;
-    pthread_t ctrl_tid, stream_tid;
+    pthread_t ctrl_tid, stream_tid, app_ctrl_tid;
     app_control_ctx_t control_ctx = {0};
     app_runtime_metrics_t runtime_metrics = {0};
     pipeline_metrics_t metrics = {0};
+    static app_status_ctx_t status_ctx;
     ot_vb_cfg vb_cfg = {0};
     ot_pic_buf_attr buf_attr = {0};
     ot_vb_calc_cfg calc_cfg = {0};
     ot_video_frame_info frame;
+    /* Touch menu */
+    ot_pic_buf_attr     menu_buf_attr  = {0};
+    ot_vb_calc_cfg      menu_calc_cfg  = {0};
+    ot_vb_blk           menu_blk       = OT_VB_INVALID_HANDLE;
+    ot_video_frame_info menu_fi        = {0};
+    int touch_fd    = -1;
+    int menu_active = 0;
+    int prev_pressed = 0;
     vpss_chn_cfg_t chn_cfg[VPSS_CHN_COUNT] = {
         {1, DISPLAY_WIDTH, DISPLAY_HEIGHT, 2}, /* chn0：显示底图 */
         {0, PIPELINE_STREAM_WIDTH, PIPELINE_STREAM_HEIGHT, 2},
@@ -445,6 +526,10 @@ int main(int argc, char** argv) {
             cfg.stream_bitrate_kbps = (unsigned) strtoul(argv[++i], NULL, 10);
         } else if (strcmp(argv[i], "--rtsp-port") == 0 && i + 1 < argc) {
             cfg.rtsp_port = (unsigned) strtoul(argv[++i], NULL, 10);
+        } else if (strcmp(argv[i], "--rtsp-bind") == 0 && i + 1 < argc) {
+            cfg.rtsp_bind_addr = argv[++i];
+        } else if (strcmp(argv[i], "--ctrl-sock") == 0 && i + 1 < argc) {
+            cfg.ctrl_sock_path = argv[++i];
         } else if (strcmp(argv[i], "--stream-path") == 0 && i + 1 < argc) {
             cfg.stream_path = argv[++i];
         } else if (strcmp(argv[i], "--model") == 0 && i + 1 < argc) {
@@ -468,8 +553,13 @@ int main(int argc, char** argv) {
     cap_cfg.sensor_index = cfg.sensor_index;
     cap_cfg.mode = cfg.use_wdr ? CAPTURE_MODE_WDR_2TO1 : CAPTURE_MODE_LINEAR;
     stream_cfg = (stream_cfg_t){
-        PIPELINE_STREAM_WIDTH, PIPELINE_STREAM_HEIGHT, cfg.target_fps,
-        cfg.stream_bitrate_kbps, cfg.rtsp_port, cfg.stream_path,
+        .width            = PIPELINE_STREAM_WIDTH,
+        .height           = PIPELINE_STREAM_HEIGHT,
+        .fps              = cfg.target_fps,
+        .bitrate_kbps     = cfg.stream_bitrate_kbps,
+        .rtsp_port        = cfg.rtsp_port,
+        .stream_path      = cfg.stream_path,
+        .rtsp_bind_addr   = cfg.rtsp_bind_addr,
     };
     chn_cfg[PIPELINE_VPSS_CHN_DISPLAY].enable = cfg.enable_display;
     chn_cfg[PIPELINE_VPSS_CHN_STREAM].enable = cfg.enable_stream;
@@ -508,6 +598,61 @@ int main(int argc, char** argv) {
     CHECK_RET_GOTO(sample_comm_sys_init_with_vb_supplement(&vb_cfg, OT_VB_SUPPLEMENT_BNR_MOT_MASK), cleanup);
     sys_up = 1;
 
+    /* Allocate one persistent VB block for the touch menu overlay frame */
+    if (cfg.enable_display) {
+        td_phys_addr_t mphys;
+        td_u8 *mvirt;
+        ot_video_frame *mf;
+
+        menu_buf_attr.width        = DISPLAY_WIDTH;
+        menu_buf_attr.height       = DISPLAY_HEIGHT;
+        menu_buf_attr.align        = OT_DEFAULT_ALIGN;
+        menu_buf_attr.bit_width    = OT_DATA_BIT_WIDTH_8;
+        menu_buf_attr.pixel_format = OT_PIXEL_FORMAT_YVU_SEMIPLANAR_420;
+        menu_buf_attr.compress_mode = OT_COMPRESS_MODE_NONE;
+        ot_common_get_pic_buf_cfg(&menu_buf_attr, &menu_calc_cfg);
+
+        menu_blk = ss_mpi_vb_get_blk(OT_VB_INVALID_POOL_ID, menu_calc_cfg.vb_size, TD_NULL);
+        if (menu_blk == OT_VB_INVALID_HANDLE) {
+            LOG_WARN("[menu] no VB block for menu frame; touch menu disabled");
+        } else {
+            mphys = ss_mpi_vb_handle_to_phys_addr(menu_blk);
+            mvirt = (td_u8 *)ss_mpi_sys_mmap(mphys, menu_calc_cfg.vb_size);
+            if (mphys == 0 || mvirt == TD_NULL) {
+                LOG_WARN("[menu] VB mmap failed; touch menu disabled");
+                (void)ss_mpi_vb_release_blk(menu_blk);
+                menu_blk = OT_VB_INVALID_HANDLE;
+            } else {
+                memset(mvirt, 0, menu_calc_cfg.vb_size);
+                menu_fi.mod_id  = OT_ID_USER;
+                menu_fi.pool_id = ss_mpi_vb_handle_to_pool_id(menu_blk);
+                mf = &menu_fi.video_frame;
+                mf->width            = DISPLAY_WIDTH;
+                mf->height           = DISPLAY_HEIGHT;
+                mf->field            = OT_VIDEO_FIELD_FRAME;
+                mf->pixel_format     = OT_PIXEL_FORMAT_YVU_SEMIPLANAR_420;
+                mf->video_format     = OT_VIDEO_FORMAT_LINEAR;
+                mf->compress_mode    = OT_COMPRESS_MODE_NONE;
+                mf->dynamic_range    = OT_DYNAMIC_RANGE_SDR8;
+                mf->color_gamut      = OT_COLOR_GAMUT_BT601;
+                mf->header_stride[0] = menu_calc_cfg.head_stride;
+                mf->header_stride[1] = menu_calc_cfg.head_stride;
+                mf->header_phys_addr[0] = mphys;
+                mf->header_phys_addr[1] = mphys + menu_calc_cfg.head_y_size;
+                mf->header_virt_addr[0] = mvirt;
+                mf->header_virt_addr[1] = mvirt + menu_calc_cfg.head_y_size;
+                mf->stride[0]        = menu_calc_cfg.main_stride;
+                mf->stride[1]        = menu_calc_cfg.main_stride;
+                mf->phys_addr[0]     = mphys + menu_calc_cfg.head_size;
+                mf->phys_addr[1]     = mf->phys_addr[0] + menu_calc_cfg.main_y_size;
+                mf->virt_addr[0]     = mvirt + menu_calc_cfg.head_size;
+                mf->virt_addr[1]     = mvirt + menu_calc_cfg.head_size + menu_calc_cfg.main_y_size;
+                LOG_INFO("[menu] VB block ready: vb_size=%u main_stride=%u head_size=%u",
+                         menu_calc_cfg.vb_size, menu_calc_cfg.main_stride, menu_calc_cfg.head_size);
+            }
+        }
+    }
+
     if (capture_init(&cap_cfg) != 0) {
         goto cleanup;
     }
@@ -528,6 +673,13 @@ int main(int argc, char** argv) {
             goto cleanup;
         }
         disp_up = 1;
+        if (menu_blk != OT_VB_INVALID_HANDLE) {
+            touch_fd = touch_open("/dev/input/event0", DISPLAY_WIDTH, DISPLAY_HEIGHT);
+            if (touch_fd < 0)
+                LOG_WARN("[menu] touch open failed; touch menu disabled");
+            else
+                LOG_INFO("[menu] touch ready on /dev/input/event0 (corner=bottom-left to open)");
+        }
     }
     if (cfg.enable_stream) {
         if (stream_init(&stream_cfg) != 0) {
@@ -563,14 +715,34 @@ int main(int argc, char** argv) {
         }
         stream_thread_up = 1;
     }
+    /* 控制 socket 线程（可选）：--ctrl-sock 指定后启动 */
+    if (cfg.ctrl_sock_path != NULL) {
+        app_ctrl_cfg_t actrl_cfg = {
+            .sock_path      = cfg.ctrl_sock_path,
+            .status_fn      = ctrl_status_fn,
+            .status_opaque  = &status_ctx,
+        };
+        status_ctx.metrics = &runtime_metrics;
+        status_ctx.ctrl    = &control_ctx;
+        status_ctx.t0      = now_ms();
+        if (app_ctrl_init(&actrl_cfg) != 0 ||
+            pthread_create(&app_ctrl_tid, TD_NULL, app_ctrl_worker, NULL) != 0) {
+            LOG_WARN("app_ctrl: init/thread failed; continuing without control socket");
+        } else {
+            app_ctrl_up = 1;
+        }
+    }
+
     metrics_set_state(&runtime_metrics, control_ctx.health.degraded ? PIPELINE_STATE_DEGRADED
                                                                    : PIPELINE_STATE_RUNNING);
-    LOG_INFO("running: state=%s control %ums%s%s; Ctrl-C to stop",
+    LOG_INFO("running: state=%s control %ums%s%s%s; Ctrl-C to stop",
              pipeline_state_name((pipeline_state_t)atomic_load(&runtime_metrics.state)),
-             APP_CTRL_PERIOD_MS, cfg.enable_display ? " + display" : "",
-             cfg.enable_stream ? " + H.264/RTSP" : "");
+             APP_CTRL_PERIOD_MS,
+             cfg.enable_display ? " + display" : "",
+             cfg.enable_stream ? " + H.264/RTSP" : "",
+             app_ctrl_up ? " + ctrl-sock" : "");
 
-    /* 显示线程（主）：全分辨率相机帧直通到 HDMI，~30fps。 */
+    /* 显示线程（主）：全分辨率相机帧直通到 HDMI，~30fps；触摸时可切换为菜单覆盖帧。 */
     t0 = now_ms();
     t_last_log = t0;
     while (!g_stop) {
@@ -586,6 +758,113 @@ int main(int argc, char** argv) {
             }
             continue;
         }
+
+        /* 非阻塞触摸轮询（每帧头部运行，菜单开关均需要） */
+        if (touch_fd >= 0 && menu_blk != OT_VB_INVALID_HANDLE) {
+            touch_event_t tev;
+            while (touch_poll(touch_fd, &tev) == 1) {
+                if (tev.pressed && !prev_pressed) {  /* 仅响应上升沿 */
+                    if (!menu_active) {
+                        /* 左下角 (x<100, y>DISPLAY_HEIGHT-100) 唤出菜单 */
+                        if (tev.x < 100 && tev.y > (int)DISPLAY_HEIGHT - 100) {
+                            menu_active = 1;
+                            LOG_INFO("[menu] opened (corner touch %d,%d)", tev.x, tev.y);
+                        }
+                    } else {
+                        int btn = menu_hittest(tev.x, tev.y);
+                        if (btn == MENU_BTN_CLOSE) {
+                            menu_active = 0;
+                            LOG_INFO("[menu] closed");
+                        } else {
+                            app_ctrl_params_t mp = {0};
+                            switch (btn) {
+                            case MENU_BTN_TONE_DEC:
+                                mp.has_tone_strength = 1;
+                                mp.tone_strength = control_ctx.strength - 0.05f;
+                                if (mp.tone_strength < 0.0f) mp.tone_strength = 0.0f;
+                                break;
+                            case MENU_BTN_TONE_INC:
+                                mp.has_tone_strength = 1;
+                                mp.tone_strength = control_ctx.strength + 0.05f;
+                                if (mp.tone_strength > 1.0f) mp.tone_strength = 1.0f;
+                                break;
+                            case MENU_BTN_NN_ON:
+                                mp.has_nn_clut_enabled = 1;
+                                mp.nn_clut_enabled = 1;
+                                break;
+                            case MENU_BTN_NN_OFF:
+                                mp.has_nn_clut_enabled = 1;
+                                mp.nn_clut_enabled = 0;
+                                break;
+                            case MENU_BTN_GUARD_DEC:
+                                mp.has_high_clip_guard = 1;
+                                mp.high_clip_guard = control_ctx.high_clip_guard - 0.5f;
+                                if (mp.high_clip_guard < 0.5f) mp.high_clip_guard = 0.5f;
+                                break;
+                            case MENU_BTN_GUARD_INC:
+                                mp.has_high_clip_guard = 1;
+                                mp.high_clip_guard = control_ctx.high_clip_guard + 0.5f;
+                                break;
+                            case MENU_BTN_RESET:
+                                mp.has_tone_strength   = 1;
+                                mp.tone_strength       = cfg.tone_strength;
+                                mp.has_nn_clut_enabled = 1;
+                                mp.nn_clut_enabled     = enable_nn;
+                                mp.has_high_clip_guard = 1;
+                                mp.high_clip_guard     = APP_NN_HIGH_CLIP_GUARD;
+                                break;
+                            default:
+                                break;
+                            }
+                            if (mp.has_tone_strength || mp.has_nn_clut_enabled ||
+                                mp.has_high_clip_guard) {
+                                app_ctrl_push(&mp);
+                                LOG_INFO("[menu] btn=%d pushed params", btn);
+                            }
+                        }
+                    }
+                }
+                prev_pressed = tev.pressed;
+            }
+        }
+
+        /* 菜单覆盖路径：渲染菜单帧并直接送到 VO，跳过 VPSS */
+        if (menu_active && menu_blk != OT_VB_INVALID_HANDLE) {
+            menu_state_t ms;
+            unsigned sc = runtime_metrics.timing_samples < APP_TIMING_SAMPLES
+                          ? runtime_metrics.timing_samples : APP_TIMING_SAMPLES;
+            long el = now_ms() - t0;
+            ms.tone        = control_ctx.strength;
+            ms.nn          = control_ctx.nn_enabled;
+            ms.guard       = control_ctx.high_clip_guard;
+            ms.state_str   = pipeline_state_name(
+                                 (pipeline_state_t)atomic_load(&runtime_metrics.state));
+            ms.fps         = (el > 0) ? (float)(atomic_load(&runtime_metrics.display_frames)
+                                                 * 1000.0 / el) : 0.0f;
+            ms.infer_ms    = runtime_metrics.infer_last_ms;
+            ms.infer_p95   = percentile95(runtime_metrics.infer_samples, sc);
+            ms.stream_frames = (unsigned long long)atomic_load(&runtime_metrics.stream_frames);
+            ms.lut_updates   = (unsigned long long)atomic_load(&runtime_metrics.lut_updates);
+            menu_render_into((uint8_t *)menu_fi.video_frame.virt_addr[0],
+                             (uint8_t *)menu_fi.video_frame.virt_addr[1],
+                             (int)menu_fi.video_frame.stride[0], &ms);
+            (void)ss_mpi_sys_flush_cache(menu_fi.video_frame.phys_addr[0],
+                                         (td_void *)menu_fi.video_frame.virt_addr[0],
+                                         menu_calc_cfg.main_size);
+            if (display_send_frame(&menu_fi, -1) == 0) {
+                atomic_fetch_add(&runtime_metrics.display_frames, 1);
+            } else {
+                atomic_fetch_add(&runtime_metrics.display_drops, 1);
+            }
+            if (now_ms() - t_last_log >= 5000) {
+                LOG_INFO("display (menu) %llu frames",
+                         (unsigned long long)atomic_load(&runtime_metrics.display_frames));
+                t_last_log = now_ms();
+            }
+            continue;
+        }
+
+        /* 正常路径：VPSS 直通帧送显示 */
         if (vpss_get_frame(0, 0, &frame, PIPELINE_FRAME_TIMEOUT_MS) != 0) {
             atomic_fetch_add(&runtime_metrics.display_drops, 1);
             atomic_fetch_add(&runtime_metrics.frame_timeouts, 1);
@@ -624,6 +903,11 @@ cleanup:
     if (!control_ctx.fatal_error) {
         metrics_set_state(&runtime_metrics, PIPELINE_STATE_STOPPING);
     }
+    if (app_ctrl_up) {
+        app_ctrl_stop();
+        (void)pthread_join(app_ctrl_tid, TD_NULL);
+        app_ctrl_deinit();
+    }
     if (stream_thread_up) {
         (void) pthread_join(stream_tid, TD_NULL);
     }
@@ -635,6 +919,13 @@ cleanup:
     }
     if (stream_up) {
         CHECK_RET(stream_deinit());
+    }
+    touch_close(touch_fd);
+    if (menu_blk != OT_VB_INVALID_HANDLE) {
+        (void)ss_mpi_sys_munmap(
+            (td_void *)menu_fi.video_frame.header_virt_addr[0],
+            menu_calc_cfg.vb_size);
+        (void)ss_mpi_vb_release_blk(menu_blk);
     }
     if (disp_up) {
         CHECK_RET(display_deinit());

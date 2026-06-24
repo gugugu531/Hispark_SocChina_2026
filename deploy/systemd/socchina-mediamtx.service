@@ -1,0 +1,23 @@
+[Unit]
+Description=SocChina MediaMTX stream relay (RTSP/HLS/WebRTC)
+Documentation=https://github.com/bluenviron/mediamtx
+# 必须在 socchina_app 的内建 RTSP 起来之后才启动
+After=network.target socchina-stream.service
+Wants=socchina-stream.service
+StartLimitIntervalSec=60
+StartLimitBurst=5
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/socchina/mediamtx
+ExecStart=/opt/socchina/mediamtx/mediamtx /opt/socchina/mediamtx/mediamtx.yml
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=10
+KillSignal=SIGTERM
+
+# mediamtx 初始会重试连接内建 RTSP，失败是正常的（等 socchina_app 起链）
+SuccessExitStatus=0
+
+[Install]
+WantedBy=multi-user.target

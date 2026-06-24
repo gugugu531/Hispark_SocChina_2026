@@ -1,0 +1,146 @@
+#!/usr/bin/env bash
+# systemd ExecStart 包装器：读取板端配置并以前台进程方式 exec socchina_app。
+set -euo pipefail
+
+readonly APP_DIR="${SOCCHINA_APP_DIR:-/root/socchina-2026}"
+readonly APP="${APP_DIR}/socchina_app"
+readonly CONFIG="${SOCCHINA_CONFIG:-/etc/socchina/runtime.conf}"
+readonly MIPI_DEVICE="${SOCCHINA_MIPI_DEVICE:-/dev/ot_mipi_rx}"
+readonly DEVICE_WAIT_SECONDS="${SOCCHINA_DEVICE_WAIT_SECONDS:-30}"
+
+if [[ ! -x "${APP}" ]]; then
+    echo "[socchina-start] executable not found: ${APP}" >&2
+    exit 1
+fi
+if [[ ! -r "${CONFIG}" ]]; then
+    echo "[socchina-start] config not readable: ${CONFIG}" >&2
+    exit 1
+fi
+
+# shellcheck disable=SC1090
+source "${CONFIG}"
+
+: "${ENABLE_HDMI:=0}"
+: "${CONFIG_VERSION:=0}"
+: "${RTSP_BIND_ADDR:=}"
+: "${RTSP_PORT:=8554}"
+: "${STREAM_PATH:=live}"
+: "${BITRATE_KBPS:=3000}"
+: "${SENSOR_INDEX:=1}"
+: "${CAPTURE_MODE:=linear}"
+: "${TARGET_FPS:=30}"
+: "${TONE_STRENGTH:=0.25}"
+: "${ENABLE_NN_CONTROL:=0}"
+: "${NN_HIGH_CLIP_GUARD:=3.0}"
+: "${MODEL_PATH:=/root/socchina-2026/cotf_paramnet_256x144_lcdp_best_e0167_fp16_aipp.om}"
+: "${CTRL_SOCK:=}"
+
+if [[ "${CONFIG_VERSION}" != "0" && "${CONFIG_VERSION}" != "1" ]]; then
+    echo "[socchina-start] unsupported CONFIG_VERSION=${CONFIG_VERSION}; supported: 1 (or legacy 0)" >&2
+    exit 2
+fi
+if [[ "${CONFIG_VERSION}" == "0" ]]; then
+    echo "[socchina-start] legacy config without CONFIG_VERSION; applying schema v1 defaults" >&2
+fi
+if [[ "${ENABLE_HDMI}" != "0" && "${ENABLE_HDMI}" != "1" ]]; then
+    echo "[socchina-start] ENABLE_HDMI must be 0 or 1" >&2
+    exit 2
+fi
+if [[ "${ENABLE_NN_CONTROL}" != "0" && "${ENABLE_NN_CONTROL}" != "1" ]]; then
+    echo "[socchina-start] ENABLE_NN_CONTROL must be 0 or 1" >&2
+    exit 2
+fi
+if [[ "${ENABLE_NN_CONTROL}" == "1" && ! -r "${MODEL_PATH}" ]]; then
+    echo "[socchina-start] warning: NN model not readable; app will fall back to rule Gamma: ${MODEL_PATH}" >&2
+fi
+if [[ ! "${RTSP_PORT}" =~ ^[0-9]+$ ]] || ((RTSP_PORT < 1 || RTSP_PORT > 65535)); then
+    echo "[socchina-start] invalid RTSP_PORT: ${RTSP_PORT}" >&2
+    exit 2
+fi
+if [[ ! "${BITRATE_KBPS}" =~ ^[0-9]+$ ]] || ((BITRATE_KBPS < 128)); then
+    echo "[socchina-start] invalid BITRATE_KBPS: ${BITRATE_KBPS}" >&2
+    exit 2
+fi
+if [[ ! "${SENSOR_INDEX}" =~ ^[01]$ ]]; then
+    echo "[socchina-start] invalid SENSOR_INDEX: ${SENSOR_INDEX}" >&2
+    exit 2
+fi
+if [[ "${CAPTURE_MODE}" != "linear" && "${CAPTURE_MODE}" != "wdr2to1" ]]; then
+    echo "[socchina-start] CAPTURE_MODE must be linear or wdr2to1" >&2
+    exit 2
+fi
+if [[ ! "${TARGET_FPS}" =~ ^[0-9]+$ ]] ||
+    ((TARGET_FPS < 1 || TARGET_FPS > 30)) ||
+    [[ "${CAPTURE_MODE}" == "wdr2to1" && "${TARGET_FPS}" -lt 5 ]]; then
+    echo "[socchina-start] invalid TARGET_FPS=${TARGET_FPS} for CAPTURE_MODE=${CAPTURE_MODE}" >&2
+    exit 2
+fi
+if ! awk -v value="${TONE_STRENGTH}" \
+    'BEGIN { exit !(value ~ /^[0-9]+([.][0-9]+)?$/ && value >= 0 && value <= 1) }'; then
+    echo "[socchina-start] TONE_STRENGTH must be within 0..1" >&2
+    exit 2
+fi
+if ! awk -v value="${NN_HIGH_CLIP_GUARD}" \
+    'BEGIN { exit !(value ~ /^[0-9]+([.][0-9]+)?$/ && value >= 0 && value <= 100) }'; then
+    echo "[socchina-start] NN_HIGH_CLIP_GUARD must be within 0..100" >&2
+    exit 2
+fi
+if [[ ! "${STREAM_PATH}" =~ ^[A-Za-z0-9._~-]+$ ]]; then
+    echo "[socchina-start] invalid STREAM_PATH: ${STREAM_PATH}" >&2
+    exit 2
+fi
+if [[ -n "${RTSP_BIND_ADDR:-}" ]]; then
+    if ! [[ "${RTSP_BIND_ADDR}" =~ ^[0-9.:]+$ ]]; then
+        echo "[socchina-start] invalid RTSP_BIND_ADDR: ${RTSP_BIND_ADDR}" >&2
+        exit 2
+    fi
+fi
+if [[ "${1:-}" == "--check-config" ]]; then
+    echo "[socchina-start] configuration valid (schema=v1, source=${CONFIG_VERSION})"
+    exit 0
+fi
+
+for ((second = 0; second < DEVICE_WAIT_SECONDS; second++)); do
+    [[ -e "${MIPI_DEVICE}" ]] && break
+    if ((second == 0)); then
+        echo "[socchina-start] waiting for ${MIPI_DEVICE} (up to ${DEVICE_WAIT_SECONDS}s)"
+    fi
+    sleep 1
+done
+if [[ ! -e "${MIPI_DEVICE}" ]]; then
+    echo "[socchina-start] device did not appear: ${MIPI_DEVICE}" >&2
+    exit 1
+fi
+
+args=(
+    --stream
+    --sensor "${SENSOR_INDEX}"
+    --fps "${TARGET_FPS}"
+    --strength "${TONE_STRENGTH}"
+    --nn-high-clip "${NN_HIGH_CLIP_GUARD}"
+    --bitrate "${BITRATE_KBPS}"
+    --rtsp-port "${RTSP_PORT}"
+    --stream-path "${STREAM_PATH}"
+)
+if [[ "${CAPTURE_MODE}" == "wdr2to1" ]]; then
+    args+=(--wdr)
+fi
+if [[ "${ENABLE_HDMI}" == "0" ]]; then
+    args+=(--no-display)
+fi
+if [[ "${ENABLE_NN_CONTROL}" == "1" ]]; then
+    args+=(--model "${MODEL_PATH}")
+else
+    args+=(--no-nn)
+fi
+if [[ -n "${RTSP_BIND_ADDR:-}" ]]; then
+    args+=(--rtsp-bind "${RTSP_BIND_ADDR}")
+fi
+if [[ -n "${CTRL_SOCK:-}" ]]; then
+    mkdir -p "$(dirname "${CTRL_SOCK}")"
+    args+=(--ctrl-sock "${CTRL_SOCK}")
+fi
+
+echo "[socchina-start] schema=v1 sensor=${SENSOR_INDEX} mode=${CAPTURE_MODE} fps=${TARGET_FPS} RTSP ${RTSP_BIND_ADDR:+bind=${RTSP_BIND_ADDR} }port=${RTSP_PORT} path=/${STREAM_PATH} bitrate=${BITRATE_KBPS}kbps HDMI=${ENABLE_HDMI} NN=${ENABLE_NN_CONTROL}${CTRL_SOCK:+ ctrl-sock=${CTRL_SOCK}}"
+cd "${APP_DIR}"
+exec stdbuf -oL -eL "${APP}" "${args[@]}"
