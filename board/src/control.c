@@ -2,20 +2,25 @@
 
 #include "control.h"
 
-/* 判决阈值（重标定起点，高光优先）。
+/* 判决阈值——AE 统计域标定，高光优先。
  *
- * 设计依据：过曝是 sensor 像素阱饱和导致的**不可逆**信息丢失，而提亮暗部是可逆的。
- * 因此判决偏保守：宁可暗部欠提一点，也不让规则 Gamma 把已接近裁剪的高光顶爆。
+ * 关键标定事实（板端实测）：AE 自动曝光会把 mean_luma 钉在其**设定点**附近，实测该设定点
+ * ≈ 53（生产日志 `luma=52.5`、新逻辑 `luma=53.9`），而同帧实际输出 Y ≈ 144。因此：
+ *   - `mean_luma` 反映的是"AE 能否达到设定点"，**不是**场景绝对亮度——AE 把它抹平到设定点；
+ *     旧阈值 DARK=60 高于设定点 53，导致每个 AE 稳定场景都被判"暗"→ 永远提亮（过曝根因）。
+ *   - `clip_high_pct/clip_low_pct` 才是反映真实动态范围的主信号（AE 抹不平裁剪）。
+ * 重标定原则：mean 阈值以设定点 53 为基线，DARK 取其下、BRIGHT/CEIL 取其上；裁剪比例为主判据。
+ * 设计依据：过曝是 sensor 像素阱饱和的**不可逆**信息丢失，提亮可逆 → 判决偏保守，高光优先。
  *
- * 注：这些仍是经验起点，需用**输出域**（如 RTSP 抓帧）实测的 mean/clip 再标定——
- * AE 统计的亮度域不一定与输出亮度域对齐（见 docs/TODO.md 阈值标定项）。
+ * 标定锚点：AE luma≈53 ↔ 输出≈144（正常偏亮，应判 BYPASS 不动）。**单锚点标定**：
+ * DARK/BRIGHT 的精确值仍需补"真实暗场 / 真实过曝场景"的 AE↔输出配对确认（见 docs/TODO.md）。
  */
-#define HIGH_CLIP_COMPRESS_TH 1.5f   /* 高光裁剪超此 → 主动压高光（原 3.0 偏松，2.5% 已可见裁剪） */
-#define HIGH_CLIP_INHIBIT_TH  0.8f   /* 高光裁剪超此 → 禁止纯提亮（提亮会推高已裁剪区） */
-#define BRIGHT_LUMA_TH        160.0f /* 整体偏亮阈值（原 180） */
-#define BRIGHTEN_LUMA_CEIL    140.0f /* 整体亮度达此即不再纯提亮 */
+#define HIGH_CLIP_COMPRESS_TH 3.0f   /* 高光裁剪超此 → 压高光（高于典型不可消除窗光基线 ~1.9%） */
+#define HIGH_CLIP_INHIBIT_TH  1.5f   /* 高光裁剪超此 → 禁止纯提亮（背光场景不要把窗顶爆） */
+#define BRIGHT_LUMA_TH        95.0f  /* AE mean 远超设定点 → 真实过曝（AE 已压不下来） */
+#define BRIGHTEN_LUMA_CEIL    62.0f  /* AE mean 已达/超设定点 → 不再纯提亮 */
 #define LOW_CLIP_TH           10.0f  /* 暗部裁剪比例阈值 % */
-#define DARK_LUMA_TH          60.0f  /* 整体偏暗阈值 */
+#define DARK_LUMA_TH          40.0f  /* AE mean 低于设定点一截 → 真实欠曝（AE 顶到曝光上限仍偏暗） */
 
 expo_mode_t control_decide(const luma_stats_t *stats)
 {

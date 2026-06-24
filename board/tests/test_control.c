@@ -26,30 +26,33 @@ static void check_i(const char *name, int got, int want)
 
 int main(void)
 {
-    luma_stats_t dark = {30.0f, 0.1f, 25.0f};
-    luma_stats_t bright = {200.0f, 8.0f, 0.2f};
-    luma_stats_t mixed = {120.0f, 6.0f, 15.0f};
-    luma_stats_t normal = {110.0f, 0.5f, 1.0f};
-
-    check("dark->brighten", control_decide(&dark), EXPO_MODE_BRIGHTEN);
-    check("bright->compress", control_decide(&bright), EXPO_MODE_COMPRESS);
-    check("mixed->bidir", control_decide(&mixed), EXPO_MODE_BIDIR);
-    check("normal->bypass", control_decide(&normal), EXPO_MODE_BYPASS);
+    /* 判决用 AE 统计域数值（AE 把 mean 钉在设定点 ≈53；mean>设定点=AE 压不下的过曝，
+     * mean<设定点=AE 顶到曝光上限的欠曝）。详见 control.c 阈值标定注释。 */
     check("null->bypass", control_decide(NULL), EXPO_MODE_BYPASS);
 
+    /* 标定锚点：AE 设定点附近、仅不可消除窗光 → 正常偏亮，不动（修复过度提亮的核心用例）。 */
+    luma_stats_t anchor = {53.0f, 1.9f, 3.1f};
+    check("ae-anchor->bypass", control_decide(&anchor), EXPO_MODE_BYPASS);
+    /* 真实欠曝：AE 顶到曝光上限 mean 仍低于设定点、暗部大量裁剪 → 提亮。 */
+    luma_stats_t under = {32.0f, 0.2f, 22.0f};
+    check("underexposed->brighten", control_decide(&under), EXPO_MODE_BRIGHTEN);
+    /* 真实过曝（裁剪驱动）：高光大量裁剪 → 压高光。 */
+    luma_stats_t over_clip = {78.0f, 9.0f, 0.1f};
+    check("overclip->compress", control_decide(&over_clip), EXPO_MODE_COMPRESS);
+    /* 真实过曝（亮度驱动）：AE mean 远超设定点压不下来 → 压高光。 */
+    luma_stats_t over_mean = {100.0f, 0.5f, 0.5f};
+    check("overmean->compress", control_decide(&over_mean), EXPO_MODE_COMPRESS);
+    /* 背光高动态：暗部裁剪 + 高光裁剪并存 → 双向。 */
+    luma_stats_t hdr = {45.0f, 5.0f, 14.0f};
+    check("hdr->bidir", control_decide(&hdr), EXPO_MODE_BIDIR);
+
     /* 高光优先（过曝不可逆）：以下场景必须不返回 BRIGHTEN。 */
-    /* 偏亮且有可见高光裁剪（实测旁路态 Y≈109/clip≈2.5%）→ 主动压高光，不再误判提亮。 */
-    luma_stats_t bright_clip = {109.0f, 2.5f, 0.0f};
-    check("brightclip->compress", control_decide(&bright_clip), EXPO_MODE_COMPRESS);
-    /* 暗部偏暗但高光已在裁剪 → 高动态，走 BIDIR 压高光而非纯提亮。 */
-    luma_stats_t hdr_darkish = {55.0f, 2.5f, 12.0f};
-    check("hdr-darkish->bidir", control_decide(&hdr_darkish), EXPO_MODE_BIDIR);
-    /* 整体已偏亮（超提亮天花板）却有少量暗部 → 不提亮，维持现状。 */
-    luma_stats_t bright_some_dark = {145.0f, 0.3f, 12.0f};
-    check("bright-ceiling->bypass", control_decide(&bright_some_dark), EXPO_MODE_BYPASS);
-    /* 整体偏暗但已有高光裁剪（超提亮抑制阈值）→ 不提亮，避免把高光顶爆。 */
-    luma_stats_t dark_with_highlight = {50.0f, 1.0f, 12.0f};
-    check("dark-w-highlight->bypass", control_decide(&dark_with_highlight), EXPO_MODE_BYPASS);
+    /* 暗部裁剪但已有可见窗光裁剪（超提亮抑制阈值）→ 不纯提亮，维持现状。 */
+    luma_stats_t dark_with_window = {38.0f, 2.0f, 12.0f};
+    check("dark-w-window->bypass", control_decide(&dark_with_window), EXPO_MODE_BYPASS);
+    /* AE mean 已在设定点之上（超提亮天花板）却有少量暗部 → 不提亮。 */
+    luma_stats_t above_setpoint = {65.0f, 0.3f, 12.0f};
+    check("above-ceiling->bypass", control_decide(&above_setpoint), EXPO_MODE_BYPASS);
 
     /* CoTF LUT 刷新策略：限流 / 周期下限 / 场景变化迟滞 */
     luma_stats_t a = {110.0f, 0.5f, 1.0f};
