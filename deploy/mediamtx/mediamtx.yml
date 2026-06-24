@@ -25,6 +25,10 @@ authInternalUsers:
       - action: publish
       - action: read
       - action: playback
+      # API/metrics 仅绑 127.0.0.1，供 socchina-web 本地健康检查；不放权会 401
+      - action: api
+      - action: metrics
+      - action: pprof
 
 ###############################################
 # API（仅 loopback，供 socchina-web 健康检查）
@@ -39,7 +43,7 @@ metrics: false
 ###############################################
 rtsp: true
 rtspAddress: :8554
-rtspEncryption: no
+rtspEncryption: "no"
 rtspAuthMethods: [basic]
 # 内建 RTSP (socchina_app) 用 TCP，拉流也用 TCP 避免 UDP 路由问题
 rtspTransports: [tcp]
@@ -83,11 +87,9 @@ paths:
   # live：从 socchina_app 内建 RTSP 拉流，对外发布
   live:
     source: rtsp://127.0.0.1:8555/internal
-    sourceProtocol: tcp
-    # 拉流失败后重试间隔
+    # 拉源用 TCP（v1.19.1 用 rtspTransport，取代旧版 sourceProtocol）
+    rtspTransport: tcp
     sourceOnDemand: false
-    # 断流后持续重连
-    sourceRedoTimeout: 5s
 
   # 禁止其他路径发布（只允许 mediamtx 自己拉 socchina_app 的流）
   all_others:
