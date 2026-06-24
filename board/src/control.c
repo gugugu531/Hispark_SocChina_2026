@@ -2,31 +2,50 @@
 
 #include "control.h"
 
-/* 判决阈值（初版经验值，后续按相机/显示实测标定）。 */
-#define HIGH_CLIP_TH   3.0f   /* 高光裁剪比例阈值 % */
-#define LOW_CLIP_TH    10.0f  /* 暗部裁剪比例阈值 % */
-#define BRIGHT_LUMA_TH 180.0f /* 整体偏亮阈值 */
-#define DARK_LUMA_TH   60.0f  /* 整体偏暗阈值 */
+/* 判决阈值（重标定起点，高光优先）。
+ *
+ * 设计依据：过曝是 sensor 像素阱饱和导致的**不可逆**信息丢失，而提亮暗部是可逆的。
+ * 因此判决偏保守：宁可暗部欠提一点，也不让规则 Gamma 把已接近裁剪的高光顶爆。
+ *
+ * 注：这些仍是经验起点，需用**输出域**（如 RTSP 抓帧）实测的 mean/clip 再标定——
+ * AE 统计的亮度域不一定与输出亮度域对齐（见 docs/TODO.md 阈值标定项）。
+ */
+#define HIGH_CLIP_COMPRESS_TH 1.5f   /* 高光裁剪超此 → 主动压高光（原 3.0 偏松，2.5% 已可见裁剪） */
+#define HIGH_CLIP_INHIBIT_TH  0.8f   /* 高光裁剪超此 → 禁止纯提亮（提亮会推高已裁剪区） */
+#define BRIGHT_LUMA_TH        160.0f /* 整体偏亮阈值（原 180） */
+#define BRIGHTEN_LUMA_CEIL    140.0f /* 整体亮度达此即不再纯提亮 */
+#define LOW_CLIP_TH           10.0f  /* 暗部裁剪比例阈值 % */
+#define DARK_LUMA_TH          60.0f  /* 整体偏暗阈值 */
 
 expo_mode_t control_decide(const luma_stats_t *stats)
 {
+    int over;
+    int dark;
+    int brighten_safe;
+
     if (stats == NULL) {
         return EXPO_MODE_BYPASS;
     }
 
-    int over = (stats->clip_high_pct > HIGH_CLIP_TH) || (stats->mean_luma > BRIGHT_LUMA_TH);
-    int under = (stats->clip_low_pct > LOW_CLIP_TH) || (stats->mean_luma < DARK_LUMA_TH);
+    over = (stats->clip_high_pct > HIGH_CLIP_COMPRESS_TH) ||
+           (stats->mean_luma > BRIGHT_LUMA_TH);
+    dark = (stats->clip_low_pct > LOW_CLIP_TH) ||
+           (stats->mean_luma < DARK_LUMA_TH);
+    /* 高光优先：已有可观高光裁剪或整体已偏亮时，纯提亮会把高光顶爆 → 抑制 BRIGHTEN。
+     * COMPRESS（gamma>1）与 BIDIR（log 曲线）本身压高光，不受此抑制。 */
+    brighten_safe = (stats->clip_high_pct <= HIGH_CLIP_INHIBIT_TH) &&
+                    (stats->mean_luma < BRIGHTEN_LUMA_CEIL);
 
-    if (over && under) {
-        return EXPO_MODE_BIDIR;
+    if (over && dark) {
+        return EXPO_MODE_BIDIR;     /* 高动态：log 曲线同时提暗压亮，不顶爆高光 */
     }
     if (over) {
-        return EXPO_MODE_COMPRESS;
+        return EXPO_MODE_COMPRESS;  /* 高光优先压制 */
     }
-    if (under) {
-        return EXPO_MODE_BRIGHTEN;
+    if (dark && brighten_safe) {
+        return EXPO_MODE_BRIGHTEN;  /* 仅当提亮不会顶爆高光时才提亮 */
     }
-    return EXPO_MODE_BYPASS;
+    return EXPO_MODE_BYPASS;        /* 含“暗但提亮不安全”→ 维持现状，避免过曝 */
 }
 
 /* LUT 刷新策略阈值（初版经验值，待相机实测标定；假定控制环 ~30Hz）。 */

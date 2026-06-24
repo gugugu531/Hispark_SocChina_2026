@@ -37,6 +37,20 @@ int main(void)
     check("normal->bypass", control_decide(&normal), EXPO_MODE_BYPASS);
     check("null->bypass", control_decide(NULL), EXPO_MODE_BYPASS);
 
+    /* 高光优先（过曝不可逆）：以下场景必须不返回 BRIGHTEN。 */
+    /* 偏亮且有可见高光裁剪（实测旁路态 Y≈109/clip≈2.5%）→ 主动压高光，不再误判提亮。 */
+    luma_stats_t bright_clip = {109.0f, 2.5f, 0.0f};
+    check("brightclip->compress", control_decide(&bright_clip), EXPO_MODE_COMPRESS);
+    /* 暗部偏暗但高光已在裁剪 → 高动态，走 BIDIR 压高光而非纯提亮。 */
+    luma_stats_t hdr_darkish = {55.0f, 2.5f, 12.0f};
+    check("hdr-darkish->bidir", control_decide(&hdr_darkish), EXPO_MODE_BIDIR);
+    /* 整体已偏亮（超提亮天花板）却有少量暗部 → 不提亮，维持现状。 */
+    luma_stats_t bright_some_dark = {145.0f, 0.3f, 12.0f};
+    check("bright-ceiling->bypass", control_decide(&bright_some_dark), EXPO_MODE_BYPASS);
+    /* 整体偏暗但已有高光裁剪（超提亮抑制阈值）→ 不提亮，避免把高光顶爆。 */
+    luma_stats_t dark_with_highlight = {50.0f, 1.0f, 12.0f};
+    check("dark-w-highlight->bypass", control_decide(&dark_with_highlight), EXPO_MODE_BYPASS);
+
     /* CoTF LUT 刷新策略：限流 / 周期下限 / 场景变化迟滞 */
     luma_stats_t a = {110.0f, 0.5f, 1.0f};
     luma_stats_t a_small = {113.0f, 0.6f, 1.2f};  /* 变化小于阈值 */
