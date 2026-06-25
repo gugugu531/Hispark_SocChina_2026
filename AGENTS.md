@@ -184,7 +184,7 @@ Web Portal
 - HDMI 面板为类 DVI 的 1024x600 面板：原生时序、DVI 模式、音频禁用、RGB full 路径稳定；GFBG 图层路径有轻微 flicker（VGS 合成替代方案待验证）。
 - 相机是 **OS08A20**（早期曾被误认为 OS04A10，已纠正）。
 - `/proc/umap/svp_nnn` 的 `hw_utilization` 是目前最佳的 NPU 百分比式利用率指标；ACL profiling 会扭曲 CPU/内存计时，资源监控与 profiling 要分开跑。
-- **OS08A20 的 WDR 模式有 SDK 文档记载的限制**（短曝光精度/亮度受影响）。"WDR 作为过曝主防线"需先实测；不达预期则退化为 AE 曝光控制 + DRC/CLUT 色调压缩为主。
+- **OS08A20 的 WDR 模式有 SDK 文档记载的限制**（短曝光精度/亮度受影响）。WDR 2to1 作为过曝主防线已于 `2026-06-11` 初步实测正面：30fps 满帧稳定，同场景高光裁剪 `5.7%→1.6%`、暗部 `36.5%→5.3%`，灯管由 linear 过曝白斑变为 WDR 清晰可辨（详见 `docs/TODO.md` §6 与 `board/README.md`）。完整画质细调（强逆光、运动鬼影、长时稳定性，以及切帧率向低帧收敛偏慢的已知限制）待续；若最终不达预期，退化为 AE 曝光控制 + DRC/CLUT 色调压缩为主。
 
 架构级待验证点清单维护在 `docs/architecture.md` §6。整图 OM 的 go/no-go 已完成：算子可干净落
 AICore，但 `1024x576` 超过 33ms。正式 param-net、chn2+AIPP、17v2 bridge、生产 control worker、
