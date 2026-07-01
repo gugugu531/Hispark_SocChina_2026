@@ -69,3 +69,4 @@ go.sum
 *.swp
 .DS_Store
 fusion_result.json
+ge_check_op.json
