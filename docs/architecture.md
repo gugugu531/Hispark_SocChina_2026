@@ -21,11 +21,23 @@ OS08A20 -> VI -> ISP
 
 控制旁路（低频或场景变化时）：
 
-ISP AE 统计 -> 规则 Gamma
-VPSS chn2 256x144 NV21 -> AIPP -> CoTF-inspired param-net -> 安全 CLUT 桥
-       -> 颜色: ISP 17³ CLUT
-       -> control_should_refresh_lut 控制刷新频率
+ISP AE 统计 -> 规则 Gamma（始终运行，负责色调与曝光兜底）
+VPSS chn2 256x144 NV21 -> CPU NV21→RGB fp16 -> CTBG estimator OM (v9 6ch, 3.8ms)
+       -> 6ch 系数预上采样 144×256→576×1024 -> 共享缓冲
 ISP DRC/LDCI ------------------------------------> ISP 自动/配置策略
+
+流增强旁路（间歇写回，场景变化触发）：
+
+VPSS chn1 1024x576 NV21 -> CPU NV21→RGB fp16 (10ms) ->
+       CTBG apply OM (v9 6ch, 20.5ms) -> RGB fp16 ->
+       全整数 YUV LUT 转换 (48ms) -> mmap 写回 VPSS 帧 -> VENC/RTSP
+       写回冷却 45 帧（~1.5s），异步诊断模式持续运行（仅 Y 通道 metrics）
+
+CTBG 架构要点：
+- v9 6ch OM 无 ConvTranspose，host 侧 nearest 预上采样系数
+- 整数 LUT 方案：576KB fp16→YUV 贡献表 + 256B 8-bit→fp16 表
+- 写回通过 ss_mpi_sys_mmap 独立映射，避免 VPSS virt_addr DMA 竞争
+- apply 解耦：VPSS 帧复制后立即归还，apply 异步运行不阻塞显示管线
 ```
 
 ISP 参数块位于公共图像链内，因此同一 ISP 输出天然是“已增强帧”。产品范围为全屏增强与增强开关，
