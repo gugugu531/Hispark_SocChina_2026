@@ -712,10 +712,43 @@ static void* stream_worker(void* arg) {
                         metrics->infer_last_ms = t.app_ms;
                         atomic_fetch_add(&metrics->infer_runs, 1);
 
-                        /* 诊断：仅计时，不写回 VPSS（隔离崩溃根因） */
+                        /* RGB fp16 → NV21 写回（正确 fp16 解码） */
+                        uint8_t *yp = ctbg_nv, *vp = ctbg_nv + ysz;
+                        int x, y, cs = w * h;
+                        for (y = 0; y < h; y++) {
+                            for (x = 0; x < w; x++) {
+                                int i = y * w + x;
+                                float R = ctbg_f16tof32(ctbg_rgb[i]);
+                                float G = ctbg_f16tof32(ctbg_rgb[cs + i]);
+                                float B = ctbg_f16tof32(ctbg_rgb[2*cs + i]);
+                                if (R < 0.0f) R = 0.0f; if (R > 1.0f) R = 1.0f;
+                                if (G < 0.0f) G = 0.0f; if (G > 1.0f) G = 1.0f;
+                                if (B < 0.0f) B = 0.0f; if (B > 1.0f) B = 1.0f;
+                                yp[i] = (uint8_t)(0.299f*R*255.0f + 0.587f*G*255.0f + 0.114f*B*255.0f + 0.5f);
+                                if ((y & 1) == 0 && (x & 1) == 0) {
+                                    int vi = (y/2)*(w/2)*2 + (x/2)*2;
+                                    int U = (int)(-0.169f*R*255.0f - 0.331f*G*255.0f + 0.500f*B*255.0f + 128.5f);
+                                    int V = (int)( 0.500f*R*255.0f - 0.419f*G*255.0f - 0.081f*B*255.0f + 128.5f);
+                                    if (U < 0) U = 0; if (U > 255) U = 255;
+                                    if (V < 0) V = 0; if (V > 255) V = 255;
+                                    vp[vi] = (uint8_t)V; vp[vi+1] = (uint8_t)U;
+                                }
+                            }
+                        }
+                        /* 写回：用独立 mmap 映射物理地址，避免与 VPSS DMA 竞争 */
+                        {
+                            td_void *wy = ss_mpi_sys_mmap(
+                                frame.video_frame.phys_addr[0], ysz);
+                            td_void *wuv = ss_mpi_sys_mmap(
+                                frame.video_frame.phys_addr[1], uvsz);
+                            if (wy && wuv) {
+                                memcpy(wy, ctbg_nv, ysz);
+                                memcpy(wuv, ctbg_nv + ysz, uvsz);
+                                ss_mpi_sys_munmap(wy, ysz);
+                                ss_mpi_sys_munmap(wuv, uvsz);
+                            }
+                        }
                         last_apply_us = now_us() - t0;
-                        LOG_INFO("[stream] CTBG apply %.1fms total=%.1fms",
-                                 t.app_ms, last_apply_us / 1000.0f);
                     }
                 }
             }
