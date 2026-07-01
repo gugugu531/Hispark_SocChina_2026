@@ -1,0 +1,42 @@
+# CTBG v13: MobileIE 训练方法修复
+# 改动: warmup 10ep(Linear LR 10%→100%) + CosineAnnealingLR + Dropout2d 正则
+# 原则: 保持 v9 验证过的数据配方, 仅修复训练方法
+seed: 42
+
+# 数据(同 v9)
+lol_train: /home/alan/Learning/Retinexformer/data/LOLv1/Train
+lol_val:   /home/alan/Learning/Retinexformer/data/LOLv1/Test
+sice_root: /home/alan/Learning/Hispark/_eval-lut-curve/data/SICE/Dataset_Part2_512
+sice_val_seqs: 20
+samples_per_epoch: 2000       # v9 验证值(95% 数据/epoch)
+val_samples: 60
+patch: 256
+p_lol: 0.15
+p_identity: 0.15              # v9 验证值
+batch_size: 8
+num_workers: 6
+p_nonuniform: 0.3
+
+# 模型(同 v9 6ch)
+channels: 12
+rep_scale: 4
+down: 4
+
+# 损失(同 v9)
+tv_w: 0.001
+std_w: 0.1
+sat_w: 0.1
+illum_w: 0.0
+b_range: 0.02
+
+# 优化(MobileIE 风格)
+lr: 1.0e-3
+max_epochs: 400
+precision: 32
+save_every_n_epochs: 1
+weight_decay: 0                # MobileIE 不用 wd
+warmup_epochs: 10              # Linear LR warmup(10%→100%), Dropout2d(0.1)
+
+# 日志
+out_dir: /home/alan/Learning/Hispark/_eval-lut-curve/p1_bidir/runs
+exp_name: coeff_ctbg_v13
