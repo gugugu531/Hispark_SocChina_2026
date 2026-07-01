@@ -646,17 +646,27 @@ static void* control_worker(void* arg) {
     return TD_NULL;
 }
 
-/* 正确的 fp16→float 解码（非截断！IEEE 754 half precision） */
-static inline float ctbg_f16tof32(uint16_t v) {
-    uint32_t s = (v & 0x8000u) << 16, e = (v >> 10) & 0x1Fu, m = v & 0x3FFu, b;
-    if (e == 0) {
-        if (m == 0) b = s;
-        else { e = 1; while ((m & 0x400) == 0) { m <<= 1; e--; } m &= 0x3FF;
-               b = s | ((e + 127 - 15) << 23) | (m << 13); }
-    } else if (e == 0x1F) b = s | 0x7F800000u | (m << 13);
-    else b = s | ((e - 15 + 127) << 23) | (m << 13);
-    float f; memcpy(&f, &b, 4); return f;
+/* fp16→float LUT：65536 项 float（256KB），RGB→NV21 时 O(1) 查表替代 IEEE 754 位操作。
+ * 浮点 YUV 转换仍保留，后续可改为全整数 LUT（需 9 通道分别查表）。 */
+static float g_f16_lut[65536];
+static int   g_f16_lut_init = 0;
+
+static void ctbg_init_f16_lut(void) {
+    if (g_f16_lut_init) return;
+    for (int i = 0; i < 65536; i++) {
+        uint32_t s = (i & 0x8000u) << 16, e = (i >> 10) & 0x1Fu, m = i & 0x3FFu, b;
+        if (e == 0) {
+            if (m == 0) b = s;
+            else { e = 1; while ((m & 0x400) == 0) { m <<= 1; e--; } m &= 0x3FF;
+                   b = s | ((e + 127 - 15) << 23) | (m << 13); }
+        } else if (e == 0x1F) b = s | 0x7F800000u | (m << 13);
+        else b = s | ((e - 15 + 127) << 23) | (m << 13);
+        memcpy(&g_f16_lut[i], &b, 4);
+    }
+    g_f16_lut_init = 1;
 }
+
+static inline float ctbg_f16tof32(uint16_t v) { return g_f16_lut[v]; }
 
 static void* stream_worker(void* arg) {
     app_runtime_metrics_t *metrics = (app_runtime_metrics_t *)arg;
@@ -688,7 +698,8 @@ static void* stream_worker(void* arg) {
 
         /* v8 AIPP OM apply：NV21→RGB（硬件 AIPP）→ OM（~38ms）→ RGB fp16 输出
          * + CPU RGB→NV21 写回（~10ms）。总 ~48ms > 33ms，帧跳过载保护。 */
-        int skip = (last_apply_us > 50000);
+        /* 帧跳过载保护：apply ~50ms/帧，允许每 3-4 帧处理一次（~8fps 增强流） */
+        int skip = (last_apply_us > 120000);  /* 120ms 冷却 → 约 8fps apply */
         if (!g_stop && !skip && g_ctbg_mode && ctbg_rgb && ctbg_nv && local_coeff) {
             int coeff_ready;
             pthread_mutex_lock(&g_ctbg_coeff_mutex);
@@ -708,27 +719,31 @@ static void* stream_worker(void* arg) {
 
                     ctbg_timing_t t;
                     long t0 = now_us();
-                    if (ctbg_apply_run_nv21(ctbg_nv, local_coeff, ctbg_rgb, &t) == 0) {
+                    int app_ret = ctbg_apply_run_nv21(ctbg_nv, local_coeff, ctbg_rgb, &t);
+                    if (app_ret == 0) {
                         metrics->infer_last_ms = t.app_ms;
                         atomic_fetch_add(&metrics->infer_runs, 1);
 
-                        /* RGB fp16 → NV21 写回（正确 fp16 解码） */
+                        /* RGB fp16 → NV21 写回（LUT 加速 fp16 解码 + 浮点 BT.601） */
                         uint8_t *yp = ctbg_nv, *vp = ctbg_nv + ysz;
                         int x, y, cs = w * h;
                         for (y = 0; y < h; y++) {
                             for (x = 0; x < w; x++) {
                                 int i = y * w + x;
-                                float R = ctbg_f16tof32(ctbg_rgb[i]);
-                                float G = ctbg_f16tof32(ctbg_rgb[cs + i]);
-                                float B = ctbg_f16tof32(ctbg_rgb[2*cs + i]);
+                                float R = g_f16_lut[ctbg_rgb[i]];
+                                float G = g_f16_lut[ctbg_rgb[cs + i]];
+                                float B = g_f16_lut[ctbg_rgb[2*cs + i]];
                                 if (R < 0.0f) R = 0.0f; if (R > 1.0f) R = 1.0f;
                                 if (G < 0.0f) G = 0.0f; if (G > 1.0f) G = 1.0f;
                                 if (B < 0.0f) B = 0.0f; if (B > 1.0f) B = 1.0f;
-                                yp[i] = (uint8_t)(0.299f*R*255.0f + 0.587f*G*255.0f + 0.114f*B*255.0f + 0.5f);
+                                yp[i] = (uint8_t)(0.299f*R*255.0f + 0.587f*G*255.0f
+                                                  + 0.114f*B*255.0f + 0.5f);
                                 if ((y & 1) == 0 && (x & 1) == 0) {
                                     int vi = (y/2)*(w/2)*2 + (x/2)*2;
-                                    int U = (int)(-0.169f*R*255.0f - 0.331f*G*255.0f + 0.500f*B*255.0f + 128.5f);
-                                    int V = (int)( 0.500f*R*255.0f - 0.419f*G*255.0f - 0.081f*B*255.0f + 128.5f);
+                                    int U = (int)(-0.169f*R*255.0f - 0.331f*G*255.0f
+                                                  + 0.500f*B*255.0f + 128.5f);
+                                    int V = (int)( 0.500f*R*255.0f - 0.419f*G*255.0f
+                                                  - 0.081f*B*255.0f + 128.5f);
                                     if (U < 0) U = 0; if (U > 255) U = 255;
                                     if (V < 0) V = 0; if (V > 255) V = 255;
                                     vp[vi] = (uint8_t)V; vp[vi+1] = (uint8_t)U;
@@ -749,6 +764,8 @@ static void* stream_worker(void* arg) {
                             }
                         }
                         last_apply_us = now_us() - t0;
+                    } else {
+                        LOG_WARN("[stream] CTBG apply failed: ret=%d", app_ret);
                     }
                 }
             }
@@ -1082,6 +1099,7 @@ int main(int argc, char** argv) {
                 memset(g_ctbg_coeff, 0, g_ctbg_coeff_sz);
                 g_ctbg_coeff_ready = 0;  /* apply 在有系数前跳过 */
                 infer_up = 1;
+                ctbg_init_f16_lut();  /* 预计算 fp16→float LUT（256KB, ~1ms） */
                 LOG_INFO("CTBG mode: estimator=%s apply=%s raw=%zub up=%zub",
                          ctbg_cfg.est_om_path, ctbg_cfg.app_om_path,
                          g_ctbg_coeff_raw_sz, g_ctbg_coeff_sz);
