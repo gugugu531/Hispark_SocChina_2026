@@ -1,6 +1,24 @@
 # TODO — 未完成部分与开发规划
 
-> 状态快照日期：2026-06-21。阶段 A/B 已完成，硬件施加端与规则控制→Gamma 生产整链已板端
+> 状态快照日期：2026-07-01。CTBG v9 已达到数据驱动架构上限 (val_psnr 19.83)。
+> 新的总路线：**ISP 参数自动调优**——神经网络预测 Gamma/DRC/LDCI/Dehaze 参数，
+> ISP 硬件 30fps 全帧施加。详见 [isp-auto-tuning-prompt.md](isp-auto-tuning-prompt.md)。
+
+## 0. ISP 参数自动调优（当前主线）
+
+NN 从场景图像直接预测 SS928 ISP 参数（~88 维连续值），替代人工启发式规则。ISP 硬件对每一帧施加。
+
+| 阶段 | 内容 | 状态 |
+|---|---|---|
+| Phase 1 | 可微 ISP 模拟器 (Gamma/DRC/LDCI/Dehaze) | 📋 待实施 |
+| Phase 2 | ISP ParamNet 训练 + 消融 | 📋 待实施 |
+| Phase 3 | ONNX→OM 导出 + 板端集成 + A/B 测试 | 📋 待实施 |
+
+技术依据: Qin ECCV 2022 / ACamera-Net / DynamicISP，完整 Prompt 见 `docs/isp-auto-tuning-prompt.md`。
+
+---
+
+> 以下为历史基线（2026-06-21）。阶段 A/B 已完成，硬件施加端与规则控制→Gamma 生产整链已板端
 > 30fps 跑通；CLUT 17v2 几何已由厂商资料和板端 sweep 确认（17³、8 bank、4 路交织）。param-net 的训练、
 > 推荐 YAML、ETA/断点恢复、LCDP 正式权重和 256x144+AIPP 板端推理已完成。当前主线剩余：
 > NN→RGB CLUT 安全桥与生产 control worker 接线已完成；Gamma 由 AE 规则控制，DRC/LDCI
