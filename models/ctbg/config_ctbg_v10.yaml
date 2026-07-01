@@ -1,0 +1,46 @@
+# CTBG v10: v8 backbone warm-start + 6ch tail 重训，修复训练配方
+# 改进：samples_per_epoch↓, CosineAnnealingWarmRestarts, weight_decay, p_identity↑
+seed: 42
+
+# 数据
+lol_train: /home/alan/Learning/Retinexformer/data/LOLv1/Train
+lol_val:   /home/alan/Learning/Retinexformer/data/LOLv1/Test
+sice_root: /home/alan/Learning/Hispark/_eval-lut-curve/data/SICE/Dataset_Part2_512
+sice_val_seqs: 20
+samples_per_epoch: 500        # v9:2000→500, 降低样本复用率(383×→96×)
+val_samples: 60
+patch: 256
+p_lol: 0.15
+p_identity: 0.3               # v9:0.15→0.3, 增强恒等约束,防止过校正
+batch_size: 8
+num_workers: 6
+p_nonuniform: 0.3
+
+# 模型(同 v9 6ch)
+channels: 12
+rep_scale: 4
+down: 4
+
+# 损失
+tv_w: 0.001
+std_w: 0.1
+sat_w: 0.1
+illum_w: 0.0
+b_range: 0.02
+
+# 优化(修复过拟合)
+lr: 1.0e-3
+max_epochs: 300               # 400→300,配合短周期重启
+precision: 32
+save_every_n_epochs: 1
+weight_decay: 1.0e-4          # 新增 L2 正则
+lr_scheduler: cosine_warm_restart  # 替代默认 CosineAnnealingLR
+t_0: 40                        # 重启周期 40 epochs
+t_mult: 1
+
+# warm-start: v8 backbone 权重
+warm_start_ckpt: /home/alan/Learning/Hispark/_eval-lut-curve/p1_bidir/runs/coeff_ctbg_v8/ckpt/best-epoch=0041-val_psnr=19.82.ckpt
+
+# 日志
+out_dir: /home/alan/Learning/Hispark/_eval-lut-curve/p1_bidir/runs
+exp_name: coeff_ctbg_v10

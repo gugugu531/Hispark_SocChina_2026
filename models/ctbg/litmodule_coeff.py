@@ -193,6 +193,107 @@ class CoeffNetCTBG(nn.Module):
         return out, (a_d, b_d, g_d, a_b, b_b, g_b)
 
 
+class CoeffNetCTBG_6ch(nn.Module):
+    """v9 6ch 极简版: dark/bright 各出 a,b,g **标量**(1ch each),共 6ch。
+    施加: per-pixel 标量 a,b,g → broadcast 到 RGB → clamp(a·x^g+b)。
+    对比 v8 18ch(per-channel a,b,g): 系数 1/3,施加 tanh/exp 从 10→4。
+    假说: 标量 a,b,g 已捕捉主要光照结构,per-channel 差异可由空间变化弥补。"""
+    def __init__(self, channels=12, rep_scale=4, down=4,
+                 a_range=0.8, b_range=0.02, g_range=0.9, residual_spatial=True):
+        super().__init__()
+        self.bb = MobileIELLENet(channels=channels, rep_scale=rep_scale)
+        self.bb.tail = MBRConv3(channels, 6, rep_scale=rep_scale)  # dark(3)+bright(3)
+        self.down = down
+        self.residual_spatial = residual_spatial
+        self.a_range, self.b_range, self.g_range = a_range, b_range, g_range
+        self.film_s = nn.Linear(1, channels, bias=False)
+        self.film_b = nn.Linear(1, channels, bias=False)
+        nn.init.zeros_(self.film_s.weight)
+        nn.init.zeros_(self.film_b.weight)
+
+    def _backbone(self, xl):
+        b = self.bb
+        x0 = b.head(xl); x1 = b.body(x0); x2 = b.att(x1)
+        mx, _ = torch.max(x2 * x1, dim=1, keepdim=True); x3 = b.att1(mx)
+        if self.residual_spatial:
+            x4 = x1 * (1.0 + torch.mul(x2, x3))
+        else:
+            x4 = torch.mul(x2, x3) * x1
+        mu = (0.299*xl[:,0] + 0.587*xl[:,1] + 0.114*xl[:,2]).mean(dim=[1,2]).unsqueeze(1)
+        s = self.film_s(mu).unsqueeze(-1).unsqueeze(-1)
+        sh = self.film_b(mu).unsqueeze(-1).unsqueeze(-1)
+        x4 = x4 * (1.0 + s) + sh
+        return b.tail(x4)  # (B,6,h,w)
+
+    @staticmethod
+    def _decode_1ch(raw, a_range, b_range, g_range):
+        """raw 为 (B,3,h,w)=[a_raw, b_raw, g_raw] per spatial pos,每项 1ch"""
+        a = 1.0 + a_range * torch.tanh(raw[:, 0:1])
+        b = b_range * torch.tanh(raw[:, 1:2])
+        g = torch.exp(g_range * torch.tanh(raw[:, 2:3]))
+        return a, b, g
+
+    def forward(self, x):
+        xl = F.interpolate(x, scale_factor=1.0/self.down, mode="bilinear", align_corners=False)
+        c = self._backbone(xl)                                # (B,6,h,w)
+        up = lambda t: F.interpolate(t, size=x.shape[-2:], mode="bilinear", align_corners=False)
+        a_d, b_d, g_d = self._decode_1ch(up(c[:, :3]), self.a_range, self.b_range, self.g_range)
+        a_b, b_b, g_b = self._decode_1ch(up(c[:, 3:6]), self.a_range, self.b_range, self.g_range)
+        w = (0.299*x[:,0:1] + 0.587*x[:,1:2] + 0.114*x[:,2:3]).clamp(0, 1)
+        a = (1-w)*a_d + w*a_b
+        b = (1-w)*b_d + w*b_b
+        g = (1-w)*g_d + w*g_b
+        out = torch.clamp(a * x.clamp(min=1e-3).pow(g) + b, 0, 1)
+        return out, (a_d, b_d, g_d, a_b, b_b, g_b)
+
+
+class LitCTBG_6ch(L.LightningModule):
+    """v9/v10 6ch 训练 wrapper。支持 weight_decay + CosineAnnealingWarmRestarts。"""
+    def __init__(self, channels=12, rep_scale=4, down=4, lr=1e-3, max_epochs=400,
+                 tv_w=0.001, distill_w=0.0, teacher_pkl=None,
+                 b_range=0.02, std_w=0.1, sat_w=0.1, illum_w=0.0,
+                 residual_spatial=True, weight_decay=0.0, t_0=40):
+        super().__init__()
+        self.save_hyperparameters()
+        self.net = CoeffNetCTBG_6ch(channels, rep_scale, down, b_range=b_range,
+                                     residual_spatial=residual_spatial)
+        self.loss = LossLLE()
+        self.teacher = None
+        if distill_w > 0 and teacher_pkl:
+            self.teacher = MobileIELLENetS(channels=channels)
+            self.teacher.load_state_dict(torch.load(teacher_pkl, map_location="cpu"))
+            self.teacher.eval()
+            for p in self.teacher.parameters():
+                p.requires_grad_(False)
+
+    def forward(self, x): return self.net(x)[0]
+
+    def _step(self, batch, tag):
+        x, y = batch
+        out, coeffs = self.net(x)
+        loss = self.loss(out, y) + self.hparams.tv_w * sum(tv(c) for c in coeffs)
+        oy, gy = _y(out), _y(y)
+        loss = (loss
+                + self.hparams.std_w * (oy.std(dim=(1,2)) - gy.std(dim=(1,2))).abs().mean()
+                + self.hparams.sat_w * (_chroma(out).mean(dim=(1,2)) - _chroma(y).mean(dim=(1,2))).abs().mean()
+                + self.hparams.illum_w * illum_lf(out, y))
+        if self.teacher is not None and tag == "train":
+            with torch.no_grad():
+                t = self.teacher(x).clamp(0, 1)
+            loss = loss + self.hparams.distill_w * self.loss(out, t)
+        self.log(f"{tag}_loss", loss, prog_bar=True, on_epoch=True, sync_dist=(tag=="val"))
+        self.log(f"{tag}_psnr", psnr01(out, y), prog_bar=True, on_epoch=True, sync_dist=(tag=="val"))
+        return loss
+
+    def training_step(self, b, _): return self._step(b, "train")
+    def validation_step(self, b, _): self._step(b, "val")
+
+    def configure_optimizers(self):
+        opt = torch.optim.Adam(self.net.parameters(), lr=self.hparams.lr)
+        sch = torch.optim.lr_scheduler.CosineAnnealingLR(opt, T_max=self.hparams.max_epochs)
+        return {"optimizer": opt, "lr_scheduler": {"scheduler": sch, "interval": "epoch"}}
+
+
 class LitCTBG(L.LightningModule):
     def __init__(self, channels=12, rep_scale=4, down=4, lr=1e-3, max_epochs=400,
                  tv_w=0.001, distill_w=0.0, teacher_pkl=None,
@@ -233,8 +334,11 @@ class LitCTBG(L.LightningModule):
     def validation_step(self, b, _): self._step(b, "val")
 
     def configure_optimizers(self):
-        opt = torch.optim.Adam(self.net.parameters(), lr=self.hparams.lr)
-        sch = torch.optim.lr_scheduler.CosineAnnealingLR(opt, T_max=self.hparams.max_epochs)
+        wd = self.hparams.get("weight_decay", 0.0) if hasattr(self.hparams, "get") else 0.0
+        t_0 = self.hparams.get("t_0", 40) if hasattr(self.hparams, "get") else 40
+        opt = torch.optim.Adam(self.net.parameters(), lr=self.hparams.lr,
+                               weight_decay=wd)
+        sch = torch.optim.lr_scheduler.CosineAnnealingWarmRestarts(opt, T_0=t_0)
         return {"optimizer": opt, "lr_scheduler": {"scheduler": sch, "interval": "epoch"}}
 
 
