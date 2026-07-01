@@ -15,7 +15,6 @@
   - `board/src/isp.c:isp_gamma_apply_curve(curve[64], strength)` — 接受 64 节点浮点曲线，已封装，验证可用
   - `ss_mpi_isp_set_dehaze_attr()` — Dehaze 参数热刷新，验证可用
   - CTBG estimator 的 MobileIE backbone ONNX→OM 构建流程已跑通（ATC 5.20.T6.2.B060），可作为模型导出参考
-  - SICE 配对数据集 11GB（本地 `_eval-lut-curve/data/SICE/Dataset_Part2_512/`，229 序列，多曝光 + GT）
   - GPU 训练环境: RTX 4060 8GB, PyTorch 2.5.1 (conda torch2), CUDA 13.0
 - **SS928 ISP 参数结构**（来自 SDK 头文件和调优指南）:
   - ISP 管线顺序: AE → DRC → Gamma → LDCI → Dehaze
@@ -62,16 +61,17 @@ Dehaze      1×[0,255]     直接标量                         isp_set_dehaze()
 
 曲线参数（Gamma 64 节点、DRC tone 6 节点）需保证单调性约束。
 
+### 训练数据
+
+需使用低光照/曝光校正配对数据集。基本要求：包含欠曝/过曝图像及对应的正常曝光参考图（GT）。自行选择合适的数据集（如 LOL、SICE、MIT-Adobe FiveK、MSEC 等公开数据集），可组合多个来源以覆盖多样的光照条件和场景类型。数据增强（随机裁剪、翻转、色彩扰动）由代理自行决定。
+
 ### 训练策略
 
 采用**可微 ISP 代理（Differentiable ISP Proxy）+ 监督训练**：
 
 1. 构建 NumPy/PyTorch 可微 ISP 模拟器，实现 Gamma（插值 LUT）、DRC（torchcomp 可微动态范围压缩）、LDCI（CLAHE 近似）、Dehaze（暗通道先验）的可微版本
-2. 用 SICE 配对数据集训练：输入低光照图，NN 预测参数，模拟器施加，Loss 对比 GT
-3. Loss 组合: L1 + LPIPS (perceptual) + Zero-DCE 辅助损失（SpatialConsistency + Exposure + ColorConstancy）
-4. 消融实验评估各 ISP 模块的独立贡献
-
-Zero-DCE 损失函数参考 `github.com/Li-Chongyi/Zero-DCE`（CVPR 2020），已在该任务上广泛验证。
+2. 用配对数据集训练：输入低光照图，NN 预测参数，模拟器施加，Loss 对比 GT
+3. 损失函数自选（L1、LPIPS perceptual、Zero-DCE 零参考损失等），消融实验评估各 ISP 模块的独立贡献
 
 ### 板端集成
 
@@ -83,12 +83,10 @@ Zero-DCE 损失函数参考 `github.com/Li-Chongyi/Zero-DCE`（CVPR 2020），�
 |---|---|
 | Qin et al. ECCV 2022 | Attention-Aware ISP 参数回归架构 |
 | ACamera-Net (arXiv 2510.20550) | 轻量 CNN 预测曝光/WB，HiSilicon NPU 部署 |
-| DynamicISP (ICCV 2023) | 残差参数输出稳定训练 |
-| Zero-DCE (CVPR 2020, `github.com/Li-Chongyi/Zero-DCE`) | 4 个零参考 loss 完整代码 |
-| ParamISP (CVPR 2024, `github.com/woo525/ParamISP`) | GlobalNet 色调映射公式 |
+| DynamicISP (ICCV 2023, Sony) | 残差参数输出稳定训练 |
+| ParamISP (CVPR 2024) | GlobalNet 色调映射公式 |
 | torchcomp (PyPI) | 可微 DRC `compexp_gain()` |
-| ReconfigISP (ICCV 2021, `github.com/yuke93/ReconfigISP`) | 可微 ISP 代理架构参考 |
-| End2endImaging (`github.com/vccimaging/End2endImaging`) | 全可微相机管线框架 |
+| ReconfigISP (ICCV 2021) | 可微 ISP 代理架构参考 |
 | SS928 SDK (`Reference/08. 原厂SDK/.../NNN/`) | ATC 工具指南、算子规格、ISP 调优指南 |
 
 ## 成功标准
