@@ -81,6 +81,21 @@ scripts/test_host.sh                     # 主机单元测试（SDK-free 纯逻�
 - **不要**用 Xilinx/Vitis 的 `aarch64-linux-gnu-gcc` 编译 SDK/MPP/ACL 相关代码；统一用厂商 `aarch64-mix210-linux` 工具链。
 - 两类测试分清：主机单测跑 SDK-free 纯逻辑；触硬件的 `test_<名字>` 交叉编译后部署到板上手动运行，不进自动化。
 
+### 硬件相关开发前置条件
+
+开发任何与**板端资源**（ISP/VPSS/VGS/VENC/NPU/ACL/VB 池等）或**硬件平台**（SS928/SD3403/Ascend 310）强相关的代码前：
+
+1. **首先**阅读对应模块的 SDK 文档和 Reference 目录下的相关手册，充分了解硬件能力、API 约束与已知限制。
+2. **若用户未指定文档来源和范围**，必须先向用户确认后再开始开发。
+3. 禁止在未查阅文档的情况下假设硬件能力——例如假设 ISP 支持 per-block 参数、假设 VGS 支持 fp16 格式、假设 NPU 可流水线并行等，均已在前期造成返工。
+4. 查阅后应将关键结论（如"XXX 模块不支持 YYY 功能"）记录到 `docs/` 或对应模块的 README 中。
+
+适用参考文档：
+- ISP 参数：`Reference/08. 原厂SDK/.../ISP 开发参考.pdf`、`ISP 图像调优指南.pdf`
+- NPU/ATC：`Reference/08. 原厂SDK/.../NNN/ATC工具使用指南.pdf`、`Caffe&ONNX算子规格清单.pdf`
+- VGS/VPSS：SDK 头文件 `ss_mpi_vgs.h`、`ot_common_vgs.h`
+- 系统控制：`ss_mpi_isp.h`（119 个 MPI 函数，已审计）
+
 ## 编码规范要点
 
 完整规范见 `docs/development-guide.md` §5，最容易被违反的几条：
