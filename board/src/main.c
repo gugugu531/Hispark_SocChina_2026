@@ -62,6 +62,7 @@ static volatile sig_atomic_t g_stop = 0;
 
 /* ---- CTBG 全局（v9 6ch 双 OM 路线） ---- */
 static volatile int g_ctbg_mode = 0;
+static volatile int g_ctbg_writeback = 0;     /* --ctbg-writeback：启用写回（~23fps），默认仅诊断 */
 static uint16_t *g_ctbg_coeff = NULL;        /* 预上采样 6ch 系数（full_h×full_w，供 v9 apply 用） */
 static uint16_t *g_ctbg_coeff_raw = NULL;    /* estimator 原始输出 6ch（low_h×low_w fp16） */
 static uint8_t  *g_ctbg_nv21_low = NULL;     /* estimator NV21 输入临时缓冲（256×144×3/2） */
@@ -772,10 +773,11 @@ static void* stream_worker(void* arg) {
             pthread_mutex_unlock(&g_ctbg_coeff_mutex);
         }
 
-        /* 场景变化触发写回（消费原子标志，冷却期内抑制） */
+        /* 场景变化触发写回（需 --ctbg-writeback 启用） */
         int scene_trig = (g_ctbg_mode && local_ready &&
                           atomic_exchange(&g_ctbg_scene_changed, 0) == 1);
-        int do_writeback = (scene_trig && wb_cooldown == 0 && apply_count < 20);
+        int do_writeback = (g_ctbg_writeback && scene_trig &&
+                            wb_cooldown == 0 && apply_count < 20);
         size_t ysz = (size_t)w * h, uvsz = ysz / 2;
 
         if (do_writeback) {
@@ -797,7 +799,7 @@ static void* stream_worker(void* arg) {
                     atomic_fetch_add(&metrics->infer_runs, 1);
                     apply_count++;
 
-                    /* 全 NV21 转换：Y 热路径逐像素，UV 冷路径仅 1/4 像素 */
+                    /* 全 NV21 转换（Y 每像素 + UV 仅 1/4 像素） */
                     uint8_t *yp = ctbg_nv, *vp = ctbg_nv + ysz;
                     int cs = w * h;
                     for (int y = 0; y < h; y++) {
@@ -834,8 +836,12 @@ static void* stream_worker(void* arg) {
                     wb_cooldown = CTBG_WRITEBACK_COOLDOWN;
                 }
             }
-        } else if (g_ctbg_mode && local_ready && apply_count < 50) {
-            /* 异步诊断路径：复制帧后立即归还，apply 不阻塞管线 */
+        }  /* end writeback path */
+        /* 异步诊断：每 15 帧一次（~0.5s），避免 NPU 饱和影响 estimator */
+        #define DIAG_INTERVAL 15
+        static int diag_seq = 0;
+        if (!do_writeback && g_ctbg_mode && local_ready &&
+            apply_count < 30 && (++diag_seq % DIAG_INTERVAL) == 0) {
             td_void *yv = ss_mpi_sys_mmap(frame.video_frame.phys_addr[0], ysz);
             td_void *uv = ss_mpi_sys_mmap(frame.video_frame.phys_addr[1], uvsz);
             if (yv && uv) {
@@ -857,15 +863,18 @@ static void* stream_worker(void* arg) {
             atomic_fetch_add(&metrics->transient_errors, 1);
         }
 
-        /* 异步 apply（仅非写回帧，帧已归还） */
+        /* 异步 apply（仅非写回帧，帧已归还，上限 5 次/运行避免 NPU/CPU 饱和） */
+        #define MAX_DIAG_APPLY 5
+        static int diag_apply_done = 0;
         if (!do_writeback && g_ctbg_mode && local_ready &&
-            ctbg_nv[0] != 0 && apply_count < 30) {
+            ctbg_nv[0] != 0 && diag_apply_done < MAX_DIAG_APPLY) {
+            ctbg_nv[0] = 0;
+            diag_apply_done++;
             ctbg_nv21_to_rgb_fp16(ctbg_nv, ctbg_rgb, w, h);
             ctbg_timing_t t;
             long t0 = now_us();
             if (ctbg_apply_run(ctbg_rgb, local_coeff, ctbg_rgb, &t) == 0) {
                 atomic_fetch_add(&metrics->infer_runs, 1);
-                long t1 = now_us();
                 int cs = w * h;
                 for (int i = 0; i < cs; i++) {
                     ctbg_nv[i] = (uint8_t)((int)g_yuv_lut[(ctbg_rgb[i]+8)>>4].yr
@@ -873,11 +882,13 @@ static void* stream_worker(void* arg) {
                         + (int)g_yuv_lut[(ctbg_rgb[2*cs+i]+8)>>4].yb);
                 }
                 LOG_INFO("[stream] CTBG diag #%d: app=%.1fms yuv=%ldms",
-                         apply_count, t.app_ms, (now_us() - t1) / 1000);
+                         apply_count, t.app_ms, (now_us() - t0) / 1000);
             }
         }
     }
     #undef CTBG_WRITEBACK_COOLDOWN
+    #undef DIAG_INTERVAL
+    #undef MAX_DIAG_APPLY
 
     free(ctbg_rgb); free(ctbg_nv); free(local_coeff);
     return TD_NULL;
@@ -958,8 +969,8 @@ int main(int argc, char** argv) {
             cfg.nn_high_clip_guard = (float)atof(argv[++i]);
         } else if (strcmp(argv[i], "--ctbg") == 0) {
             g_ctbg_mode = 1;
-            /* CTBG 需要 VPSS chn2（estimator 输入），保持 enable_nn=1 以启用 chn2；
-             * CoTF infer_init 在下方由 g_ctbg_mode 门控跳过。 */
+        } else if (strcmp(argv[i], "--ctbg-writeback") == 0) {
+            g_ctbg_writeback = 1;
         } else if (strcmp(argv[i], "--ctbg-est-om") == 0 && i + 1 < argc) {
             cfg.ctbg_est_om_path = argv[++i];
         } else if (strcmp(argv[i], "--ctbg-app-om") == 0 && i + 1 < argc) {
