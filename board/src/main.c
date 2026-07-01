@@ -68,7 +68,8 @@ static uint8_t  *g_ctbg_nv21_low = NULL;     /* estimator NV21 输入临时缓�
 static size_t     g_ctbg_coeff_sz = 0;       /* 预上采样系数大小（= apply OM 系数输入大小） */
 static size_t     g_ctbg_coeff_raw_sz = 0;   /* estimator 输出大小（6ch raw） */
 static pthread_mutex_t g_ctbg_coeff_mutex = PTHREAD_MUTEX_INITIALIZER;
-static int        g_ctbg_coeff_ready = 0;    /* 首个系数已就绪（apply 可在有系数前跑恒等） */
+static int        g_ctbg_coeff_ready = 0;    /* 首个系数已就绪 */
+static atomic_int g_ctbg_scene_changed = 0;  /* 场景变化标志，stream 写回消费后清零 */
 
 typedef struct {
     atomic_int state;
@@ -482,6 +483,7 @@ static void* control_worker(void* arg) {
                                 pthread_mutex_lock(&g_ctbg_coeff_mutex);
                                 g_ctbg_coeff_ready = 1;
                                 pthread_mutex_unlock(&g_ctbg_coeff_mutex);
+                                atomic_store(&g_ctbg_scene_changed, 1);
                             }
                         }
                     }
@@ -745,18 +747,18 @@ static void* stream_worker(void* arg) {
         }
     }
 
-    int frame_seq  = 0;
     int apply_count = 0;
-    #define CTBG_WRITEBACK_INTERVAL 30  /* 每 30 帧（~1 秒）写回一次增强帧 */
+    #define CTBG_WRITEBACK_COOLDOWN 45  /* 写回冷却帧数（~1.5s），避免连续写回阻塞管线 */
+    int wb_cooldown = 0;
     while (!g_stop) {
         if (vpss_get_frame(PIPELINE_VPSS_GRP, PIPELINE_VPSS_CHN_STREAM, &frame, 200) != 0) {
             atomic_fetch_add(&metrics->stream_drops, 1);
             atomic_fetch_add(&metrics->frame_timeouts, 1);
             continue;
         }
-        frame_seq++;
+        if (wb_cooldown > 0) wb_cooldown--;
 
-        /* 取系数（供两种路径共用） */
+        /* 取系数 */
         int local_ready = 0;
         if (g_ctbg_mode && ctbg_rgb && ctbg_nv && local_coeff) {
             pthread_mutex_lock(&g_ctbg_coeff_mutex);
@@ -767,8 +769,10 @@ static void* stream_worker(void* arg) {
             pthread_mutex_unlock(&g_ctbg_coeff_mutex);
         }
 
-        int do_writeback = (g_ctbg_mode && local_ready &&
-                            (frame_seq % CTBG_WRITEBACK_INTERVAL) == 0);
+        /* 场景变化触发写回（消费原子标志，冷却期内抑制） */
+        int scene_trig = (g_ctbg_mode && local_ready &&
+                          atomic_exchange(&g_ctbg_scene_changed, 0) == 1);
+        int do_writeback = (scene_trig && wb_cooldown == 0 && apply_count < 20);
         size_t ysz = (size_t)w * h, uvsz = ysz / 2;
 
         if (do_writeback) {
@@ -823,9 +827,10 @@ static void* stream_worker(void* arg) {
                     metrics->infer_last_ms = t.app_ms;
                     LOG_INFO("[stream] CTBG writeback #%d: app=%.1fms total=%.1fms",
                              apply_count, t.app_ms, (now_us() - t0) / 1000.0f);
+                    wb_cooldown = CTBG_WRITEBACK_COOLDOWN;
                 }
             }
-        } else if (g_ctbg_mode && local_ready && apply_count < 30) {
+        } else if (g_ctbg_mode && local_ready && apply_count < 50) {
             /* 异步诊断路径：复制帧后立即归还，apply 不阻塞管线 */
             td_void *yv = ss_mpi_sys_mmap(frame.video_frame.phys_addr[0], ysz);
             td_void *uv = ss_mpi_sys_mmap(frame.video_frame.phys_addr[1], uvsz);
@@ -872,7 +877,7 @@ static void* stream_worker(void* arg) {
             }
         }
     }
-    #undef CTBG_WRITEBACK_INTERVAL
+    #undef CTBG_WRITEBACK_COOLDOWN
 
     free(ctbg_rgb); free(ctbg_nv); free(local_coeff);
     return TD_NULL;
