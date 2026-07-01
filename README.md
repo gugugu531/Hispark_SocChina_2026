@@ -15,8 +15,8 @@ OS08A20 -> VI -> ISP(WDR/降噪/DRC/Gamma/CLUT) -> VPSS -> VO/HDMI
                                               -> VENC/RTSP
 
 低频控制旁路：
-VPSS 缩略图 -> AIPP -> CoTF-inspired param-net -> 安全 CLUT 桥 -> ISP CLUT
-ISP AE 统计 -> 场景判决 -> 规则 Gamma
+VPSS 缩略图 -> ISP ParamNet -> Gamma/DRC/LDCI/Dehaze 参数 -> ISP 硬件 30fps 施加
+ISP AE 统计 -> 场景判决 -> 规则 Gamma（兜底）
 ISP DRC/LDCI ------------------------------------> ISP 自动/配置策略
 ```
 
@@ -27,24 +27,15 @@ ISP DRC/LDCI ------------------------------------> ISP 自动/配置策略
 生产入口并完成纯串流板端验收：1024x576@30、约 3Mbps、断线重连和退出清理正常。
 NN/bridge 已接入生产控制线程：启用模型时使用 chn2+AIPP 推理，经安全 bridge 限幅后刷新
 ISP CLUT；连续三次普通刷新失败会关闭 CLUT 并回退规则 Gamma，ACL 运行时致命错误则安全停链。
-正式参数契约已收敛为：NN 只输出 RGB 17³ CLUT；Gamma 由 AE 规则控制，DRC/LDCI 由 ISP 策略管理，
-不再规划 NN 多头 Gamma/DRC 输出。
-生产配置已支持 linear/WDR 2to1 与目标帧率选择；配置 schema、设备健康检查和 ACL 致命退出码
-已接入 systemd，坏掉的 NPU/SMMU 上下文不会触发无意义的自动重启风暴。
-2026-06-20 板端 20 秒生产冒烟完成 3 次刷新，推理总耗时 `2.40–2.71ms`，RTSP 451 帧、
-`0 drops`，退出逆序清理正常。加入反馈抑制与严格计时口径后，20 秒 HDMI+RTSP+NN 短测为
-`30.19fps`、`0 drops`、模型执行 p95 `1.18ms`、完整事务 p95 `4.49ms`。
-下一步是动态闭环画质与现场 flicker 验收；10 分钟长测按当前安排暂缓。
+当前主线已收敛为 **ISP 参数自动调优**路线：NN 从场景图像预测 Gamma/DRC/LDCI/Dehaze
+参数（~88 维连续值），ISP 硬件对每一帧施加，实现真正的 30fps 空间自适应增强。
+CTBG per-pixel apply 路线因 89ms/帧的硬件限制已关闭（仅保留诊断用途）。
+完整 Prompt 见 [docs/isp-auto-tuning-prompt.md](docs/isp-auto-tuning-prompt.md)。
 
-当前画质结论：单一高动态范围场景下，强制 RGB CLUT 会增加约 `2.96pp` 高光裁剪并降低细节，
-未通过；生产高光门控会旁路该路径。Gamma `0.25` 公平 A/B 通过当前场景工程安全门，生产默认强度
-已从 `0.7` 调低到 `0.25`。最终画质验收仍需覆盖至少 5 类、20–50 张独立场景帧，详见
-[docs/quality-acceptance.md](docs/quality-acceptance.md)。
+生产基线：CoTF param-net + ISP CLUT 桥 30fps 跑通，RTSP H.264 1024x576 约 30fps/3Mbps，
+HDMI 1024x600 30fps，Web 控制台（MediaMTX + Go 服务）已板端部署。
 
-完整数据通路与设计依据见 [docs/architecture.md](docs/architecture.md)。
-板端一体化实时视频与参数控制网页的计划架构见
-[docs/web-console-architecture.md](docs/web-console-architecture.md)；该模块尚未实现，不改变当前
-Config-R 主链。
+数据通路与设计依据见 [docs/architecture.md](docs/architecture.md)。
 
 ## 目录结构
 
@@ -105,9 +96,8 @@ scripts/test_host.sh              # 本机 cc 编译并运行 SDK-free 单元测
 - [AGENTS.md](AGENTS.md) — AI 代理/协作者开发指南（阅读顺序、约定汇总、板端习惯、已知坑点）
 - [docs/development-guide.md](docs/development-guide.md) — 开发规范（环境/构建/编码/模型/板端/Git/文档）
 - [docs/architecture.md](docs/architecture.md) — 系统架构与完整数据通路
-- [docs/model-route-summary.md](docs/model-route-summary.md) — 模型路线稳定结论与当前主线
-- [docs/web-console-architecture.md](docs/web-console-architecture.md) — 板端一体化 Web 视频与控制台技术路线
-- [docs/TODO.md](docs/TODO.md) — 未完成清单与阶段化开发规划
+- [docs/isp-auto-tuning-prompt.md](docs/isp-auto-tuning-prompt.md) — ISP 自动调优 AI 代理实施 Prompt（当前主线）
+- [docs/TODO.md](docs/TODO.md) — 待完成清单与试验记录
 - [docs/board-operations.md](docs/board-operations.md) — 板端部署/运行/恢复手册
 - [docs/network-access.md](docs/network-access.md) — 受管网络、动态地址、Clash TUN 与 SSH
 

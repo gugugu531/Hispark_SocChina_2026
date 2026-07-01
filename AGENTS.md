@@ -90,12 +90,6 @@ scripts/test_host.sh                     # 主机单元测试（SDK-free 纯逻�
 3. 禁止在未查阅文档的情况下假设硬件能力——例如假设 ISP 支持 per-block 参数、假设 VGS 支持 fp16 格式、假设 NPU 可流水线并行等，均已在前期造成返工。
 4. 查阅后应将关键结论（如"XXX 模块不支持 YYY 功能"）记录到 `docs/` 或对应模块的 README 中。
 
-适用参考文档：
-- ISP 参数：`Reference/08. 原厂SDK/.../ISP 开发参考.pdf`、`ISP 图像调优指南.pdf`
-- NPU/ATC：`Reference/08. 原厂SDK/.../NNN/ATC工具使用指南.pdf`、`Caffe&ONNX算子规格清单.pdf`
-- VGS/VPSS：SDK 头文件 `ss_mpi_vgs.h`、`ot_common_vgs.h`
-- 系统控制：`ss_mpi_isp.h`（119 个 MPI 函数，已审计）
-
 ## 编码规范要点
 
 完整规范见 `docs/development-guide.md` §5，最容易被违反的几条：
