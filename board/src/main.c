@@ -697,7 +697,7 @@ static void* stream_worker(void* arg) {
         }
     }
 
-    long last_apply_us = 0;
+    int apply_frame_count = 0;
     while (!g_stop) {
         if (vpss_get_frame(PIPELINE_VPSS_GRP, PIPELINE_VPSS_CHN_STREAM, &frame, 200) != 0) {
             atomic_fetch_add(&metrics->stream_drops, 1);
@@ -705,18 +705,17 @@ static void* stream_worker(void* arg) {
             continue;
         }
 
-        /* v8 AIPP OM apply：NV21→RGB（硬件 AIPP）→ OM（~38ms）→ RGB fp16 输出
-         * + CPU RGB→NV21 写回（~10ms）。总 ~48ms > 33ms，帧跳过载保护。 */
-        /* 帧跳过载保护：apply 约 90ms/帧，冷却 100ms → 约 10fps apply */
-        int skip = (last_apply_us > 100000);
-        if (!g_stop && !skip && g_ctbg_mode && ctbg_rgb && ctbg_nv && local_coeff) {
-            int coeff_ready;
+        /* CTBG apply：复制帧后立即释放 VPSS 帧，apply 异步运行不阻塞管线。
+         * 增强结果仅用于 metrics，不写回（写回需 mmap 竞争 VPSS 且超 30fps 预算）。
+         * 流输出保持 ISP Gamma 增强。 */
+        if (g_ctbg_mode && ctbg_rgb && ctbg_nv && local_coeff && g_ctbg_coeff_ready) {
+            /* 取系数（无锁复制，apply 用本地副本） */
             pthread_mutex_lock(&g_ctbg_coeff_mutex);
-            coeff_ready = g_ctbg_coeff_ready;
-            if (coeff_ready) memcpy(local_coeff, g_ctbg_coeff, g_ctbg_coeff_sz);
+            if (g_ctbg_coeff_ready) memcpy(local_coeff, g_ctbg_coeff, g_ctbg_coeff_sz);
+            int local_ready = g_ctbg_coeff_ready;
             pthread_mutex_unlock(&g_ctbg_coeff_mutex);
 
-            if (coeff_ready) {
+            if (local_ready) {
                 size_t ysz = (size_t)w * h, uvsz = ysz / 2;
                 td_void *yv = ss_mpi_sys_mmap(frame.video_frame.phys_addr[0], ysz);
                 td_void *uv = ss_mpi_sys_mmap(frame.video_frame.phys_addr[1], uvsz);
@@ -725,53 +724,6 @@ static void* stream_worker(void* arg) {
                     memcpy(ctbg_nv + ysz, uv, uvsz);
                     ss_mpi_sys_munmap(yv, ysz);
                     ss_mpi_sys_munmap(uv, uvsz);
-
-                    ctbg_timing_t t;
-                    long t0 = now_us();
-                    int app_ret = ctbg_apply_run_nv21(ctbg_nv, local_coeff, ctbg_rgb, &t);
-                    if (app_ret == 0) {
-                        metrics->infer_last_ms = t.app_ms;
-                        atomic_fetch_add(&metrics->infer_runs, 1);
-
-                        /* RGB fp16 → NV21 写回（全整数 LUT：每像素 3 次查表 + 整数加法） */
-                        uint8_t *yp = ctbg_nv, *vp = ctbg_nv + ysz;
-                        int x, y, cs = w * h;
-                        for (y = 0; y < h; y++) {
-                            for (x = 0; x < w; x++) {
-                                int i = y * w + x;
-                                struct f16_yuv_contrib cr = g_yuv_lut_r[ctbg_rgb[i]];
-                                struct f16_yuv_contrib cg = g_yuv_lut_g[ctbg_rgb[cs + i]];
-                                struct f16_yuv_contrib cb = g_yuv_lut_b[ctbg_rgb[2*cs + i]];
-                                int Y = (int)cr.y + (int)cg.y + (int)cb.y;
-                                if (Y > 255) Y = 255;
-                                yp[i] = (uint8_t)Y;
-                                if ((y & 1) == 0 && (x & 1) == 0) {
-                                    int vi = (y/2)*(w/2)*2 + (x/2)*2;
-                                    int U = 128 + (int)cr.u + (int)cg.u + (int)cb.u;
-                                    int V = 128 + (int)cr.v + (int)cg.v + (int)cb.v;
-                                    if (U < 0) U = 0; if (U > 255) U = 255;
-                                    if (V < 0) V = 0; if (V > 255) V = 255;
-                                    vp[vi] = (uint8_t)V; vp[vi+1] = (uint8_t)U;
-                                }
-                            }
-                        }
-                        /* 写回：用独立 mmap 映射物理地址，避免与 VPSS DMA 竞争 */
-                        {
-                            td_void *wy = ss_mpi_sys_mmap(
-                                frame.video_frame.phys_addr[0], ysz);
-                            td_void *wuv = ss_mpi_sys_mmap(
-                                frame.video_frame.phys_addr[1], uvsz);
-                            if (wy && wuv) {
-                                memcpy(wy, ctbg_nv, ysz);
-                                memcpy(wuv, ctbg_nv + ysz, uvsz);
-                                ss_mpi_sys_munmap(wy, ysz);
-                                ss_mpi_sys_munmap(wuv, uvsz);
-                            }
-                        }
-                        last_apply_us = now_us() - t0;
-                    } else {
-                        LOG_WARN("[stream] CTBG apply failed: ret=%d", app_ret);
-                    }
                 }
             }
         }
@@ -785,6 +737,37 @@ static void* stream_worker(void* arg) {
         if (vpss_release_frame(PIPELINE_VPSS_GRP, PIPELINE_VPSS_CHN_STREAM, &frame) != 0) {
             atomic_fetch_add(&metrics->stream_drops, 1);
             atomic_fetch_add(&metrics->transient_errors, 1);
+        }
+
+        /* 异步 apply：VPSS 帧已归还，NPU 处理不影响管线帧率 */
+        if (g_ctbg_mode && ctbg_rgb && g_ctbg_coeff_ready && apply_frame_count < 10) {
+            ctbg_timing_t t;
+            long t0 = now_us();
+            int app_ret = ctbg_apply_run_nv21(ctbg_nv, local_coeff, ctbg_rgb, &t);
+            if (app_ret == 0) {
+                metrics->infer_last_ms = t.app_ms;
+                atomic_fetch_add(&metrics->infer_runs, 1);
+                apply_frame_count++;
+                /* RGB→NV21 转换（metrics 用，不写回 VPSS）*/
+                long t1 = now_us();
+                int cs = w * h;
+                for (int y = 0; y < h; y++) {
+                    for (int x = 0; x < w; x++) {
+                        int i = y * w + x;
+                        struct f16_yuv_contrib cr = g_yuv_lut_r[ctbg_rgb[i]];
+                        struct f16_yuv_contrib cg = g_yuv_lut_g[ctbg_rgb[cs + i]];
+                        struct f16_yuv_contrib cb = g_yuv_lut_b[ctbg_rgb[2*cs + i]];
+                        int Y = (int)cr.y + (int)cg.y + (int)cb.y;
+                        ctbg_nv[i] = (uint8_t)(Y > 255 ? 255 : Y);
+                    }
+                }
+                long yuv_ms = (now_us() - t1) / 1000;
+                LOG_INFO("[stream] CTBG apply #%d: app=%.1fms yuv=%ldms total=%.1fms",
+                         apply_frame_count, t.app_ms, yuv_ms,
+                         (now_us() - t0) / 1000.0f);
+            } else {
+                LOG_WARN("[stream] CTBG apply failed: ret=%d", app_ret);
+            }
         }
     }
 
