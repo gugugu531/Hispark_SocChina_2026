@@ -649,93 +649,16 @@ static void* control_worker(void* arg) {
 static void* stream_worker(void* arg) {
     app_runtime_metrics_t *metrics = (app_runtime_metrics_t *)arg;
     ot_video_frame_info frame;
-    int w = PIPELINE_STREAM_WIDTH, h = PIPELINE_STREAM_HEIGHT;
 
-    /* CTBG apply 缓冲区：v8 AIPP OM 接收 NV21 + 18ch 系数，输出 RGB fp16 */
-    uint16_t *ctbg_rgb = NULL;
-    uint8_t  *ctbg_nv  = NULL;
-    uint16_t *local_coeff = NULL;
-    size_t    nv_sz = 0;
-    if (g_ctbg_mode) {
-        nv_sz = (size_t)w * h * 3 / 2;
-        /* 输出 RGB fp16：用作 apply 输出 + RGB→NV21 转换输入 */
-        ctbg_rgb = (uint16_t *)malloc((size_t)w * h * 3 * 2);
-        ctbg_nv  = (uint8_t *)malloc(nv_sz);
-        local_coeff = (uint16_t *)malloc(g_ctbg_coeff_sz);
-        if (!ctbg_rgb || !ctbg_nv || !local_coeff) {
-            LOG_ERR("CTBG stream_worker: oom");
-            free(ctbg_rgb); free(ctbg_nv); free(local_coeff);
-            return TD_NULL;
-        }
-    }
-
+    /* CTBG apply 暂禁用：v8 AIPP OM 输出解释待修复（test_ctbg_apply_aipp 诊断中），
+     * apply 42ms + RGB→NV21 10ms 超 30fps 预算。
+     * estimator 在 control_worker 中正常运行。 */
     while (!g_stop) {
         if (vpss_get_frame(PIPELINE_VPSS_GRP, PIPELINE_VPSS_CHN_STREAM, &frame, 200) != 0) {
             atomic_fetch_add(&metrics->stream_drops, 1);
             atomic_fetch_add(&metrics->frame_timeouts, 1);
             continue;
         }
-
-        /* CTBG apply：v8 AIPP OM，NV21 输入（硬件 AIPP 转换），每帧增强 */
-        if (!g_stop && g_ctbg_mode && ctbg_rgb && ctbg_nv && local_coeff) {
-            int coeff_ready;
-            pthread_mutex_lock(&g_ctbg_coeff_mutex);
-            coeff_ready = g_ctbg_coeff_ready;
-            if (coeff_ready) memcpy(local_coeff, g_ctbg_coeff, g_ctbg_coeff_sz);
-            pthread_mutex_unlock(&g_ctbg_coeff_mutex);
-
-            if (coeff_ready) {
-                size_t ysz = (size_t)w * h, uvsz = ysz / 2;
-                /* 复制 VPSS NV21（mmap 物理帧） */
-                td_void *y_virt  = ss_mpi_sys_mmap(frame.video_frame.phys_addr[0], ysz);
-                td_void *uv_virt = ss_mpi_sys_mmap(frame.video_frame.phys_addr[1], uvsz);
-                if (y_virt && uv_virt) {
-                    memcpy(ctbg_nv, y_virt, ysz);
-                    memcpy(ctbg_nv + ysz, uv_virt, uvsz);
-                    ss_mpi_sys_munmap(y_virt, ysz);
-                    ss_mpi_sys_munmap(uv_virt, uvsz);
-
-                    /* AIPP OM：NV21→RGB fp16 在 OM 硬件前端完成 */
-                    ctbg_timing_t t;
-                    if (ctbg_apply_run_nv21(ctbg_nv, local_coeff, ctbg_rgb, &t) == 0) {
-                        metrics->infer_last_ms = t.app_ms;
-                        atomic_fetch_add(&metrics->infer_runs, 1);
-
-                        /* RGB fp16 → NV21 写回（CPU，后续优化方向：OM 输出 NV21 或 VGS CSC） */
-                        uint8_t *yp = ctbg_nv, *vp = ctbg_nv + ysz;
-                        int x, y;
-                        for (y = 0; y < h; y++) {
-                            for (x = 0; x < w; x++) {
-                                int i = y * w + x;
-                                /* fp16 快速解码：取高 16 位近似 float（误差 <0.01%） */
-                                uint32_t ri = (uint32_t)ctbg_rgb[0*w*h + i] << 16;
-                                uint32_t gi = (uint32_t)ctbg_rgb[1*w*h + i] << 16;
-                                uint32_t bi = (uint32_t)ctbg_rgb[2*w*h + i] << 16;
-                                float R, G, B;
-                                memcpy(&R, &ri, 4); memcpy(&G, &gi, 4); memcpy(&B, &bi, 4);
-                                if (R < 0.0f) R = 0.0f; if (R > 1.0f) R = 1.0f;
-                                if (G < 0.0f) G = 0.0f; if (G > 1.0f) G = 1.0f;
-                                if (B < 0.0f) B = 0.0f; if (B > 1.0f) B = 1.0f;
-                                yp[i] = (uint8_t)(0.299f*R*255.0f + 0.587f*G*255.0f + 0.114f*B*255.0f + 0.5f);
-                                if ((y & 1) == 0 && (x & 1) == 0) {
-                                    int vi = (y/2)*(w/2)*2 + (x/2)*2;
-                                    int U = (int)(-0.169f*R*255.0f - 0.331f*G*255.0f + 0.500f*B*255.0f + 128.5f);
-                                    int V = (int)( 0.500f*R*255.0f - 0.419f*G*255.0f - 0.081f*B*255.0f + 128.5f);
-                                    if (U < 0) U = 0; if (U > 255) U = 255;
-                                    if (V < 0) V = 0; if (V > 255) V = 255;
-                                    vp[vi] = (uint8_t)V;
-                                    vp[vi+1] = (uint8_t)U;
-                                }
-                            }
-                        }
-                        /* 写回 VPSS 帧 */
-                        memcpy(frame.video_frame.virt_addr[0], ctbg_nv, ysz);
-                        memcpy(frame.video_frame.virt_addr[1], ctbg_nv + ysz, uvsz);
-                    }
-                }
-            }
-        }
-
         if (stream_send_frame(&frame, 0) == 0) {
             atomic_fetch_add(&metrics->stream_frames, 1);
         } else {
@@ -747,10 +670,6 @@ static void* stream_worker(void* arg) {
             atomic_fetch_add(&metrics->transient_errors, 1);
         }
     }
-
-    free(ctbg_rgb);
-    free(ctbg_nv);
-    free(local_coeff);
     return TD_NULL;
 }
 
