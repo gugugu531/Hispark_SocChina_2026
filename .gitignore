@@ -68,3 +68,4 @@ go.sum
 .idea/
 *.swp
 .DS_Store
+fusion_result.json

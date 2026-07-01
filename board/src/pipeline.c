@@ -29,7 +29,8 @@ void pipeline_config_defaults(pipeline_config_t *cfg)
     cfg->rtsp_bind_addr = NULL; /* 默认：所有接口 */
     cfg->ctrl_sock_path = NULL; /* 默认：不开启控制 socket */
     cfg->ctbg_est_om_path = "/root/socchina-2026/ctbg6ch_estimator_256x144.om";
-    cfg->ctbg_app_om_path = "/root/socchina-2026/ctbg6ch_apply_1024x576.om";
+    /* v8 AIPP OM：NV21 输入，硬件 AIPP 做 NV21→RGB fp16，内建 ConvTranspose */
+    cfg->ctbg_app_om_path = "/root/socchina-2026/ctbg_apply_twostage_nn_aipp_1024x576.om";
 }
 
 int pipeline_config_validate(const pipeline_config_t *cfg)
