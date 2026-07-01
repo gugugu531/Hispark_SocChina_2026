@@ -1,0 +1,40 @@
+# CTBG v12: v9 验证配方 + 轻量正则化（weight_decay + p_identity↑）
+# 原则：不破坏 v9 已验证的收敛配方，仅增加抗过拟合措施
+seed: 42
+
+# 数据(同 v9)
+lol_train: /home/alan/Learning/Retinexformer/data/LOLv1/Train
+lol_val:   /home/alan/Learning/Retinexformer/data/LOLv1/Test
+sice_root: /home/alan/Learning/Hispark/_eval-lut-curve/data/SICE/Dataset_Part2_512
+sice_val_seqs: 20
+samples_per_epoch: 2000       # 保持 v9 配方(95% 数据/epoch, 稳定梯度)
+val_samples: 60
+patch: 256
+p_lol: 0.15
+p_identity: 0.3               # 0.15→0.3, 增强恒等约束
+batch_size: 8
+num_workers: 6
+p_nonuniform: 0.3
+
+# 模型(同 v9)
+channels: 12
+rep_scale: 4
+down: 4
+
+# 损失(同 v9)
+tv_w: 0.001
+std_w: 0.1
+sat_w: 0.1
+illum_w: 0.0
+b_range: 0.02
+
+# 优化(保持 CosineAnnealingLR, 仅加 weight_decay)
+lr: 1.0e-3
+max_epochs: 400              # 恢复 v9 的 400 epochs
+precision: 32
+save_every_n_epochs: 1
+weight_decay: 1.0e-4         # 新增：轻量 L2 正则
+
+# 日志
+out_dir: /home/alan/Learning/Hispark/_eval-lut-curve/p1_bidir/runs
+exp_name: coeff_ctbg_v12

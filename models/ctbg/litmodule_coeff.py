@@ -335,10 +335,14 @@ class LitCTBG(L.LightningModule):
 
     def configure_optimizers(self):
         wd = self.hparams.get("weight_decay", 0.0) if hasattr(self.hparams, "get") else 0.0
-        t_0 = self.hparams.get("t_0", 40) if hasattr(self.hparams, "get") else 40
         opt = torch.optim.Adam(self.net.parameters(), lr=self.hparams.lr,
                                weight_decay=wd)
-        sch = torch.optim.lr_scheduler.CosineAnnealingWarmRestarts(opt, T_0=t_0)
+        sched_name = self.hparams.get("lr_scheduler", "cosine") if hasattr(self.hparams, "get") else "cosine"
+        if sched_name == "cosine_warm_restart":
+            t_0 = self.hparams.get("t_0", 40) if hasattr(self.hparams, "get") else 40
+            sch = torch.optim.lr_scheduler.CosineAnnealingWarmRestarts(opt, T_0=t_0)
+        else:
+            sch = torch.optim.lr_scheduler.CosineAnnealingLR(opt, T_max=self.hparams.max_epochs)
         return {"optimizer": opt, "lr_scheduler": {"scheduler": sch, "interval": "epoch"}}
 
 
