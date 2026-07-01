@@ -794,41 +794,26 @@ static void* stream_worker(void* arg) {
                     atomic_fetch_add(&metrics->infer_runs, 1);
                     apply_count++;
 
-                    /* 全 NV21 转换（2×2 块 + 4 像素展开，减少 LUT 重读）*/
+                    /* 全 NV21 转换：Y 热路径逐像素，UV 冷路径仅 1/4 像素 */
                     uint8_t *yp = ctbg_nv, *vp = ctbg_nv + ysz;
-                    int cs = w * h, hw = w / 2;
-                    for (int y = 0; y < h; y += 2) {
-                        int row0 = y * w, row1 = (y + 1) * w;
-                        int uv_row = (y / 2) * w;  /* UV 行起始索引 */
-                        for (int x = 0; x < w; x += 2) {
-                            /* 2×2 块四个像素的线性索引 */
-                            int i00 = row0 + x,     i01 = row0 + x + 1;
-                            int i10 = row1 + x,     i11 = row1 + x + 1;
-                            /* 读取 fp16 值（仅需各通道首地址偏移） */
-                            uint16_t r00 = ctbg_rgb[i00], r01 = ctbg_rgb[i01];
-                            uint16_t r10 = ctbg_rgb[i10], r11 = ctbg_rgb[i11];
-                            uint16_t g00 = ctbg_rgb[cs + i00], g01 = ctbg_rgb[cs + i01];
-                            uint16_t g10 = ctbg_rgb[cs + i10], g11 = ctbg_rgb[cs + i11];
-                            uint16_t b00 = ctbg_rgb[2*cs + i00], b01 = ctbg_rgb[2*cs + i01];
-                            uint16_t b10 = ctbg_rgb[2*cs + i10], b11 = ctbg_rgb[2*cs + i11];
-                            /* LUT 查表 + Y 累加 */
-                            int y00 = g_yuv_lut_r[r00].y + g_yuv_lut_g[g00].y + g_yuv_lut_b[b00].y;
-                            int y01 = g_yuv_lut_r[r01].y + g_yuv_lut_g[g01].y + g_yuv_lut_b[b01].y;
-                            int y10 = g_yuv_lut_r[r10].y + g_yuv_lut_g[g10].y + g_yuv_lut_b[b10].y;
-                            int y11 = g_yuv_lut_r[r11].y + g_yuv_lut_g[g11].y + g_yuv_lut_b[b11].y;
-                            yp[i00] = (uint8_t)(y00 > 255 ? 255 : y00);
-                            yp[i01] = (uint8_t)(y01 > 255 ? 255 : y01);
-                            yp[i10] = (uint8_t)(y10 > 255 ? 255 : y10);
-                            yp[i11] = (uint8_t)(y11 > 255 ? 255 : y11);
-                            /* UV：仅从 (0,0) 像素计算（复用其 LUT 结果） */
-                            int vi = uv_row + x;
-                            int U = 128 + g_yuv_lut_r[r00].u + g_yuv_lut_g[g00].u
-                                   + g_yuv_lut_b[b00].u;
-                            int V = 128 + g_yuv_lut_r[r00].v + g_yuv_lut_g[g00].v
-                                   + g_yuv_lut_b[b00].v;
-                            if (U < 0) U = 0; if (U > 255) U = 255;
-                            if (V < 0) V = 0; if (V > 255) V = 255;
-                            vp[vi] = (uint8_t)V; vp[vi + 1] = (uint8_t)U;
+                    int cs = w * h;
+                    for (int y = 0; y < h; y++) {
+                        int row = y * w;
+                        for (int x = 0; x < w; x++) {
+                            int i = row + x;
+                            struct f16_yuv_contrib cr = g_yuv_lut_r[ctbg_rgb[i]];
+                            struct f16_yuv_contrib cg = g_yuv_lut_g[ctbg_rgb[cs + i]];
+                            struct f16_yuv_contrib cb = g_yuv_lut_b[ctbg_rgb[2*cs + i]];
+                            int Y = (int)cr.y + (int)cg.y + (int)cb.y;
+                            yp[i] = (uint8_t)(Y > 255 ? 255 : Y);
+                            if ((y & 1) == 0 && (x & 1) == 0) {
+                                int vi = (y/2)*(w/2)*2 + (x/2)*2;
+                                int U = 128+(int)cr.u+(int)cg.u+(int)cb.u;
+                                int V = 128+(int)cr.v+(int)cg.v+(int)cb.v;
+                                if(U<0)U=0; if(U>255)U=255;
+                                if(V<0)V=0; if(V>255)V=255;
+                                vp[vi]=(uint8_t)V; vp[vi+1]=(uint8_t)U;
+                            }
                         }
                     }
                     /* mmap 独立映射写回 */
