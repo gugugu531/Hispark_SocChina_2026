@@ -29,7 +29,8 @@ void pipeline_config_defaults(pipeline_config_t *cfg)
     cfg->rtsp_bind_addr = NULL; /* 默认：所有接口 */
     cfg->ctrl_sock_path = NULL; /* 默认：不开启控制 socket */
     cfg->ctbg_est_om_path = "/root/socchina-2026/ctbg6ch_estimator_256x144.om";
-    /* v9 6ch OM：无 ConvTranspose（host 侧预上采样），纯 elementwise，20.5ms */
+    /* v9 6ch OM：纯 elementwise，20.5ms。AIPP 版（NV21 硬件转换）在 Ascend310
+     * 上因缺 TransData 格式桥接暂不可用，保留 build_ctbg_aipp_om.sh 备用。 */
     cfg->ctbg_app_om_path = "/root/socchina-2026/ctbg6ch_apply_1024x576.om";
 }
 

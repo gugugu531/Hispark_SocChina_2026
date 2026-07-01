@@ -781,7 +781,7 @@ static void* stream_worker(void* arg) {
                 ss_mpi_sys_munmap(yv, ysz);
                 ss_mpi_sys_munmap(uv, uvsz);
 
-                /* v9 OM：需 CPU NV21→RGB fp16 转换（~10ms），OM 纯 elementwise 20.5ms */
+                /* v9 OM：CPU NV21→RGB fp16 + elementwise apply（AIPP OM 待格式桥接）*/
                 ctbg_nv21_to_rgb_fp16(ctbg_nv, ctbg_rgb, w, h);
                 ctbg_timing_t t;
                 long t0 = now_us();
