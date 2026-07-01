@@ -62,10 +62,10 @@ static volatile sig_atomic_t g_stop = 0;
 
 /* ---- CTBG 全局（v9 6ch 双 OM 路线） ---- */
 static volatile int g_ctbg_mode = 0;
-static uint16_t *g_ctbg_coeff = NULL;        /* 广播后 18ch 系数（low_h×low_w，供 apply 用） */
+static uint16_t *g_ctbg_coeff = NULL;        /* 预上采样 6ch 系数（full_h×full_w，供 v9 apply 用） */
 static uint16_t *g_ctbg_coeff_raw = NULL;    /* estimator 原始输出 6ch（low_h×low_w fp16） */
 static uint8_t  *g_ctbg_nv21_low = NULL;     /* estimator NV21 输入临时缓冲（256×144×3/2） */
-static size_t     g_ctbg_coeff_sz = 0;       /* 广播后系数大小（= apply OM 系数输入大小） */
+static size_t     g_ctbg_coeff_sz = 0;       /* 预上采样系数大小（= apply OM 系数输入大小） */
 static size_t     g_ctbg_coeff_raw_sz = 0;   /* estimator 输出大小（6ch raw） */
 static pthread_mutex_t g_ctbg_coeff_mutex = PTHREAD_MUTEX_INITIALIZER;
 static int        g_ctbg_coeff_ready = 0;    /* 首个系数已就绪（apply 可在有系数前跑恒等） */
@@ -471,11 +471,13 @@ static void* control_worker(void* arg) {
                             if (ctbg_estimator_run(rgb_fp16, g_ctbg_coeff_raw,
                                                    &ctbg_t) == 0) {
                                 estimator_ok = 1;
-                                /* v9 6ch → v8 18ch 广播（v8 AIPP apply OM 内部做 ConvTranspose） */
-                                ctbg_broadcast_6to18(g_ctbg_coeff_raw,
-                                                     PIPELINE_CONTROL_WIDTH,
-                                                     PIPELINE_CONTROL_HEIGHT,
-                                                     g_ctbg_coeff);
+                                /* 预上采样 6ch raw 系数 → 全分辨率（v9 apply OM 无 ConvTranspose） */
+                                ctbg_upsample_nearest(g_ctbg_coeff_raw, 6,
+                                                      PIPELINE_CONTROL_WIDTH,
+                                                      PIPELINE_CONTROL_HEIGHT,
+                                                      PIPELINE_STREAM_WIDTH,
+                                                      PIPELINE_STREAM_HEIGHT,
+                                                      g_ctbg_coeff);
                                 ctbg_upsample_flush(g_ctbg_coeff, g_ctbg_coeff_sz);
                                 pthread_mutex_lock(&g_ctbg_coeff_mutex);
                                 g_ctbg_coeff_ready = 1;
@@ -655,6 +657,52 @@ static struct f16_yuv_contrib g_yuv_lut_g[65536];
 static struct f16_yuv_contrib g_yuv_lut_b[65536];
 static int g_yuv_lut_init = 0;
 
+/* 8-bit→fp16 LUT：256 项 uint16_t，用于 NV21→RGB 快速转换输出 */
+static uint16_t g_r8_to_f16[256];
+static int      g_r8_f16_init = 0;
+
+static void ctbg_init_r8_f16(void) {
+    if (g_r8_f16_init) return;
+    for (int i = 0; i < 256; i++) {
+        float v = i / 255.0f;
+        /* float→fp16（仅处理 [0,1] 范围，简化编码） */
+        uint32_t bits; memcpy(&bits, &v, 4);
+        int sign = (bits >> 31) & 1, exp = (bits >> 23) & 0xFF, mant = bits & 0x7FFFFF;
+        uint16_t h;
+        if (exp == 0) { h = 0; }
+        else if (exp < 113) { h = 0; }  /* underflow */
+        else if (exp > 142) { h = (uint16_t)((sign << 15) | 0x7C00); }  /* saturate */
+        else { h = (uint16_t)((sign << 15) | ((exp - 112) << 10) | (mant >> 13)); }
+        g_r8_to_f16[i] = h;
+    }
+    g_r8_f16_init = 1;
+}
+
+/* 快速 NV21→RGB fp16 NCHW 转换（整数 BT.601 + fp16 LUT）。
+ * nv21: YUV420SP 输入, rgb_fp16: NCHW fp16 输出, w/h: 尺寸 */
+static void ctbg_nv21_to_rgb_fp16(const uint8_t *nv21, uint16_t *rgb_fp16, int w, int h) {
+    int cs = w * h, y;
+    for (y = 0; y < h; y++) {
+        for (int x = 0; x < w; x++) {
+            int i = y * w + x;
+            int Y = nv21[i];
+            int uv_idx = cs + (y/2)*(w/2)*2 + (x/2)*2;
+            int U = nv21[uv_idx + 1] - 128;
+            int V = nv21[uv_idx] - 128;
+            /* BT.601 full-range 整数近似（×256 定点）*/
+            int R = (Y * 256 + 359 * V + 128) >> 8;
+            int G = (Y * 256 - 88 * U - 183 * V + 128) >> 8;
+            int B = (Y * 256 + 454 * U + 128) >> 8;
+            if (R < 0) R = 0; if (R > 255) R = 255;
+            if (G < 0) G = 0; if (G > 255) G = 255;
+            if (B < 0) B = 0; if (B > 255) B = 255;
+            rgb_fp16[i]        = g_r8_to_f16[R];
+            rgb_fp16[cs + i]   = g_r8_to_f16[G];
+            rgb_fp16[2*cs + i] = g_r8_to_f16[B];
+        }
+    }
+}
+
 static void ctbg_init_yuv_lut(void) {
     if (g_yuv_lut_init) return;
     for (int i = 0; i < 65536; i++) {
@@ -734,9 +782,11 @@ static void* stream_worker(void* arg) {
                 ss_mpi_sys_munmap(yv, ysz);
                 ss_mpi_sys_munmap(uv, uvsz);
 
+                /* v9 OM：需 CPU NV21→RGB fp16 转换（~10ms），OM 纯 elementwise 20.5ms */
+                ctbg_nv21_to_rgb_fp16(ctbg_nv, ctbg_rgb, w, h);
                 ctbg_timing_t t;
                 long t0 = now_us();
-                if (ctbg_apply_run_nv21(ctbg_nv, local_coeff, ctbg_rgb, &t) == 0) {
+                if (ctbg_apply_run(ctbg_rgb, local_coeff, ctbg_rgb, &t) == 0) {
                     atomic_fetch_add(&metrics->infer_runs, 1);
                     apply_count++;
 
@@ -801,9 +851,10 @@ static void* stream_worker(void* arg) {
         /* 异步 apply（仅非写回帧，帧已归还） */
         if (!do_writeback && g_ctbg_mode && local_ready &&
             ctbg_nv[0] != 0 && apply_count < 30) {
+            ctbg_nv21_to_rgb_fp16(ctbg_nv, ctbg_rgb, w, h);
             ctbg_timing_t t;
             long t0 = now_us();
-            if (ctbg_apply_run_nv21(ctbg_nv, local_coeff, ctbg_rgb, &t) == 0) {
+            if (ctbg_apply_run(ctbg_rgb, local_coeff, ctbg_rgb, &t) == 0) {
                 atomic_fetch_add(&metrics->infer_runs, 1);
                 long t1 = now_us();
                 int cs = w * h;
@@ -1103,18 +1154,17 @@ int main(int argc, char** argv) {
         }
     }
 
-    /* CTBG 初始化（v9 6ch estimator + v8 AIPP apply OM） */
+    /* CTBG 初始化（v9 6ch estimator + v9 6ch apply OM） */
     if (g_ctbg_mode) {
         ctbg_cfg_t ctbg_cfg = {
             .est_om_path = cfg.ctbg_est_om_path ? cfg.ctbg_est_om_path
                           : "/root/socchina-2026/ctbg6ch_estimator_256x144.om",
-            /* v8 AIPP apply OM：NV21 输入（硬件 AIPP 转换），18ch 系数，内部 ConvTranspose */
             .app_om_path = cfg.ctbg_app_om_path ? cfg.ctbg_app_om_path
-                          : "/root/socchina-2026/ctbg_apply_twostage_nn_aipp_1024x576.om",
+                          : "/root/socchina-2026/ctbg6ch_apply_1024x576.om",
             .device_id = 0,
             .full_w = PIPELINE_STREAM_WIDTH, .full_h = PIPELINE_STREAM_HEIGHT,
             .low_w = PIPELINE_CONTROL_WIDTH, .low_h = PIPELINE_CONTROL_HEIGHT,
-            .coeff_ch = 18,  /* v8 AIPP OM 期望 18ch */
+            .coeff_ch = 6,  /* v9 6ch，host 侧预上采样到全分辨率 */
         };
         if (ctbg_init(&ctbg_cfg) != 0) {
             LOG_ERR("CTBG init failed; falling back to rule Gamma");
@@ -1139,7 +1189,8 @@ int main(int argc, char** argv) {
                 memset(g_ctbg_coeff, 0, g_ctbg_coeff_sz);
                 g_ctbg_coeff_ready = 0;  /* apply 在有系数前跳过 */
                 infer_up = 1;
-                ctbg_init_yuv_lut();  /* 预计算 fp16→YUV LUT（576KB, ~2ms） */
+                ctbg_init_r8_f16();   /* 8-bit→fp16 LUT（512B） */
+                ctbg_init_yuv_lut();  /* fp16→YUV LUT（576KB） */
                 LOG_INFO("CTBG mode: estimator=%s apply=%s raw=%zub up=%zub",
                          ctbg_cfg.est_om_path, ctbg_cfg.app_om_path,
                          g_ctbg_coeff_raw_sz, g_ctbg_coeff_sz);
