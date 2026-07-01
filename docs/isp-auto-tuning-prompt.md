@@ -22,6 +22,7 @@
   - Gamma: `table[1025]` [0,4095] 12-bit, `curve_type = USER_DEFINE`
   - LDCI: `he_pos_wgt{wgt,sigma,mean}`, `he_neg_wgt{wgt,sigma,mean}`, `blc_ctrl` [0,511], `gauss_lpf_sigma` [1,255]
   - Dehaze: `strength` [0,255]
+  - WDR: 曝光比 `ratio_x64` [1,64]（已验证 30fps，长/短曝光融合压缩大尺度光照差异）
 
 ## 架构设计原则
 
@@ -49,8 +50,9 @@ NN 输出 88 维连续向量，映射到 SS928 ISP 硬件参数：
 ```
 模块       NN 输出维度   映射方法                          HW API
 ──────────────────────────────────────────────────────────────────
-Gamma      64×[0,1]      np.interp→1025 节点→4095 LUT     isp_gamma_apply_curve()
-DRC tone    6×[0,1]      6 控制点插值→200 节点→65535     drc_attr.tone_mapping_value
+WDR        1×[1,64]      曝光比 ×64 标量                  isp_set_wdr_exposure_ratio()
+Gamma      64×[0,1]      np.interp→1025→4095 LUT         isp_gamma_apply_curve()
+DRC tone    6×[0,1]      6 控制点→插值→200 节点          drc_attr.tone_mapping_value
 DRC mix    12×[0,128]    3 段 bright+dark × FilterX       drc_attr.local_mixing_bright/dark_x
 DRC ctrl    3             spatial_filter, range_filter,    drc_attr
                           contrast_ctrl
@@ -58,6 +60,8 @@ DRC blend   4×[0,255]     luma_max, dark/bright 阈值      drc_attr.blend_luma
 LDCI        8             he_pos(3)+he_neg(3)+blc+σ       ldci_attr.manual_attr
 Dehaze      1×[0,255]     直接标量                         isp_set_dehaze()
 ```
+
+总计 99 维连续参数。WDR 曝光比控制多帧融合的动态范围压缩——短曝光捕捉亮部、长曝光捕捉暗部，融合后可将 20:1 的光照差异压缩至 ~5:1。这是三级级联（WDR→DRC→LDCI）的第一级，也是应对大尺度空间光照不均的核心手段。
 
 曲线参数（Gamma 64 节点、DRC tone 6 节点）需保证单调性约束。
 
@@ -93,11 +97,24 @@ Dehaze      1×[0,255]     直接标量                         isp_set_dehaze()
 
 核心判据——该系统必须满足**实际可用**：
 
-1. **全帧有效**: NN 预测的 ISP 参数对**每一帧**生效（通过 ISP 硬件施加），不存在类似 CTBG writeback 的"30 帧中仅 1 帧增强"问题
-2. **目视改善**: 在暗场景、背光场景、正常场景下，与纯 Gamma-only（strength=0.25）相比有明显目视改善——暗部可见性提升同时高光不过曝
-3. **不引入劣化**: 不出现色偏、条带、闪烁、halo 等 ISP 参数不当导致的 artifacts
-4. **场景自适应**: 不同光照条件下自动产出不同的参数组合（如暗场景增强 DRC 和 LDCI，亮场景仅微调 Gamma）
-5. **量化可选**: SICE val 集上 PSNR 优于当前 CTBG 启发式规则（baseline: CTBG v9 19.83 dB）
+1. **全帧有效**: NN 预测的 ISP 参数对**每一帧**生效（通过 ISP 硬件施加），不存在类似 CTBG writeback 的"30 帧中仅 1 帧增强"问题。
+
+2. **目视改善**: 在暗场景、背光场景、正常场景下，与纯 Gamma-only（strength=0.25）相比有明显目视改善——暗部可见性提升同时高光不过曝。
+
+3. **空间光照差异压缩**（弱化版光照统一）: 在"左亮右暗"等大尺度光照不均场景下，通过 WDR+DRC+LDCI 三级级联将光照对比度压缩至可接受范围。不接受此目标的 per-pixel 精度要求——ISP 硬件不支持 per-block 参数，这是硬件约束而非方案缺陷。验收判据：20:1 光照差异场景下输出画面无明显"一边过曝一边死黑"区域，暗区纹理可辨识。
+
+4. **不引入劣化**: 不出现色偏、条带、闪烁、halo 等 ISP 参数不当导致的 artifacts。WDR 融合不产生鬼影（运动场景需验证）。
+
+5. **场景自适应**: 不同光照条件下自动产出不同的参数组合。典型期望：
+   - 背光场景：增强 WDR 曝光比 + DRC S-curve + LDCI 强局域均衡
+   - 整体暗场景：上凸 Gamma + DRC 提亮 + LDCI 增强暗区细节
+   - 正常场景：参数接近直通，避免过度处理
+
+6. **量化可选**: SICE val 集上 PSNR 优于当前 CTBG 启发式规则（baseline: CTBG v9 19.83 dB）。
+
+### 空间自适应能力声明（设计约束）
+
+SS928 ISP 的空间自适应机制受限于硬件 API：DRC/LDCI/Dehaze/Gamma 参数为全局寄存器（119 个 MPI 函数中无 per-block/per-zone 接口）。空间差异性来自 ISP 内部算法（DRC 的 per-pixel-neighborhood bilateral filter、LDCI 的 9×9 局域直方图均衡），非外部可编程。WDR 多帧融合在时间维而非空间维解决光照差异。若未来需要 per-region 参数控制，需确认厂商是否提供未公开接口或升级 SDK。
 
 ## 实施顺序
 
