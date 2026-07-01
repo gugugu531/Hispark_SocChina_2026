@@ -646,14 +646,19 @@ static void* control_worker(void* arg) {
     return TD_NULL;
 }
 
-/* fp16→float LUT：65536 项 float（256KB），RGB→NV21 时 O(1) 查表替代 IEEE 754 位操作。
- * 浮点 YUV 转换仍保留，后续可改为全整数 LUT（需 9 通道分别查表）。 */
-static float g_f16_lut[65536];
-static int   g_f16_lut_init = 0;
+/* 每通道 YUV 贡献 LUT：fp16 值 → 该通道对 Y/U/V 的 BT.601 贡献（已乘系数）。
+ * RGB→NV21 仅需查表 + 整数加法，完全消除浮点运算。
+ * 三个 LUT（R/G/B）各 65536×3 字节 = 576KB，ARM A55 L2 cache 可容纳。 */
+struct f16_yuv_contrib { uint8_t y; int8_t u; int8_t v; };
+static struct f16_yuv_contrib g_yuv_lut_r[65536];
+static struct f16_yuv_contrib g_yuv_lut_g[65536];
+static struct f16_yuv_contrib g_yuv_lut_b[65536];
+static int g_yuv_lut_init = 0;
 
-static void ctbg_init_f16_lut(void) {
-    if (g_f16_lut_init) return;
+static void ctbg_init_yuv_lut(void) {
+    if (g_yuv_lut_init) return;
     for (int i = 0; i < 65536; i++) {
+        /* IEEE 754 half → float */
         uint32_t s = (i & 0x8000u) << 16, e = (i >> 10) & 0x1Fu, m = i & 0x3FFu, b;
         if (e == 0) {
             if (m == 0) b = s;
@@ -661,12 +666,16 @@ static void ctbg_init_f16_lut(void) {
                    b = s | ((e + 127 - 15) << 23) | (m << 13); }
         } else if (e == 0x1F) b = s | 0x7F800000u | (m << 13);
         else b = s | ((e - 15 + 127) << 23) | (m << 13);
-        memcpy(&g_f16_lut[i], &b, 4);
+        float v; memcpy(&v, &b, 4);
+        if (v < 0.0f) v = 0.0f; if (v > 1.0f) v = 1.0f;
+        float sv = v * 255.0f;
+        /* R 通道 YUV 贡献 */ /* G 通道 */           /* B 通道 */
+        g_yuv_lut_r[i].y = (uint8_t)(0.299f*sv+0.5f);  g_yuv_lut_g[i].y = (uint8_t)(0.587f*sv+0.5f);  g_yuv_lut_b[i].y = (uint8_t)(0.114f*sv+0.5f);
+        g_yuv_lut_r[i].u = (int8_t)(-0.169f*sv);       g_yuv_lut_g[i].u = (int8_t)(-0.331f*sv);       g_yuv_lut_b[i].u = (int8_t)(0.500f*sv);
+        g_yuv_lut_r[i].v = (int8_t)(0.500f*sv);        g_yuv_lut_g[i].v = (int8_t)(-0.419f*sv);       g_yuv_lut_b[i].v = (int8_t)(-0.081f*sv);
     }
-    g_f16_lut_init = 1;
+    g_yuv_lut_init = 1;
 }
-
-static inline float ctbg_f16tof32(uint16_t v) { return g_f16_lut[v]; }
 
 static void* stream_worker(void* arg) {
     app_runtime_metrics_t *metrics = (app_runtime_metrics_t *)arg;
@@ -698,8 +707,8 @@ static void* stream_worker(void* arg) {
 
         /* v8 AIPP OM apply：NV21→RGB（硬件 AIPP）→ OM（~38ms）→ RGB fp16 输出
          * + CPU RGB→NV21 写回（~10ms）。总 ~48ms > 33ms，帧跳过载保护。 */
-        /* 帧跳过载保护：apply ~50ms/帧，允许每 3-4 帧处理一次（~8fps 增强流） */
-        int skip = (last_apply_us > 120000);  /* 120ms 冷却 → 约 8fps apply */
+        /* 帧跳过载保护：apply 约 90ms/帧，冷却 100ms → 约 10fps apply */
+        int skip = (last_apply_us > 100000);
         if (!g_stop && !skip && g_ctbg_mode && ctbg_rgb && ctbg_nv && local_coeff) {
             int coeff_ready;
             pthread_mutex_lock(&g_ctbg_coeff_mutex);
@@ -724,26 +733,22 @@ static void* stream_worker(void* arg) {
                         metrics->infer_last_ms = t.app_ms;
                         atomic_fetch_add(&metrics->infer_runs, 1);
 
-                        /* RGB fp16 → NV21 写回（LUT 加速 fp16 解码 + 浮点 BT.601） */
+                        /* RGB fp16 → NV21 写回（全整数 LUT：每像素 3 次查表 + 整数加法） */
                         uint8_t *yp = ctbg_nv, *vp = ctbg_nv + ysz;
                         int x, y, cs = w * h;
                         for (y = 0; y < h; y++) {
                             for (x = 0; x < w; x++) {
                                 int i = y * w + x;
-                                float R = g_f16_lut[ctbg_rgb[i]];
-                                float G = g_f16_lut[ctbg_rgb[cs + i]];
-                                float B = g_f16_lut[ctbg_rgb[2*cs + i]];
-                                if (R < 0.0f) R = 0.0f; if (R > 1.0f) R = 1.0f;
-                                if (G < 0.0f) G = 0.0f; if (G > 1.0f) G = 1.0f;
-                                if (B < 0.0f) B = 0.0f; if (B > 1.0f) B = 1.0f;
-                                yp[i] = (uint8_t)(0.299f*R*255.0f + 0.587f*G*255.0f
-                                                  + 0.114f*B*255.0f + 0.5f);
+                                struct f16_yuv_contrib cr = g_yuv_lut_r[ctbg_rgb[i]];
+                                struct f16_yuv_contrib cg = g_yuv_lut_g[ctbg_rgb[cs + i]];
+                                struct f16_yuv_contrib cb = g_yuv_lut_b[ctbg_rgb[2*cs + i]];
+                                int Y = (int)cr.y + (int)cg.y + (int)cb.y;
+                                if (Y > 255) Y = 255;
+                                yp[i] = (uint8_t)Y;
                                 if ((y & 1) == 0 && (x & 1) == 0) {
                                     int vi = (y/2)*(w/2)*2 + (x/2)*2;
-                                    int U = (int)(-0.169f*R*255.0f - 0.331f*G*255.0f
-                                                  + 0.500f*B*255.0f + 128.5f);
-                                    int V = (int)( 0.500f*R*255.0f - 0.419f*G*255.0f
-                                                  - 0.081f*B*255.0f + 128.5f);
+                                    int U = 128 + (int)cr.u + (int)cg.u + (int)cb.u;
+                                    int V = 128 + (int)cr.v + (int)cg.v + (int)cb.v;
                                     if (U < 0) U = 0; if (U > 255) U = 255;
                                     if (V < 0) V = 0; if (V > 255) V = 255;
                                     vp[vi] = (uint8_t)V; vp[vi+1] = (uint8_t)U;
@@ -1099,7 +1104,7 @@ int main(int argc, char** argv) {
                 memset(g_ctbg_coeff, 0, g_ctbg_coeff_sz);
                 g_ctbg_coeff_ready = 0;  /* apply 在有系数前跳过 */
                 infer_up = 1;
-                ctbg_init_f16_lut();  /* 预计算 fp16→float LUT（256KB, ~1ms） */
+                ctbg_init_yuv_lut();  /* 预计算 fp16→YUV LUT（576KB, ~2ms） */
                 LOG_INFO("CTBG mode: estimator=%s apply=%s raw=%zub up=%zub",
                          ctbg_cfg.est_om_path, ctbg_cfg.app_om_path,
                          g_ctbg_coeff_raw_sz, g_ctbg_coeff_sz);
