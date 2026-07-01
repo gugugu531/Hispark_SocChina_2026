@@ -36,6 +36,11 @@
 #include "stream.h"
 #include "vpss.h"
 
+#ifdef WITH_SS928_SDK
+#include "ctbg_upsample.h"
+#include "infer_ctbg.h"
+#endif
+
 #include "ot_buffer.h"
 #include "ot_common_vb.h"
 #include "ot_common_video.h"
@@ -54,6 +59,16 @@
 #define APP_TIMING_SAMPLES      256u
 
 static volatile sig_atomic_t g_stop = 0;
+
+/* ---- CTBG 全局（v9 6ch 双 OM 路线） ---- */
+static volatile int g_ctbg_mode = 0;
+static uint16_t *g_ctbg_coeff = NULL;        /* 预上采样系数（coeff_ch × full_h × full_w fp16） */
+static uint16_t *g_ctbg_coeff_raw = NULL;    /* estimator 原始输出（coeff_ch × low_h × low_w fp16） */
+static uint8_t  *g_ctbg_nv21_low = NULL;     /* estimator NV21 输入临时缓冲（256×144×3/2） */
+static size_t     g_ctbg_coeff_sz = 0;       /* 预上采样系数大小（字节） */
+static size_t     g_ctbg_coeff_raw_sz = 0;   /* 原始系数大小 */
+static pthread_mutex_t g_ctbg_coeff_mutex = PTHREAD_MUTEX_INITIALIZER;
+static int        g_ctbg_coeff_ready = 0;    /* 首个系数已就绪（apply 可在有系数前跑恒等） */
 
 typedef struct {
     atomic_int state;
@@ -387,8 +402,9 @@ static void* control_worker(void* arg) {
             LOG_INFO("[ctrl] NN CLUT disabled by user; ISP CLUT -> identity");
         }
 
-        /* 已明显过曝时旁路 RGB LUT，避免模型继续推高 pre-CLUT 已裁剪区域。 */
-        if (effective_nn && !ctx->health.degraded &&
+        /* 已明显过曝时旁路 RGB LUT（CoTF 路径），避免模型继续推高 pre-CLUT 已裁剪区域。
+         * CTBG 路径不适用此门控：estimator 感知全图双向曝光，高光场景也需要更新系数。 */
+        if (!g_ctbg_mode && effective_nn && !ctx->health.degraded &&
             cur.clip_high_pct > ctx->high_clip_guard) {
             (void)isp_set_clut(ISP_BLOCK_OFF, APP_CLUT_UNITY_GAIN, APP_CLUT_UNITY_GAIN,
                                APP_CLUT_UNITY_GAIN);
@@ -401,6 +417,123 @@ static void* control_worker(void* arg) {
         }
 
         if (effective_nn && !ctx->health.degraded) {
+            /* ---- CTBG estimator 路径（v9 6ch） ---- */
+            if (g_ctbg_mode) {
+                ot_video_frame_info control_frame;
+                ctbg_timing_t ctbg_t = {0};
+                long transaction_start_us = now_us();
+                int got_frame = 0;
+                int estimator_ok = 0;
+
+                atomic_fetch_add(&metrics->lut_requests, 1);
+                if (vpss_get_frame(PIPELINE_VPSS_GRP, PIPELINE_VPSS_CHN_CONTROL, &control_frame,
+                                   APP_CONTROL_TIMEOUT_MS) == 0) {
+                    got_frame = 1;
+
+                    /* CPU NV21 → NCHW fp16 RGB（256×144 极小） */
+                    {
+                        unsigned cw = PIPELINE_CONTROL_WIDTH, ch = PIPELINE_CONTROL_HEIGHT;
+                        size_t ysz = (size_t)cw * ch;
+                        /* mmap VPSS 物理帧到用户空间 */
+                        td_void *y_virt  = ss_mpi_sys_mmap(
+                            control_frame.video_frame.phys_addr[0], ysz);
+                        td_void *uv_virt = ss_mpi_sys_mmap(
+                            control_frame.video_frame.phys_addr[1], ysz / 2);
+                        if (g_ctbg_nv21_low && g_ctbg_coeff_raw && y_virt && uv_virt) {
+                            memcpy(g_ctbg_nv21_low, y_virt, ysz);
+                            memcpy(g_ctbg_nv21_low + ysz, uv_virt, ysz / 2);
+                            ss_mpi_sys_munmap(y_virt, ysz);
+                            ss_mpi_sys_munmap(uv_virt, ysz / 2);
+                            /* NV21→RGB fp16，输出到 g_ctbg_coeff_raw（独立缓冲区） */
+                            uint16_t *rgb_fp16 = g_ctbg_coeff_raw;
+                            for (unsigned y = 0; y < ch; y++) {
+                                for (unsigned x = 0; x < cw; x++) {
+                                    int yi = y * cw + x;
+                                    int uv_idx = (y / 2) * (cw / 2) * 2 + (x / 2) * 2;
+                                    float Yv  = (float)g_ctbg_nv21_low[yi];
+                                    float Uv  = (float)g_ctbg_nv21_low[ysz + uv_idx + 1] - 128.0f;
+                                    float Vv  = (float)g_ctbg_nv21_low[ysz + uv_idx] - 128.0f;
+                                    float Rf  = (Yv + 1.402f * Vv) / 255.0f;
+                                    float Gf  = (Yv - 0.344f * Uv - 0.714f * Vv) / 255.0f;
+                                    float Bf  = (Yv + 1.772f * Uv) / 255.0f;
+                                    if (Rf < 0.0f) Rf = 0.0f; if (Rf > 1.0f) Rf = 1.0f;
+                                    if (Gf < 0.0f) Gf = 0.0f; if (Gf > 1.0f) Gf = 1.0f;
+                                    if (Bf < 0.0f) Bf = 0.0f; if (Bf > 1.0f) Bf = 1.0f;
+                                    uint32_t ri; memcpy(&ri, &Rf, 4);
+                                    uint32_t gi; memcpy(&gi, &Gf, 4);
+                                    uint32_t bi; memcpy(&bi, &Bf, 4);
+                                    rgb_fp16[0 * cw * ch + yi] = (uint16_t)(ri >> 16);
+                                    rgb_fp16[1 * cw * ch + yi] = (uint16_t)(gi >> 16);
+                                    rgb_fp16[2 * cw * ch + yi] = (uint16_t)(bi >> 16);
+                                }
+                            }
+                            /* 运行 estimator */
+                            if (ctbg_estimator_run(rgb_fp16, g_ctbg_coeff_raw,
+                                                   &ctbg_t) == 0) {
+                                estimator_ok = 1;
+                                /* 预上采样 raw 系数 → 全分辨率 */
+                                ctbg_upsample_nearest(g_ctbg_coeff_raw, 6,
+                                                      PIPELINE_CONTROL_WIDTH,
+                                                      PIPELINE_CONTROL_HEIGHT,
+                                                      PIPELINE_STREAM_WIDTH,
+                                                      PIPELINE_STREAM_HEIGHT,
+                                                      g_ctbg_coeff);
+                                ctbg_upsample_flush(g_ctbg_coeff, g_ctbg_coeff_sz);
+                                /* 更新共享系数（mutex 保护） */
+                                pthread_mutex_lock(&g_ctbg_coeff_mutex);
+                                g_ctbg_coeff_ready = 1;
+                                pthread_mutex_unlock(&g_ctbg_coeff_mutex);
+                            }
+                        }
+                    }
+                    if (vpss_release_frame(PIPELINE_VPSS_GRP, PIPELINE_VPSS_CHN_CONTROL,
+                                           &control_frame) != 0) {
+                        LOG_ERR("[ctrl] failed to release chn2 frame");
+                        atomic_fetch_add(&metrics->transient_errors, 1);
+                    }
+                    got_frame = 0;
+                } else {
+                    atomic_fetch_add(&metrics->frame_timeouts, 1);
+                }
+                if (got_frame) {
+                    (void)vpss_release_frame(PIPELINE_VPSS_GRP, PIPELINE_VPSS_CHN_CONTROL,
+                                             &control_frame);
+                }
+
+                if (estimator_ok) {
+                    float transaction_ms = (now_us() - transaction_start_us) / 1000.0f;
+                    unsigned sample_index = metrics->timing_samples % APP_TIMING_SAMPLES;
+
+                    (void)control_health_record(&ctx->health, 1, APP_NN_FAILURE_LIMIT);
+                    atomic_fetch_add(&metrics->lut_updates, 1);
+                    atomic_fetch_add(&metrics->infer_runs, 1);
+                    metrics->infer_last_ms = ctbg_t.est_ms;
+                    if (ctbg_t.est_ms > metrics->infer_max_ms) {
+                        metrics->infer_max_ms = ctbg_t.est_ms;
+                    }
+                    metrics->transaction_last_ms = transaction_ms;
+                    if (transaction_ms > metrics->transaction_max_ms) {
+                        metrics->transaction_max_ms = transaction_ms;
+                    }
+                    metrics->infer_samples[sample_index] = ctbg_t.est_ms;
+                    metrics->transaction_samples[sample_index] = transaction_ms;
+                    metrics->timing_samples++;
+                    control_feedback_commit(&feedback);
+                    LOG_INFO("[ctrl] CTBG est v%llu -> %s luma=%.1f exec=%.2fms tx=%.2fms",
+                             (unsigned long long)atomic_load(&metrics->lut_updates),
+                             mode_name(mode), cur.mean_luma, ctbg_t.est_ms, transaction_ms);
+                    continue;
+                }
+
+                /* estimator 失败：不降级（NPU 瞬态错误可恢复），保留上次系数继续 */
+                atomic_fetch_add(&metrics->lut_failures, 1);
+                atomic_fetch_add(&metrics->transient_errors, 1);
+                LOG_WARN("[ctrl] CTBG estimator failed; keeping previous coefficients");
+                continue;
+            }
+
+            /* ---- CoTF param-net + CLUT bridge 路径（原有） ---- */
+            {
             ot_video_frame_info control_frame;
             infer_timing_t timing = {0};
             long transaction_start_us = now_us();
@@ -499,6 +632,7 @@ static void* control_worker(void* arg) {
                          ctx->health.consecutive_failures, APP_NN_FAILURE_LIMIT);
             }
             continue;
+            } /* end CoTF path */
         }
 
         /* 无模型或已降级：稳定规则 Gamma 路径。 */
@@ -518,6 +652,24 @@ static void* control_worker(void* arg) {
 static void* stream_worker(void* arg) {
     app_runtime_metrics_t *metrics = (app_runtime_metrics_t *)arg;
     ot_video_frame_info frame;
+    /* CTBG apply 局部缓冲区（每帧复用，避免每帧 malloc/free） */
+    uint16_t *ctbg_rgb = NULL;
+    uint8_t  *ctbg_nv  = NULL;
+    uint16_t *local_coeff = NULL;
+    size_t    nv_sz = 0;
+    int       w = PIPELINE_STREAM_WIDTH, h = PIPELINE_STREAM_HEIGHT;
+
+    if (g_ctbg_mode) {
+        nv_sz  = (size_t)w * h * 3 / 2;
+        ctbg_rgb = (uint16_t *)malloc((size_t)w * h * 3 * 2);  /* RGB fp16 输出 */
+        ctbg_nv  = (uint8_t *)malloc(nv_sz);                   /* NV21 工作缓冲 */
+        local_coeff = (uint16_t *)malloc(g_ctbg_coeff_sz);     /* 系数本地副本 */
+        if (!ctbg_rgb || !ctbg_nv || !local_coeff) {
+            LOG_ERR("CTBG stream_worker: oom");
+            free(ctbg_rgb); free(ctbg_nv); free(local_coeff);
+            return TD_NULL;
+        }
+    }
 
     while (!g_stop) {
         if (vpss_get_frame(PIPELINE_VPSS_GRP, PIPELINE_VPSS_CHN_STREAM, &frame, 200) != 0) {
@@ -525,6 +677,70 @@ static void* stream_worker(void* arg) {
             atomic_fetch_add(&metrics->frame_timeouts, 1);
             continue;
         }
+
+        /* CTBG apply：每帧对上屏帧做逐像素增强 */
+        if (g_ctbg_mode && ctbg_rgb && ctbg_nv && local_coeff) {
+            int coeff_ready;
+            pthread_mutex_lock(&g_ctbg_coeff_mutex);
+            coeff_ready = g_ctbg_coeff_ready;
+            if (coeff_ready) {
+                memcpy(local_coeff, g_ctbg_coeff, g_ctbg_coeff_sz);
+            }
+            pthread_mutex_unlock(&g_ctbg_coeff_mutex);
+
+            if (coeff_ready) {
+                /* 复制 VPSS NV21 帧到本地缓冲区 */
+                size_t ysz = (size_t)w * h, uvsz = ysz / 2;
+                memcpy(ctbg_nv, frame.video_frame.virt_addr[0], ysz);
+                memcpy(ctbg_nv + ysz, frame.video_frame.virt_addr[1], uvsz);
+
+                /* AIPP OM：NV21→RGB fp16 转换在 OM 内部完成 */
+                ctbg_timing_t t;
+                if (ctbg_apply_run_nv21(ctbg_nv, local_coeff, ctbg_rgb, &t) == 0) {
+                    metrics->infer_last_ms = t.app_ms;
+
+                    /* RGB fp16 → NV21 写回（CPU 转换，需优化；待 VGS/GFBG 路线） */
+                    int x, y;
+                    uint8_t *yp = ctbg_nv, *vp = ctbg_nv + ysz;
+                    /* 复用 ctbg_h2f 逻辑（fp16→float） */
+                    #define CTBG_H2F(v) ({ \
+                        uint16_t _v=(v); \
+                        uint32_t _s=(_v&0x8000u)<<16,_e=(_v>>10)&0x1F,_m=_v&0x3FF,_b; \
+                        if(_e==0){if(_m==0)_b=_s;else{_e=1;while((_m&0x400)==0){_m<<=1;_e--;}_m&=0x3FF;_b=_s|((_e+127-15)<<23)|(_m<<13);}} \
+                        else if(_e==0x1F)_b=_s|0x7F800000u|(_m<<13);else _b=_s|((_e-15+127)<<23)|(_m<<13); \
+                        float _f; memcpy(&_f,&_b,4); _f; \
+                    })
+                    int cs = w * h;
+                    for (y = 0; y < h; y++) {
+                        for (x = 0; x < w; x++) {
+                            int i = y * w + x;
+                            float R = CTBG_H2F(ctbg_rgb[0*cs + i]);
+                            float G = CTBG_H2F(ctbg_rgb[1*cs + i]);
+                            float B = CTBG_H2F(ctbg_rgb[2*cs + i]);
+                            if (R < 0.0f) R = 0.0f; if (R > 1.0f) R = 1.0f;
+                            if (G < 0.0f) G = 0.0f; if (G > 1.0f) G = 1.0f;
+                            if (B < 0.0f) B = 0.0f; if (B > 1.0f) B = 1.0f;
+                            yp[i] = (uint8_t)(0.299f*R*255.0f + 0.587f*G*255.0f + 0.114f*B*255.0f + 0.5f);
+                            if ((y & 1) == 0 && (x & 1) == 0) {
+                                int vi = (y/2)*(w/2)*2 + (x/2)*2;
+                                int U = (int)(-0.169f*R*255.0f - 0.331f*G*255.0f + 0.500f*B*255.0f + 128.5f);
+                                int V = (int)( 0.500f*R*255.0f - 0.419f*G*255.0f - 0.081f*B*255.0f + 128.5f);
+                                if (U < 0) U = 0; if (U > 255) U = 255;
+                                if (V < 0) V = 0; if (V > 255) V = 255;
+                                vp[vi] = (uint8_t)V;
+                                vp[vi+1] = (uint8_t)U;
+                            }
+                        }
+                    }
+                    #undef CTBG_H2F
+                    /* 写回 VPSS 帧 */
+                    memcpy(frame.video_frame.virt_addr[0], ctbg_nv, ysz);
+                    memcpy(frame.video_frame.virt_addr[1], ctbg_nv + ysz, uvsz);
+                    atomic_fetch_add(&metrics->infer_runs, 1);
+                }
+            }
+        }
+
         if (stream_send_frame(&frame, 0) == 0) {
             atomic_fetch_add(&metrics->stream_frames, 1);
         } else {
@@ -536,6 +752,10 @@ static void* stream_worker(void* arg) {
             atomic_fetch_add(&metrics->transient_errors, 1);
         }
     }
+
+    free(ctbg_rgb);
+    free(ctbg_nv);
+    free(local_coeff);
     return TD_NULL;
 }
 
@@ -610,12 +830,20 @@ int main(int argc, char** argv) {
             enable_nn = 0;
         } else if (strcmp(argv[i], "--nn-high-clip") == 0 && i + 1 < argc) {
             cfg.nn_high_clip_guard = (float)atof(argv[++i]);
+        } else if (strcmp(argv[i], "--ctbg") == 0) {
+            g_ctbg_mode = 1;
+            /* CTBG 需要 VPSS chn2（estimator 输入），保持 enable_nn=1 以启用 chn2；
+             * CoTF infer_init 在下方由 g_ctbg_mode 门控跳过。 */
+        } else if (strcmp(argv[i], "--ctbg-est-om") == 0 && i + 1 < argc) {
+            cfg.ctbg_est_om_path = argv[++i];
+        } else if (strcmp(argv[i], "--ctbg-app-om") == 0 && i + 1 < argc) {
+            cfg.ctbg_app_om_path = argv[++i];
         } else {
             LOG_ERR("unknown or incomplete option: %s", argv[i]);
             return 2;
         }
     }
-    if (cfg.model_path == NULL) {
+    if (cfg.model_path == NULL && !g_ctbg_mode) {
         enable_nn = 0;
     }
     if (pipeline_config_validate(&cfg) != PIPELINE_OK) {
@@ -648,12 +876,14 @@ int main(int argc, char** argv) {
     control_ctx.metrics = &runtime_metrics;
     control_health_init(&control_ctx.health);
 
-    LOG_INFO("%s v%s — CoTF realtime exposure correction (sensor=%d mode=%s fps=%u "
+    LOG_INFO("%s v%s — %s realtime exposure correction (sensor=%d mode=%s fps=%u "
              "display=%s stream=%s nn=%s)",
-             SOCCHINA_APP_NAME, SOCCHINA_APP_VERSION, cfg.sensor_index,
+             SOCCHINA_APP_NAME, SOCCHINA_APP_VERSION,
+             g_ctbg_mode ? "CTBG v9 6ch" : "CoTF",
+             cfg.sensor_index,
              cfg.use_wdr ? "wdr2to1" : "linear", cfg.target_fps,
              cfg.enable_display ? "on" : "off", cfg.enable_stream ? "on" : "off",
-             enable_nn ? cfg.model_path : "rule-gamma");
+             g_ctbg_mode ? "ctbg-estimator" : (enable_nn ? cfg.model_path : "rule-gamma"));
 
     signal(SIGINT, on_sig);
     signal(SIGTERM, on_sig);
@@ -782,7 +1012,7 @@ int main(int argc, char** argv) {
         }
         stream_up = 1;
     }
-    if (enable_nn) {
+    if (enable_nn && !g_ctbg_mode) {
         infer_cfg_t infer_cfg = {
             cfg.model_path, 0, PIPELINE_CONTROL_WIDTH, PIPELINE_CONTROL_HEIGHT,
             PIPELINE_COTF_LUT_DIM, PIPELINE_INPUT_COPY,
@@ -795,6 +1025,48 @@ int main(int argc, char** argv) {
             atomic_fetch_add(&runtime_metrics.degraded_events, 1);
         } else {
             infer_up = 1;
+        }
+    }
+
+    /* CTBG 初始化（替代 CoTF param-net 路径） */
+    if (g_ctbg_mode) {
+        ctbg_cfg_t ctbg_cfg = {
+            .est_om_path = cfg.ctbg_est_om_path ? cfg.ctbg_est_om_path
+                          : "/root/socchina-2026/ctbg6ch_estimator_256x144.om",
+            .app_om_path = cfg.ctbg_app_om_path ? cfg.ctbg_app_om_path
+                          : "/root/socchina-2026/ctbg6ch_apply_1024x576.om",
+            .device_id = 0,
+            .full_w = PIPELINE_STREAM_WIDTH, .full_h = PIPELINE_STREAM_HEIGHT,
+            .low_w = PIPELINE_CONTROL_WIDTH, .low_h = PIPELINE_CONTROL_HEIGHT,
+            .coeff_ch = 6,  /* v9 6ch */
+        };
+        if (ctbg_init(&ctbg_cfg) != 0) {
+            LOG_ERR("CTBG init failed; falling back to rule Gamma");
+            g_ctbg_mode = 0;
+        } else {
+            /* 分配系数缓冲区 */
+            g_ctbg_coeff_raw_sz = ctbg_coeff_size();              /* raw：6×144×256×2 */
+            g_ctbg_coeff_sz     = ctbg_coeff_app_size();          /* up：6×576×1024×2 */
+            g_ctbg_coeff_raw = (uint16_t *)malloc(g_ctbg_coeff_raw_sz);
+            g_ctbg_coeff     = (uint16_t *)malloc(g_ctbg_coeff_sz);
+            g_ctbg_nv21_low  = (uint8_t *)malloc(
+                (size_t)PIPELINE_CONTROL_WIDTH * PIPELINE_CONTROL_HEIGHT * 3 / 2);
+            if (!g_ctbg_coeff_raw || !g_ctbg_coeff || !g_ctbg_nv21_low) {
+                LOG_ERR("CTBG coeff buffer oom");
+                free(g_ctbg_coeff_raw); free(g_ctbg_coeff); free(g_ctbg_nv21_low);
+                g_ctbg_coeff_raw = NULL; g_ctbg_coeff = NULL; g_ctbg_nv21_low = NULL;
+                g_ctbg_mode = 0;
+                ctbg_deinit();
+            } else {
+                /* 初始化为恒等变换（raw=0 → a=1, b=0, g=1） */
+                memset(g_ctbg_coeff_raw, 0, g_ctbg_coeff_raw_sz);
+                memset(g_ctbg_coeff, 0, g_ctbg_coeff_sz);
+                g_ctbg_coeff_ready = 0;  /* apply 在有系数前跳过 */
+                infer_up = 1;
+                LOG_INFO("CTBG mode: estimator=%s apply=%s raw=%zub up=%zub",
+                         ctbg_cfg.est_om_path, ctbg_cfg.app_om_path,
+                         g_ctbg_coeff_raw_sz, g_ctbg_coeff_sz);
+            }
         }
     }
 
@@ -1021,6 +1293,17 @@ cleanup:
     }
     if (ctrl_up) {
         (void) pthread_join(ctrl_tid, TD_NULL);
+    }
+    if (g_ctbg_mode) {
+        ctbg_deinit();
+        free(g_ctbg_coeff);
+        free(g_ctbg_coeff_raw);
+        free(g_ctbg_nv21_low);
+        g_ctbg_coeff = NULL;
+        g_ctbg_coeff_raw = NULL;
+        g_ctbg_nv21_low = NULL;
+        g_ctbg_coeff_ready = 0;
+        pthread_mutex_destroy(&g_ctbg_coeff_mutex);
     }
     if (infer_up) {
         CHECK_RET(infer_deinit());

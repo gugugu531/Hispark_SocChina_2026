@@ -73,6 +73,8 @@ typedef struct {
     const char *stream_path;
     const char *rtsp_bind_addr;  /* NULL = 所有接口; "127.0.0.1" = 仅回环（MediaMTX 模式） */
     const char *ctrl_sock_path;  /* NULL = 不开启控制 socket; e.g. "/run/socchina/app-control.sock" */
+    const char *ctbg_est_om_path;  /* CTBG estimator OM 路径 */
+    const char *ctbg_app_om_path;  /* CTBG apply OM 路径 */
 } pipeline_config_t;
 
 typedef struct {

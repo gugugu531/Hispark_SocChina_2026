@@ -28,6 +28,8 @@ void pipeline_config_defaults(pipeline_config_t *cfg)
     cfg->stream_path    = PIPELINE_DEFAULT_RTSP_PATH;
     cfg->rtsp_bind_addr = NULL; /* 默认：所有接口 */
     cfg->ctrl_sock_path = NULL; /* 默认：不开启控制 socket */
+    cfg->ctbg_est_om_path = "/root/socchina-2026/ctbg6ch_estimator_256x144.om";
+    cfg->ctbg_app_om_path = "/root/socchina-2026/ctbg6ch_apply_1024x576.om";
 }
 
 int pipeline_config_validate(const pipeline_config_t *cfg)
