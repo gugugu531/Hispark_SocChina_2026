@@ -679,7 +679,7 @@ static void* stream_worker(void* arg) {
         }
 
         /* CTBG apply：每帧对上屏帧做逐像素增强 */
-        if (g_ctbg_mode && ctbg_rgb && ctbg_nv && local_coeff) {
+        if (!g_stop && g_ctbg_mode && ctbg_rgb && ctbg_nv && local_coeff) {
             int coeff_ready;
             pthread_mutex_lock(&g_ctbg_coeff_mutex);
             coeff_ready = g_ctbg_coeff_ready;
@@ -823,6 +823,8 @@ int main(int argc, char** argv) {
         {0, 0, 0, 0},
     };
 
+    setbuf(stdout, NULL);  /* 禁用缓冲，确保崩溃前日志不丢失 */
+    setbuf(stderr, NULL);
     pipeline_config_defaults(&cfg);
     cfg.nn_high_clip_guard = APP_NN_HIGH_CLIP_GUARD;
     metrics_set_state(&runtime_metrics, PIPELINE_STATE_STARTING);
@@ -926,7 +928,12 @@ int main(int argc, char** argv) {
     ot_common_get_pic_buf_cfg(&buf_attr, &calc_cfg);
     vb_cfg.max_pool_cnt = 2;
     vb_cfg.common_pool[0].blk_size = calc_cfg.vb_size;
-    vb_cfg.common_pool[0].blk_cnt = 10 + (cfg.enable_stream ? 2 : 0) + (enable_nn ? 2 : 0);
+    /* VB 池：CTBG 模式固定 12 块（系统上限约 12），避免 display+stream+NN 超限 */
+    if (g_ctbg_mode) {
+        vb_cfg.common_pool[0].blk_cnt = 12;
+    } else {
+        vb_cfg.common_pool[0].blk_cnt = 10 + (cfg.enable_stream ? 2 : 0) + (enable_nn ? 2 : 0);
+    }
     CHECK_RET_GOTO(sample_comm_sys_init_with_vb_supplement(&vb_cfg, OT_VB_SUPPLEMENT_BNR_MOT_MASK), cleanup);
     sys_up = 1;
 
@@ -1313,6 +1320,7 @@ cleanup:
         (void)pthread_join(app_ctrl_tid, TD_NULL);
         app_ctrl_deinit();
     }
+    /* 先 join 所有使用 CTBG 资源的线程，再释放 CTBG */
     if (stream_thread_up) {
         (void) pthread_join(stream_tid, TD_NULL);
     }
@@ -1320,6 +1328,8 @@ cleanup:
         (void) pthread_join(ctrl_tid, TD_NULL);
     }
     if (g_ctbg_mode) {
+        /* 确保所有 NPU 操作已完成 */
+        usleep(50000);  /* 50ms grace period */
         ctbg_deinit();
         free(g_ctbg_coeff);
         free(g_ctbg_coeff_raw);
