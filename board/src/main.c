@@ -37,6 +37,7 @@
 #include "vpss.h"
 
 #ifdef WITH_SS928_SDK
+#include "ctbg_isp_map.h"
 #include "ctbg_upsample.h"
 #include "infer_ctbg.h"
 #endif
@@ -485,6 +486,11 @@ static void* control_worker(void* arg) {
                                 g_ctbg_coeff_ready = 1;
                                 pthread_mutex_unlock(&g_ctbg_coeff_mutex);
                                 atomic_store(&g_ctbg_scene_changed, 1);
+                                /* 映射 CTBG 系数到 ISP DRC/LDCI 参数 (30fps 硬件施加) */
+                                ctbg_isp_map_apply(g_ctbg_coeff,
+                                                   PIPELINE_STREAM_WIDTH,
+                                                   PIPELINE_STREAM_HEIGHT,
+                                                   ctx->strength);
                             }
                         }
                     }
