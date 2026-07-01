@@ -646,19 +646,81 @@ static void* control_worker(void* arg) {
     return TD_NULL;
 }
 
+/* 正确的 fp16→float 解码（非截断！IEEE 754 half precision） */
+static inline float ctbg_f16tof32(uint16_t v) {
+    uint32_t s = (v & 0x8000u) << 16, e = (v >> 10) & 0x1Fu, m = v & 0x3FFu, b;
+    if (e == 0) {
+        if (m == 0) b = s;
+        else { e = 1; while ((m & 0x400) == 0) { m <<= 1; e--; } m &= 0x3FF;
+               b = s | ((e + 127 - 15) << 23) | (m << 13); }
+    } else if (e == 0x1F) b = s | 0x7F800000u | (m << 13);
+    else b = s | ((e - 15 + 127) << 23) | (m << 13);
+    float f; memcpy(&f, &b, 4); return f;
+}
+
 static void* stream_worker(void* arg) {
     app_runtime_metrics_t *metrics = (app_runtime_metrics_t *)arg;
     ot_video_frame_info frame;
+    int w = PIPELINE_STREAM_WIDTH, h = PIPELINE_STREAM_HEIGHT;
 
-    /* CTBG apply 暂禁用：v8 AIPP OM 输出解释待修复（test_ctbg_apply_aipp 诊断中），
-     * apply 42ms + RGB→NV21 10ms 超 30fps 预算。
-     * estimator 在 control_worker 中正常运行。 */
+    /* CTBG apply 缓冲区：v8 AIPP OM 接收 NV21（硬件 AIPP）, 输出 RGB fp16 */
+    uint16_t *ctbg_rgb = NULL;
+    uint8_t  *ctbg_nv  = NULL;
+    uint16_t *local_coeff = NULL;
+    if (g_ctbg_mode) {
+        ctbg_rgb = (uint16_t *)malloc((size_t)w * h * 3 * 2);
+        ctbg_nv  = (uint8_t *)malloc((size_t)w * h * 3 / 2);
+        local_coeff = (uint16_t *)malloc(g_ctbg_coeff_sz);
+        if (!ctbg_rgb || !ctbg_nv || !local_coeff) {
+            LOG_ERR("CTBG stream_worker: oom");
+            free(ctbg_rgb); free(ctbg_nv); free(local_coeff);
+            return TD_NULL;
+        }
+    }
+
+    long last_apply_us = 0;
     while (!g_stop) {
         if (vpss_get_frame(PIPELINE_VPSS_GRP, PIPELINE_VPSS_CHN_STREAM, &frame, 200) != 0) {
             atomic_fetch_add(&metrics->stream_drops, 1);
             atomic_fetch_add(&metrics->frame_timeouts, 1);
             continue;
         }
+
+        /* v8 AIPP OM apply：NV21→RGB（硬件 AIPP）→ OM（~38ms）→ RGB fp16 输出
+         * + CPU RGB→NV21 写回（~10ms）。总 ~48ms > 33ms，帧跳过载保护。 */
+        int skip = (last_apply_us > 50000);
+        if (!g_stop && !skip && g_ctbg_mode && ctbg_rgb && ctbg_nv && local_coeff) {
+            int coeff_ready;
+            pthread_mutex_lock(&g_ctbg_coeff_mutex);
+            coeff_ready = g_ctbg_coeff_ready;
+            if (coeff_ready) memcpy(local_coeff, g_ctbg_coeff, g_ctbg_coeff_sz);
+            pthread_mutex_unlock(&g_ctbg_coeff_mutex);
+
+            if (coeff_ready) {
+                size_t ysz = (size_t)w * h, uvsz = ysz / 2;
+                td_void *yv = ss_mpi_sys_mmap(frame.video_frame.phys_addr[0], ysz);
+                td_void *uv = ss_mpi_sys_mmap(frame.video_frame.phys_addr[1], uvsz);
+                if (yv && uv) {
+                    memcpy(ctbg_nv, yv, ysz);
+                    memcpy(ctbg_nv + ysz, uv, uvsz);
+                    ss_mpi_sys_munmap(yv, ysz);
+                    ss_mpi_sys_munmap(uv, uvsz);
+
+                    ctbg_timing_t t;
+                    long t0 = now_us();
+                    if (ctbg_apply_run_nv21(ctbg_nv, local_coeff, ctbg_rgb, &t) == 0) {
+                        metrics->infer_last_ms = t.app_ms;
+                        atomic_fetch_add(&metrics->infer_runs, 1);
+
+                        /* 诊断：仅计时，不写回 VPSS（隔离崩溃根因） */
+                        last_apply_us = now_us() - t0;
+                        LOG_INFO("[stream] CTBG apply %.1fms total=%.1fms",
+                                 t.app_ms, last_apply_us / 1000.0f);
+                    }
+                }
+            }
+        }
+
         if (stream_send_frame(&frame, 0) == 0) {
             atomic_fetch_add(&metrics->stream_frames, 1);
         } else {
@@ -670,6 +732,8 @@ static void* stream_worker(void* arg) {
             atomic_fetch_add(&metrics->transient_errors, 1);
         }
     }
+
+    free(ctbg_rgb); free(ctbg_nv); free(local_coeff);
     return TD_NULL;
 }
 
