@@ -694,9 +694,34 @@ static void* stream_worker(void* arg) {
                 memcpy(ctbg_nv, frame.video_frame.virt_addr[0], ysz);
                 memcpy(ctbg_nv + ysz, frame.video_frame.virt_addr[1], uvsz);
 
-                /* AIPP OM：NV21→RGB fp16 转换在 OM 内部完成 */
+                /* TODO: 构建 AIPP 版 OM 后用 ctbg_apply_run_nv21 直接吃 NV21
+                 * 当前 apply OM 无 AIPP，需 CPU NV21→RGB fp16 转换 */
+                {
+                    int cs2 = w * h;
+                    /* 写 Y 行到 ctbg_rgb (NCHW fp16 格式) */
+                    for (int yr = 0; yr < h; yr++) {
+                        for (int xr = 0; xr < w; xr++) {
+                            int i = yr * w + xr;
+                            int uv_i = (yr/2)*(w/2)*2 + (xr/2)*2;
+                            float Yv  = (float)ctbg_nv[i];
+                            float Uv  = (float)ctbg_nv[ysz + uv_i + 1] - 128.0f;
+                            float Vv  = (float)ctbg_nv[ysz + uv_i] - 128.0f;
+                            float Rf  = (Yv + 1.402f * Vv) / 255.0f;
+                            float Gf  = (Yv - 0.344f * Uv - 0.714f * Vv) / 255.0f;
+                            float Bf  = (Yv + 1.772f * Uv) / 255.0f;
+                            if (Rf < 0.0f) Rf = 0.0f; if (Rf > 1.0f) Rf = 1.0f;
+                            if (Gf < 0.0f) Gf = 0.0f; if (Gf > 1.0f) Gf = 1.0f;
+                            if (Bf < 0.0f) Bf = 0.0f; if (Bf > 1.0f) Bf = 1.0f;
+                            uint32_t ri, gi, bi;
+                            memcpy(&ri, &Rf, 4); memcpy(&gi, &Gf, 4); memcpy(&bi, &Bf, 4);
+                            ctbg_rgb[0*cs2 + i] = (uint16_t)(ri >> 16);
+                            ctbg_rgb[1*cs2 + i] = (uint16_t)(gi >> 16);
+                            ctbg_rgb[2*cs2 + i] = (uint16_t)(bi >> 16);
+                        }
+                    }
+                }
                 ctbg_timing_t t;
-                if (ctbg_apply_run_nv21(ctbg_nv, local_coeff, ctbg_rgb, &t) == 0) {
+                if (ctbg_apply_run(ctbg_rgb, local_coeff, ctbg_rgb, &t) == 0) {
                     metrics->infer_last_ms = t.app_ms;
 
                     /* RGB fp16 → NV21 写回（CPU 转换，需优化；待 VGS/GFBG 路线） */
