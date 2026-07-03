@@ -22,6 +22,7 @@ import numpy as np
 import torch
 
 from models.isp_simulator import ISPPipeline, make_identity_params, gamma
+from models.isp_simulator.params import PARAM_TOTAL_DIM
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 OUTPUT_DIR = REPO_ROOT / "models" / "weights" / "validation"
@@ -44,7 +45,7 @@ def run_simulator(image_np: np.ndarray, params: torch.Tensor) -> np.ndarray:
 
     Args:
         image_np: (H, W, 3) uint8 RGB
-        params: (1, 96) parameter vector
+        params: (1, PARAM_TOTAL_DIM) parameter vector
 
     Returns:
         (H, W, 3) uint8 RGB simulated output
@@ -180,7 +181,7 @@ def main():
 
     rng = torch.Generator().manual_seed(42)
     for i in range(20):
-        params_rand = torch.rand(1, 96, generator=rng)
+        params_rand = torch.rand(1, PARAM_TOTAL_DIM, generator=rng)
         out = run_simulator(test_img, params_rand)
         assert np.isfinite(out).all(), f"NaN in random test {i}"
         assert out.min() >= 0 and out.max() <= 255, f"Range error in test {i}"

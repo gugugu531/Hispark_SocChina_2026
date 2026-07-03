@@ -247,6 +247,28 @@ tone 5 档 + LDCI 4 档 + strength 3 档 + mix 2 档 + 组合）→ 板端
 LDCI 组净效应（±0.015）被 DRC strength 效果（+0.24）淹没——blob v2 增加 strength 字段
 （板端 `isp.c` 兼容 v1 默认 512），LDCI 组以 strength=0 隔离后组内 rho 从 −0.2 → +1.0。
 
+### 5.1 strength 建模与多曝光复测（2026-07-03，缺口 1/5 关闭）
+
+**strength 已建模**：参数向量扩至 97 维（`drc_strength`），模拟器以幂函数近似
+`y = x^exp(-1.4·s/1023)`（`drc.drc_strength_apply`，常数 1.4 由 s 组实测三点拟合，误差 <2%）。
+同一批板端数据离线复验（blob bit 一致，零板端成本）：**全体混合 shadow rho +0.476 → +0.925**，
+mean +0.936，std +0.904；strength 组绝对值误差 <4%。
+
+**多曝光条件复测**（同场景，手动曝光两档 + 原 AE 档）：
+
+| 条件 | 中性 shadow | tone 组内 | LDCI 组内 | strength 组内 | 全体混合 shadow |
+|---|---|---|---|---|---|
+| AE 正常 | 0.155 | +1.000 | +1.000 | +1.000 | +0.925 |
+| 亮（16ms/2x） | 0.119 | +1.000 | +1.000 | +1.000 | +0.921 |
+| 暗（2ms/1x） | 0.007 | +1.000 | +1.000 | +1.000 | +0.371 |
+
+三条件主判据全部 PASS（组内 rho=+1.000 ×3 组，方向一致率 100%）。**新增已知边界**：
+极暗输入（shadow<0.05）下 strength 幂函数外推低估（s3：hw 0.304 vs sim 0.173——硬件对极暗区
+有超出幂函数的额外提升），是标定域（shadow≈0.155）外推 20 倍所致；混合 rho 0.371 全部由此贡献。
+**行动**：残差校准（阶段 1）覆盖极暗输入域，或蒸馏时该区间靠硬件标签兜底。
+
+采集数据归档：`models/weights/fidelity/board_scene1{,_dark,_bright}/`（不入库）。
+
 ## 参考文献
 
 - Tseng et al. 2019, *Hyperparameter Optimization in Black-box Image Processing using Differentiable Proxies*, ACM TOG 38(4). https://light.princeton.edu/publication/proxy_opt/

@@ -23,6 +23,8 @@ Blob 格式 (little-endian):
     ldci_gauss_lpf_sigma (uint8)
 """
 
+from __future__ import annotations
+
 import struct
 import torch
 import numpy as np
@@ -31,17 +33,18 @@ from pathlib import Path
 
 def sim_params_to_blob(params: torch.Tensor, enable_drc: bool = True,
                        enable_ldci: bool = True, drc_on: bool = True,
-                       ldci_on: bool = True, drc_strength: int = 512) -> bytes:
-    """将模拟器 96 维参数向量编码为 ISP blob 二进制（v2）。
+                       ldci_on: bool = True,
+                       drc_strength: int | None = None) -> bytes:
+    """将模拟器 97 维参数向量编码为 ISP blob 二进制（v2）。
 
     Args:
-        params: (1, 96) 或 (96,) 模拟器参数，值域 [0, 1]
+        params: (1, 97) 或 (97,) 模拟器参数，值域 [0, 1]
         enable_drc: blob 是否携带 DRC 段（不携带 = 板端不动该模块）
         enable_ldci: blob 是否携带 LDCI 段
         drc_on: DRC 段 enable 字段值（False = 板端显式关闭 DRC，用于采中性帧）
         ldci_on: LDCI 段 enable 字段值
-        drc_strength: DRC manual strength 0-1023（0 ≈ 直通，用于隔离 LDCI 净效应；
-            模拟器未建模该维度——保真度闸门 v1 实测它是最强混杂变量）
+        drc_strength: DRC manual strength 0-1023 显式覆盖；None = 从参数向量
+            drc_strength 维读取（×1023）。模拟器以 drc_strength_apply 建模该维度。
 
     Returns:
         bytes: ISP blob 二进制数据
@@ -94,7 +97,9 @@ def sim_params_to_blob(params: torch.Tensor, enable_drc: bool = True,
                            max(0, min(10, rf)),
                            max(0, min(15, cc)),
                            max(0, min(255, bm)))
-        buf += struct.pack('<H', max(0, min(1023, int(drc_strength))))
+        strength = (int(p["drc_strength"][0, 0].item() * 1023.0 + 0.5)
+                    if drc_strength is None else int(drc_strength))
+        buf += struct.pack('<H', max(0, min(1023, strength)))
 
     # LDCI
     if enable_ldci:

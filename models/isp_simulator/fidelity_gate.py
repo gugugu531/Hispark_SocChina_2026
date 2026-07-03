@@ -48,6 +48,8 @@ def build_sweep() -> list[dict]:
     def make(tag, mutate, drc_on=True, ldci_on=True, strength=512):
         p = make_identity_params(1)
         mutate(p)
+        # strength 写进参数向量：blob 生成端读它，模拟器 drc_strength_apply 施加它
+        p[0, get_offset("drc_strength")] = strength / 1023.0
         items.append({"tag": tag, "params": p, "drc_on": drc_on, "ldci_on": ldci_on,
                       "strength": strength})
 
@@ -113,8 +115,7 @@ def cmd_gen(args) -> int:
     all_params = []
     for i, it in enumerate(items):
         fname = f"b{i:02d}_{it['tag']}.bin"
-        blob = sim_params_to_blob(it["params"], drc_on=it["drc_on"], ldci_on=it["ldci_on"],
-                                  drc_strength=it["strength"])
+        blob = sim_params_to_blob(it["params"], drc_on=it["drc_on"], ldci_on=it["ldci_on"])
         (outdir / fname).write_bytes(blob)
         manifest.append({"idx": i, "tag": it["tag"], "blob": fname,
                          "drc_on": it["drc_on"], "ldci_on": it["ldci_on"],
@@ -228,10 +229,11 @@ def cmd_analyze(args) -> int:
     print(f"\n中性帧: shadow={neutral_feat['shadow']:.4f} mean={neutral_feat['mean']:.4f} "
           f"(dark {dark_mask.mean() * 100:.0f}% / bright {bright_mask.mean() * 100:.0f}%)")
 
-    # s 组是硬件独有维度（模拟器未建模 strength），排除在 sim-vs-hw 秩相关之外
-    cmp_rows = [r for r in rows if not r["tag"].startswith("s")]
+    # 模拟器已建模 strength（板端标定幂函数，见 drc.drc_strength_apply），
+    # s 组一并纳入对比。
+    cmp_rows = rows
 
-    print("\n== Spearman 秩相关（硬件排序 vs 模拟器排序，排除 s 组）==")
+    print("\n== Spearman 秩相关（硬件排序 vs 模拟器排序，全部 sweep 项）==")
     verdicts = {}
     for key in ("mean", "shadow", "highlight", "std", "grad"):
         hw_v = np.array([r["hw"][key] for r in cmp_rows])
@@ -258,18 +260,21 @@ def cmd_analyze(args) -> int:
             group_rho[prefix] = rho
             print(f"  {group:>9} (shadow, n={len(sub)}): rho={rho:+.3f}")
 
-    # s 组：硬件 strength 响应曲线（供残差校准/建模，不参与判定）
+    # s 组：硬件 strength 响应 vs 模拟器标定模型（gamma=exp(-1.4*s/1023)）
     s_rows = [r for r in rows if r["tag"].startswith("s")]
     if s_rows:
-        print("\n== 硬件 DRC strength 响应（模拟器未建模，记录供校准）==")
+        print("\n== DRC strength 响应（硬件 vs 板端标定幂函数模型）==")
         for r in s_rows:
-            print(f"  {r['tag']}: shadow={r['hw']['shadow']:.4f} mean={r['hw']['mean']:.4f} "
-                  f"(中性 shadow={neutral_feat['shadow']:.4f})")
+            print(f"  {r['tag']}: hw shadow={r['hw']['shadow']:.4f} "
+                  f"sim shadow={r['sim']['shadow']:.4f} "
+                  f"(中性 {neutral_feat['shadow']:.4f})")
+        hw_v = np.array([r["hw"]["shadow"] for r in s_rows])
+        sim_v = np.array([r["sim"]["shadow"] for r in s_rows])
+        print(f"  strength 组内 rho={spearman(hw_v, sim_v):+.3f}")
 
     gate = group_rho.get("t", -1.0) > 0.7 and group_rho.get("l", -1.0) > 0.7
     print(f"\n闸门判定（主判据：tone/LDCI 组内 rho>0.7）: {'PASS' if gate else 'FAIL'}")
-    print(f"  参考：全体混合 shadow rho={verdicts['shadow']:+.3f}"
-          f"（strength 建模后应显著改善）")
+    print(f"  参考：全体混合 shadow rho={verdicts['shadow']:+.3f}")
     return 0 if gate else 2
 
 

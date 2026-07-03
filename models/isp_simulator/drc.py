@@ -202,6 +202,27 @@ def drc_local_detail(
     return enhanced.clamp(0.0, 1.0)
 
 
+# 硬件 manual strength 响应的幂函数标定常数。
+# 2026-07-03 保真度闸门 s 组实测(恒等 tone, shadow 基线 0.155):
+#   s=128→0.211, 512→0.388, 896→0.578；gamma(s)=exp(-C*s/1023) 三点拟合误差 <2%。
+# 中间调有 ~10% 系统性偏亮残差，留给阶段 1 残差校准。
+DRC_STRENGTH_GAMMA_COEF = 1.4
+
+
+def drc_strength_apply(image: torch.Tensor, strength: torch.Tensor) -> torch.Tensor:
+    """硬件 DRC manual strength 的可微近似：整体亮度幂函数提升。
+
+    Args:
+        image: (B, 3, H, W) [0, 1]
+        strength: (B,) 归一化 strength [0, 1](硬件 [0, 1023]/1023)
+
+    Returns:
+        (B, 3, H, W) [0, 1]；strength=0 时恒等。
+    """
+    gamma = torch.exp(-DRC_STRENGTH_GAMMA_COEF * strength.clamp(0.0, 1.0))
+    return image.clamp(min=1e-6).pow(gamma.view(-1, 1, 1, 1))
+
+
 def drc_apply(
     image: torch.Tensor,
     tone_cp: torch.Tensor,
@@ -211,8 +232,9 @@ def drc_apply(
     range_filter: torch.Tensor,
     contrast_ctrl: torch.Tensor,
     blend_luma_max: torch.Tensor,
+    strength: torch.Tensor | None = None,
 ) -> torch.Tensor:
-    """完整的 DRC 模块：全局 Tone Mapping + 局域细节增强。
+    """完整的 DRC 模块：全局 Tone Mapping + manual strength + 局域细节增强。
 
     Args:
         image: (B, 3, H, W) [0, 1]
@@ -223,6 +245,7 @@ def drc_apply(
         range_filter: (B,) 值域滤波系数 [0, 1] → HW [0, 10]
         contrast_ctrl: (B,) 对比度控制 [0, 1] → HW [0, 15]
         blend_luma_max: (B,) Filter/FilterX 混合权重 [0, 1] → HW [0, 255]
+        strength: (B,) manual strength [0, 1]，None = 0(直通)
 
     Returns:
         (B, 3, H, W) [0, 1]
@@ -233,6 +256,10 @@ def drc_apply(
     tone_curve = drc_tone_curve(tone_cp)  # (B, 200)
     tone_lut = tone_curve.unsqueeze(1).expand(-1, 3, -1)  # (B, 3, 200)
     tonemapped = _apply_1d_lut(image, tone_lut)
+
+    # 1.5 manual strength(板端标定的整体亮度维度，作用于 tone map 输出)
+    if strength is not None:
+        tonemapped = drc_strength_apply(tonemapped, strength)
 
     # 2. 局域细节增强
     sf = (spatial_filter * 5.0).clamp(0.5, 5.0).mean()  # 标量（简化）

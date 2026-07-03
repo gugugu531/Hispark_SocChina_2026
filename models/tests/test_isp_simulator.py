@@ -24,7 +24,7 @@ H, W = 64, 64  # 小分辨率加速测试
 
 def test_param_total_dim():
     """验证参数总维度 88。"""
-    assert PARAM_TOTAL_DIM == 96
+    assert PARAM_TOTAL_DIM == 97
 
 
 def test_split_params_structure():

@@ -14,7 +14,7 @@ from models.isp_simulator import wdr, drc, gamma, ldci, dehaze
 class ISPPipeline:
     """可微 ISP 管线。
 
-    将 NN 输出的 88 维参数向量解码后，按硬件顺序施加各模块:
+    将 NN 输出的 97 维参数向量解码后，按硬件顺序施加各模块:
         WDR → DRC → Gamma → LDCI → Dehaze
 
     每个模块可通过强度控制部分/完全 bypass。
@@ -38,7 +38,7 @@ class ISPPipeline:
 
         Args:
             image: (B, 3, H, W) RGB [0, 1]
-            params: (B, 88) NN 预测的归一化参数向量
+            params: (B, 97) NN 预测的归一化参数向量
             enable_*: 各模块开关（用于消融实验）
 
         Returns:
@@ -75,6 +75,7 @@ class ISPPipeline:
                 range_filter=ctrl[..., 1],
                 contrast_ctrl=ctrl[..., 2],
                 blend_luma_max=blend[..., 0],
+                strength=p["drc_strength"][..., 0],
             )
         stages["drc"] = x
 
@@ -137,6 +138,10 @@ def make_identity_params(batch_size: int = 1) -> torch.Tensor:
     # DRC blend: 中等混合
     off = get_offset("drc_blend")
     p[..., off:off + PARAM_DIMS["drc_blend"]] = 0.5
+
+    # DRC strength: 0 = 直通（硬件语义：值越大整体越亮，板端标定见 drc.py）
+    off = get_offset("drc_strength")
+    p[..., off:off + PARAM_DIMS["drc_strength"]] = 0.0
 
     # LDCI: 近乎恒等（极小 wgt）
     off = get_offset("ldci")
