@@ -16,7 +16,7 @@ DRC（S-curve 色调映射）+ LDCI（9×9 局域直方图均衡）三级级联�
 
 | 阶段 | 内容 | 状态 |
 |---|---|---|
-| Phase 1 | 可微 ISP 模拟器 (WDR+Gamma+DRC+LDCI+Dehaze) | 📋 待实施 |
+| Phase 1 | 可微 ISP 模拟器 (WDR+Gamma+DRC+LDCI+Dehaze) | ✅ 已完成 (2026-07-01) |
 | Phase 2 | ISP ParamNet 训练 + 消融 | 📋 待实施 |
 | Phase 3 | ONNX→OM 导出 + 板端集成 + A/B 测试 | 📋 待实施 |
 
