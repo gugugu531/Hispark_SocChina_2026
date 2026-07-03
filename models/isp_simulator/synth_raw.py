@@ -67,6 +67,36 @@ def pack12(img: np.ndarray, layout: str) -> bytes:
     return b.tobytes()
 
 
+# ── sRGB → sensor 域 RAW（板端回灌公开数据集用）──────────────
+# 三个域转换常量均为板端实测（2026-07-04，docs/isp-param-tuning-research.md §5.8）：
+#   - bayer 相序 BGGR（OS08A20 pub_attr 实配，RGGB 会导致品红）
+#   - 逆 AWB 增益（ISP 按真实 sensor 色彩响应标定，灰输入实测 R/G=1.77 B/G=1.85）
+#   - 黑电平 256（条带实验定位 ISP BLC 减除点；基准错位的残留 DC 经 AWB 放大成暗部紫偏）
+SENSOR_BLC = 256
+SENSOR_WHITE = 3700
+INV_AWB_R, INV_AWB_B = 1.77, 1.85
+
+
+def rgb_to_sensor_raw(rgb: np.ndarray) -> bytes:
+    """sRGB float [0,1] (H=2160, W=3840, 3) → OS08A20 sensor 域裸 12bpp packed RAW。
+
+    逆变换链：sRGB→线性(γ2.2) → 逆 AWB（模拟 sensor 色彩响应）→ BGGR 马赛克
+    → BLC 基准映射 → pack12(lsb)。回灌后 ISP（AWB/CCM/gamma）近似还原原图。
+    """
+    assert rgb.shape == (SENSOR_H, SENSOR_W, 3), rgb.shape
+    lin = rgb.astype(np.float32) ** 2.2
+    lin = lin.copy()
+    lin[..., 0] /= INV_AWB_R
+    lin[..., 2] /= INV_AWB_B
+    bayer = np.empty((SENSOR_H, SENSOR_W), np.float32)
+    bayer[0::2, 0::2] = lin[0::2, 0::2, 2]  # B
+    bayer[0::2, 1::2] = lin[0::2, 1::2, 1]  # G
+    bayer[1::2, 0::2] = lin[1::2, 0::2, 1]  # G
+    bayer[1::2, 1::2] = lin[1::2, 1::2, 0]  # R
+    raw = np.clip(SENSOR_BLC + bayer * (SENSOR_WHITE - SENSOR_BLC), 0, 4095).astype(np.uint16)
+    return pack12(raw, "lsb")
+
+
 def cmd_parse(args) -> int:
     raw = np.fromfile(args.raw, dtype=np.uint8)
     expect = STRIDE * SENSOR_H

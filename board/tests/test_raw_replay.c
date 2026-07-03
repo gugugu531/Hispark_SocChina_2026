@@ -553,17 +553,23 @@ int main(int argc, char **argv)
         }
     }
 
-    /* 锁定曝光（dump 模式；文件模式输入来自文件，sensor 曝光不影响内容）。 */
-    if (raw_file_cnt == 0 && (exp_time_us != 0 || again_x1024 != 0)) {
+    /* 锁定曝光。dump 模式：固定 sensor 曝光保 sweep 输入恒定；
+     * 文件模式：sensor 曝光对回放内容无效，但锁定使 AE 增益链全 MANUAL
+     * （dgain 固定 1x），防止 AE 数字增益自动改写回放图亮度。 */
+    if (exp_time_us != 0 || again_x1024 != 0) {
         (void)isp_set_exposure_manual(exp_time_us, again_x1024);
-        /* 生效等待：再回灌几帧让 sensor/固件采用手动值 */
+        /* 生效等待：再回灌几帧让固件采用手动值 */
         for (k = 0; k < 5; k++) {
-            ot_video_frame_info fe_frame;
-            if (ss_mpi_vi_get_pipe_frame(REPLAY_VI_PIPE, &fe_frame, CYCLE_TIMEOUT) != 0) {
-                break;
+            if (raw_file_cnt > 0) {
+                (void)replay_and_fetch(&rf.frame, NULL);
+            } else {
+                ot_video_frame_info fe_frame;
+                if (ss_mpi_vi_get_pipe_frame(REPLAY_VI_PIPE, &fe_frame, CYCLE_TIMEOUT) != 0) {
+                    break;
+                }
+                (void)replay_and_fetch(&fe_frame, NULL);
+                CHECK_RET(ss_mpi_vi_release_pipe_frame(REPLAY_VI_PIPE, &fe_frame));
             }
-            (void)replay_and_fetch(&fe_frame, NULL);
-            CHECK_RET(ss_mpi_vi_release_pipe_frame(REPLAY_VI_PIPE, &fe_frame));
         }
     }
 

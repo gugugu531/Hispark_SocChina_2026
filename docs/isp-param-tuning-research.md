@@ -427,6 +427,38 @@ vendor-auto 对比（打通阶段 3 最短路径）；② calib v2 纳入 Gamma 
 验收待现场条件。此外该链为离线回灌口径；实时闭环（chn2 缩略图→NPU→热刷新）待
 Phase 3 板端集成。
 
+### 5.8 LCDP 双向数据集板端回灌演示 + sRGB→sensor 域 RAW 配方（2026-07-04）
+
+**目标**：公开数据集图像（2 欠曝 + 2 过曝）经合成 RAW 回灌真实 ISP，ParamNet
+（从各自板端中性帧 infer θ）施加，直观展示双向校正效果。
+
+**攻克的三个域转换问题**（配方沉淀为 `synth_raw.rgb_to_sensor_raw()`）：
+1. **bayer 相序 = BGGR**（`sample_comm_isp.c` OS08A20 pub_attr 实配）——按 RGGB 合成
+   导致全图品红（G 被 demosaic 采到 R/B 位）；
+2. **逆 AWB**：ISP 的 AWB/CCM 按真实 sensor 色彩响应标定（G 强 R/B 弱），"已平衡"的
+   合成 RAW 会被再拉一次（灰输入实测输出 R/G=1.77、B/G=1.85）——合成时信号预除；
+3. **黑电平 = 256**：8 档条带 RAW 一次回灌定位 ISP BLC 减除点（RAW≤256 输出全零）；
+   合成基准若高于 BLC，残留 DC 三通道相同、经 AWB R/B 增益放大 → 暗部恒定紫偏。
+   修正后板端中性帧对原图的亮度复现达 0.042 vs 0.047。
+
+**效果**（各自中性帧 infer；ParamNet 对欠曝出强提亮 θ、过曝出近恒等 θ，方向 4/4 正确）：
+
+| | input | 板端中性 | ParamNet | GT |
+|---|---|---|---|---|
+| under2（欠曝山景） | 0.094 | 0.071 | **0.150** | 0.207 |
+| over2（过曝狗） | 0.733 | 0.678 | **0.640** | 0.702 |
+
+目检：山景绿色鲜明、砖墙纹理浮现；过曝图高光压回、细节保持；色彩自然。
+
+**暴露的真实限制**（与已知边界吻合）：极暗图（under1，输入 0.047）提升不足
+（0.042→0.055，GT 0.149）——极暗域 strength 残差外推（§5.5 边界）+ 代理灰度域对
+彩色输入的外推共同作用；欠曝提亮量普遍略低于 GT。**行动**：calib v2 纳入彩色/极暗
+域采集后重训 R 与 ParamNet。
+
+附加产出：`test_raw_replay` 文件模式支持 `--exptime/--again` 锁 AE（防 AE 数字增益
+改写回放亮度）；sRGB→RAW 配方使**任意公开数据集可直接在真实 ISP 上做蒸馏/评估**——
+阶段 3 蒸馏的数据通路就绪。
+
 ## 参考文献
 
 - Tseng et al. 2019, *Hyperparameter Optimization in Black-box Image Processing using Differentiable Proxies*, ACM TOG 38(4). https://light.princeton.edu/publication/proxy_opt/
