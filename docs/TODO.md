@@ -17,8 +17,13 @@ DRC（S-curve 色调映射）+ LDCI（9×9 局域直方图均衡）三级级联�
 | 阶段 | 内容 | 状态 |
 |---|---|---|
 | Phase 1 | 可微 ISP 模拟器 (WDR+Gamma+DRC+LDCI+Dehaze) | ✅ 已完成 (2026-07-01) |
-| Phase 2 | ISP ParamNet 训练 + 消融 | 📋 待实施 |
+| Phase 1.5 | 保真度闸门：RAW 回灌 harness + 合成场景，tone/strength/LDCI/Gamma 组内秩相关全 +1.000 | ✅ PASS (2026-07-03) |
+| Phase 1.8 | 残差校准网络 v1：sim+R 校准代理，留出集 15.5→27.4 dB | ✅ PASS (2026-07-03) |
+| Phase 2 | ISP ParamNet 训练 + 消融（训练环境 = 校准代理） | 📋 待实施 |
 | Phase 3 | ONNX→OM 导出 + 板端集成 + A/B 测试 | 📋 待实施 |
+
+> 保真度闸门、blob v1→v3、批量校准与残差网络的完整实验记录见
+> [isp-param-tuning-research.md](isp-param-tuning-research.md) §5。
 
 技术依据: Qin ECCV 2022 / ACamera-Net / DynamicISP；完整 Prompt 见 `docs/isp-auto-tuning-prompt.md`。
 
