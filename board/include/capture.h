@@ -29,6 +29,10 @@ typedef enum {
 typedef struct {
     int sensor_index;    /* 0 / 1（默认 1） */
     capture_mode_t mode; /* 线性 / WDR 2to1 */
+    int raw_replay;      /* 1 = RAW 回灌模式：VI 离线 + 不起 ISP run 线程，
+                          * ISP 由调用方 ss_mpi_isp_run_once 逐帧驱动
+                          * （《ISP 开发参考》§2.2.4；仅线性模式支持）。
+                          * VB 公共池须额外含 RAW 帧尺寸的块（FE 离线写 DDR）。 */
 } capture_cfg_t;
 
 /* 查询传感器输出尺寸（如 3840x2160），可在 capture_init 之前调用，

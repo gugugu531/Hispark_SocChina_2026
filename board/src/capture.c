@@ -90,11 +90,18 @@ int capture_init(const capture_cfg_t *cfg)
 
     capture_enable_sensor_clock(sensor_index);
 
-    /* VI 在线直通 VPSS（零 DDR 往返），CPU 取帧统一走 VPSS 通道。 */
-    CHECK_RET_GOTO(sample_comm_vi_set_vi_vpss_mode(OT_VI_ONLINE_VPSS_OFFLINE, OT_VI_VIDEO_MODE_NORM),
+    /* 生产：VI 在线直通 VPSS（零 DDR 往返），CPU 取帧统一走 VPSS 通道。
+     * RAW 回灌：VI 必须离线（ss_mpi_vi_send_pipe_raw 不支持 VI 在线模式）。 */
+    CHECK_RET_GOTO(sample_comm_vi_set_vi_vpss_mode(
+                       cfg->raw_replay ? OT_VI_OFFLINE_VPSS_OFFLINE : OT_VI_ONLINE_VPSS_OFFLINE,
+                       OT_VI_VIDEO_MODE_NORM),
                    fail);
 
     capture_build_vi_cfg(capture_mode_to_sns_type(cfg->mode), sensor_index, &g_vi_cfg);
+    if (cfg->raw_replay) {
+        /* 不起 ss_mpi_isp_run 线程（与 run_once 互斥）；3A 注册与 isp_init 照常。 */
+        g_vi_cfg.pipe_info[0].isp_need_run = TD_FALSE;
+    }
 
     /* 上次异常退出可能残留 ISP0 内存初始化状态；ISP 空闲时 exit 无害，
      * 可避免重启时 isp_mem_init 报 0xa01c800c / already inited。 */

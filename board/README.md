@@ -114,6 +114,45 @@ dehaze / DRC / LDCI 增强块（关/自动/手动三态）。
   SS928 `17v2` 存储按三轴奇偶拆为 8 个 bank，再以 4 路交织写入 5508 个 u32；
   位域为 R 高/G 中/B 低。HNR/锐化/AWB 等纯 ISP 项留待专项调优。
 
+#### RAW 定格回灌 θ-sweep `test_raw_replay`（2026-07-02，板端冒烟通过）
+
+ISP 参数调优路线的校准 harness（方法学见 `docs/isp-param-tuning-research.md` §4）：
+同一帧 RAW 在不同 DRC/LDCI/blob 参数下**确定性重放**，采集"参数 → 硬件 ISP 输出"配对数据，
+用于解析模拟器保真度闸门与残差代理校准。
+
+链路：OS08A20 → VI(**OFFLINE**) FE → dump 定格一帧 RAW（持有的 VB 直接作回灌输入）→
+`frame_source=USER` + `ss_mpi_isp_run_once` 逐帧驱动 BE → ISP(θ) → VPSS chn0 → NV21 落盘。
+关键机制：`capture_cfg_t.raw_replay=1` 使 capture 起链走 `OT_VI_OFFLINE_VPSS_OFFLINE`
+且不启 `ss_mpi_isp_run` 线程（与 `run_once` 互斥）；AE 在预热回灌环内收敛
+（`run_once` 每次迭代一次 3A 并配置 sensor）。
+
+```sh
+scp build/test_raw_replay "${BOARD}:/root/socchina-2026/"
+# DRC 强度扫描：基线 + 3 档，锁定手动曝光保证可比
+ssh "${BOARD}" '/root/socchina-2026/test_raw_replay --exptime 8000 --again 4096 \
+    --drc 128 --drc 512 --drc 1023 --outdir /root/socchina-2026/replay --save-raw'
+# 完整参数 blob 扫描（models/isp_simulator/isp_blob.py 生成）
+ssh "${BOARD}" '/root/socchina-2026/test_raw_replay --blob p0.bin --blob p1.bin --outdir replay'
+```
+
+选项：`--warmup <n>`（默认 60）、`--settle <n>`（参数生效等待帧，默认 2）、`--out <WxH>`
+（默认 1024x576）、`--drc/--ldci/--blob` 可重复（≤31 项 + 基线）。
+约束（查证依据见 `docs/isp-param-tuning-research.md` §4.2）：仅线性模式
+（`run_once` 不支持帧合成 WDR）；VI 离线与生产在线配置二选一启动；必须独占媒体链
+（先 `systemctl stop socchina-stream`）；运行需 `LD_LIBRARY_PATH=/opt/lib/npu`。
+
+冒烟结果（2026-07-03，基线 + drc128 + drc1023，`--save-raw`）：
+
+- 全链一次跑通：VI 离线起链、warmup 59/60、定格 RAW 3840x2160
+  （pixel_format=21，compress=4/LINE，10.4MB，落在 16bpp 无压缩 16.6MB 的 VB 保守估算内）；
+  sweep 每项 ~91ms（settle 2 帧）。
+- **确定性重放成立**：三帧同一构图；`|base−drc128|` 平均绝对差 1.79（低强度小变化），
+  `|base−drc1023|` 11.55。
+- **DRC 语义方向正确**：drc1023 相对基线暗部（Y<64）平均 +11.8、亮部（Y≥128）−2.9、
+  全帧 std 59.3→54.9（提暗压亮、动态范围压缩），暗部占比 71.7%→60.4%，高光占比不变。
+- 起始日志中 `isp_sensor_exit Null Pointer`（capture_init 清残留状态的无害打印）与首帧
+  `vpss_get_chn_frame 0xa0078016`（warmup 第 1 拍 VPSS 尚无输出）均无害。
+
 #### CoTF CLUT 实时演示 `test_cotf_live`（2026-06-16，板端联机点亮）
 
 CoTF 路线硬件施加端的端侧实时演示：相机 → ISP(+CLUT 3D-LUT 全分辨率施加) → VPSS chn0 → VO/HDMI，
