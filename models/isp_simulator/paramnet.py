@@ -248,10 +248,38 @@ def cmd_eval(args) -> int:
     return 0
 
 
+def cmd_infer(args) -> int:
+    """板端 A/B 用：中性帧 NV21 → ParamNet → θ → blob 文件。"""
+    from PIL import Image
+    from models.isp_simulator.fidelity_gate import load_nv21_rgb
+    from models.isp_simulator.isp_blob import sim_params_to_blob
+
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    model = ParamNet().to(device)
+    ck = torch.load(Path(args.outdir) / "paramnet.pt", map_location=device)
+    model.load_state_dict(ck["state_dict"])
+    model.eval()
+
+    rgb = load_nv21_rgb(Path(args.frame), args.frame_width, args.frame_height)
+    im = Image.fromarray((rgb * 255).astype(np.uint8)).resize((NET_W, NET_H), Image.BILINEAR)
+    x = torch.from_numpy(np.asarray(im)).float().permute(2, 0, 1).unsqueeze(0).to(device) / 255.0
+    with torch.no_grad():
+        u = model(x)
+        theta = u_to_theta(u)
+    Path(args.out).write_bytes(sim_params_to_blob(theta.cpu()))
+
+    t = theta[0].cpu()
+    off_t, off_l = get_offset("drc_tone"), get_offset("ldci")
+    print(f"θ 摘要: tone={t[off_t:off_t + 6].numpy().round(3)} "
+          f"strength={t[get_offset('drc_strength')].item():.3f} "
+          f"ldci_pos_wgt={t[off_l].item():.3f} blob -> {args.out}")
+    return 0
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     sub = ap.add_subparsers(dest="cmd", required=True)
-    for name in ("prepare", "train", "eval"):
+    for name in ("prepare", "train", "eval", "infer"):
         p = sub.add_parser(name)
         p.add_argument("--outdir", default="models/weights/paramnet")
         p.add_argument("--resnet", default="models/weights/calib/residual_net.pt")
@@ -260,8 +288,14 @@ def main() -> int:
             p.add_argument("--epochs", type=int, default=24)
             p.add_argument("--lr", type=float, default=3e-4)
             p.add_argument("--eval-every", type=int, default=2)
+        if name == "infer":
+            p.add_argument("--frame", required=True, help="中性帧 NV21")
+            p.add_argument("--frame-width", type=int, default=1024)
+            p.add_argument("--frame-height", type=int, default=576)
+            p.add_argument("--out", default="models/weights/paramnet/paramnet_theta.bin")
     args = ap.parse_args()
-    return {"prepare": cmd_prepare, "train": cmd_train, "eval": cmd_eval}[args.cmd](args)
+    return {"prepare": cmd_prepare, "train": cmd_train, "eval": cmd_eval,
+            "infer": cmd_infer}[args.cmd](args)
 
 
 if __name__ == "__main__":

@@ -405,6 +405,28 @@ paramnet.py 头注释）。
 vendor-auto 对比（打通阶段 3 最短路径）；② calib v2 纳入 Gamma + 真实场景域；
 ③ ONNX→ATC→OM 导出与算子探测。
 
+### 5.7 阶段 3 首个板端 A/B 冒烟：NN→θ→硬件全链打通（2026-07-03）
+
+**流程**：会话 A 采真实场景（白天室内桌面）RAW（compress NONE 定格）+ vendor-auto/
+中性帧输出 → 主机 `paramnet infer`（中性帧 → θ → blob，输出 tone=[0,.33,.51,.63,.70,1]
+暗部提升+亮部压制的 S 形，strength=0.17，LDCI=0）→ 会话 B **同一 RAW 文件回灌**施加。
+
+**结果**（1024×576，中性帧暗/亮 mask）：
+
+| | mean | shadow | highlight | 双端裁剪 |
+|---|---|---|---|---|
+| vendor-auto | 0.504 | 0.188 | 0.684 | 0% |
+| 中性（关 DRC/LDCI） | 0.506 | 0.189 | 0.688 | 0% |
+| **ParamNet θ** | 0.551 | **0.256(+35%)** | 0.709 | **0%** |
+
+目检：暗部（屏幕边框/线缆/阴影）明显更通透，高光（木纹/白墙）未过曝。
+
+**解读**：NN 出参 → blob → 硬件 ISP 施加的全链**语义正确**——暗部大幅提亮、高光受控、
+零裁剪，符合曝光校正预期。限定：单场景、白天均匀光照（非考验场景，vendor-auto 本无
+明显问题），本轮目的是链路打通而非画质裁决；夜间/强逆光的 vendor-auto 对比与多场景
+验收待现场条件。此外该链为离线回灌口径；实时闭环（chn2 缩略图→NPU→热刷新）待
+Phase 3 板端集成。
+
 ## 参考文献
 
 - Tseng et al. 2019, *Hyperparameter Optimization in Black-box Image Processing using Differentiable Proxies*, ACM TOG 38(4). https://light.princeton.edu/publication/proxy_opt/
