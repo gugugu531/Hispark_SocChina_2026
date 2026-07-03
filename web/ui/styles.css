@@ -20,6 +20,8 @@
   --rose-glow: rgba(244,63,94,0.18);
   --radius: 8px;
   --radius-sm: 5px;
+  --header-h: 46px;
+  --sidebar-w: 360px;
   --transition: .25s cubic-bezier(.4,0,.2,1);
   --font: 'SF Pro Display', 'Segoe UI', system-ui, -apple-system, sans-serif;
   --font-mono: 'SF Mono', 'Cascadia Code', 'Consolas', monospace;
@@ -85,9 +87,13 @@ header h1 {
 #clock { font-size: 12px; color: var(--text-dim); font-variant-numeric: tabular-nums; font-family: var(--font-mono); font-weight: 500; }
 
 /* ── 视频 ── */
-#video-panel { background: #000; position: relative; border-bottom: 1px solid var(--border); }
+#video-panel {
+  background: #000; position: sticky; top: calc(var(--header-h) + 14px); z-index: 40;
+  border: 1px solid var(--border); border-radius: var(--radius); overflow: hidden;
+  box-shadow: 0 4px 24px rgba(0,0,0,.45);
+}
 #video-container {
-  width: 100%; max-width: 1024px; margin: 0 auto;
+  width: 100%; max-width: 100%; margin: 0 auto;
   aspect-ratio: 1024/576;
   background: radial-gradient(ellipse at center, #1a1410 0%, #000 70%);
   display: flex; align-items: center; justify-content: center;
@@ -125,10 +131,45 @@ header h1 {
 .vid-mode-btn.active { background: var(--gold) !important; color: #0c0a08 !important; box-shadow: 0 0 12px var(--gold-glow); }
 #video-latency { font-size: 12px; color: var(--text-dim); margin-left: 6px; font-family: var(--font-mono); }
 
-/* ── 仪表盘 ── */
+/* ── 主布局:左列(视频+监控) + 右列(参数侧边栏) ── */
+#layout {
+  display: flex; align-items: flex-start; gap: 16px;
+  padding: 14px 18px; flex: 1; width: 100%;
+  max-width: 1600px; margin: 0 auto;
+}
+#main-col { flex: 1 1 auto; min-width: 0; display: flex; flex-direction: column; gap: 14px; }
+
+/* 参数侧边栏(常驻,sticky,独立滚动) */
+#control-sidebar {
+  flex: 0 0 var(--sidebar-w); width: var(--sidebar-w);
+  position: sticky; top: calc(var(--header-h) + 14px);
+  max-height: calc(100vh - var(--header-h) - 28px); overflow-y: auto;
+  display: flex; flex-direction: column; gap: 14px;
+  scrollbar-width: thin; scrollbar-color: var(--border-active) transparent;
+}
+#control-sidebar::-webkit-scrollbar { width: 8px; }
+#control-sidebar::-webkit-scrollbar-thumb { background: var(--border-active); border-radius: 4px; }
+.sidebar-head {
+  display: flex; align-items: center; justify-content: space-between;
+  font-size: 12px; text-transform: uppercase; letter-spacing: .12em; font-weight: 700;
+  color: var(--gold); font-family: var(--font-mono); padding: 2px 2px 0;
+}
+#btn-sidebar-close, #btn-sidebar-toggle {
+  background: var(--border); border: none; color: var(--text);
+  width: 28px; height: 28px; border-radius: var(--radius-sm); cursor: pointer;
+  font-size: 15px; line-height: 1; transition: all var(--transition);
+}
+#btn-sidebar-close:hover, #btn-sidebar-toggle:hover { background: var(--gold); color: #000; }
+#btn-sidebar-close { display: none; }
+#sidebar-backdrop { display: none; }
+
+/* 隐藏侧边栏(宽屏:主区占满) */
+body.sidebar-hidden #control-sidebar { display: none; }
+
+/* ── 监控卡片网格 ── */
 #dashboard {
-  display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
-  gap: 14px; padding: 18px 22px; flex: 1; max-width: 1440px; margin: 0 auto; width: 100%;
+  display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  gap: 14px; width: 100%;
 }
 .card {
   background: var(--surface); border: 1px solid var(--border);
@@ -201,7 +242,6 @@ footer {
 
 /* ── 实时参数控制 ── */
 #hot-control-card {
-  grid-column: 1 / -1;
   background: linear-gradient(160deg, var(--surface) 0%, rgba(18,16,14,.9) 100%);
   border-color: rgba(212,160,23,.12);
 }
@@ -270,8 +310,42 @@ footer {
 #toast.show { opacity: 1; }
 
 /* ── 响应式 ── */
-@media (max-width: 768px) {
-  #dashboard { grid-template-columns: 1fr; padding: 10px; }
+
+/* 中等宽度:侧边栏略收窄 */
+@media (max-width: 1180px) {
+  :root { --sidebar-w: 320px; }
+}
+
+/* 窄屏:侧边栏改为右侧滑入抽屉 */
+@media (max-width: 900px) {
+  #layout { padding: 12px; }
+  #video-panel { position: static; }
+  #dashboard { grid-template-columns: 1fr 1fr; }
+
+  #control-sidebar {
+    position: fixed; top: 0; right: 0; z-index: 300;
+    width: min(360px, 88vw); max-width: 88vw;
+    height: 100vh; max-height: 100vh;
+    padding: 14px; margin: 0;
+    background: var(--bg-elevated); border-left: 1px solid var(--border-active);
+    box-shadow: -8px 0 40px rgba(0,0,0,.6);
+    transform: translateX(105%); transition: transform var(--transition);
+  }
+  #control-sidebar .sidebar-head { padding-top: 4px; }
+  #btn-sidebar-close { display: inline-block; }
+
+  /* 抽屉打开(默认 = 未加 sidebar-hidden 时打开;JS 在窄屏初始加该类关闭) */
+  body:not(.sidebar-hidden) #control-sidebar { transform: translateX(0); }
+  body:not(.sidebar-hidden) #sidebar-backdrop {
+    display: block; position: fixed; inset: 0; z-index: 250;
+    background: rgba(0,0,0,.5); backdrop-filter: blur(2px);
+  }
+  /* 窄屏下 sidebar-hidden 仍需保留元素以便动画 */
+  body.sidebar-hidden #control-sidebar { display: flex; transform: translateX(105%); }
+}
+
+@media (max-width: 560px) {
+  #dashboard { grid-template-columns: 1fr; }
   header { flex-wrap: wrap; padding: 10px 14px; }
   header h1 { font-size: 14px; }
   .presets button { font-size: 11px; padding: 5px 4px; }

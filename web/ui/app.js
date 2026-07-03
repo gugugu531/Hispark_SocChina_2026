@@ -583,9 +583,29 @@
       .catch(function() { setBool('h-admin', false); });
   };
 
+  // ── 参数侧边栏 显示/隐藏 ──
+  // 语义:body.sidebar-hidden 在宽屏 = 移除侧边栏(主区占满);
+  //       在窄屏(≤900px) = 抽屉关闭。二者共用一个 class。
+  var NARROW = window.matchMedia('(max-width: 900px)');
+  function toggleSidebar() { document.body.classList.toggle('sidebar-hidden'); }
+  function closeSidebar() { document.body.classList.add('sidebar-hidden'); }
+  function initSidebar() {
+    // 窄屏默认关闭抽屉;宽屏默认显示侧边栏
+    if (NARROW.matches) document.body.classList.add('sidebar-hidden');
+    var t = $('btn-sidebar-toggle'); if (t) t.addEventListener('click', toggleSidebar);
+    var c = $('btn-sidebar-close');  if (c) c.addEventListener('click', closeSidebar);
+    var b = $('sidebar-backdrop');   if (b) b.addEventListener('click', closeSidebar);
+    // 视口跨越断点时,恢复该断点的默认可见状态,避免状态错乱
+    NARROW.addEventListener('change', function (e) {
+      if (e.matches) document.body.classList.add('sidebar-hidden');
+      else document.body.classList.remove('sidebar-hidden');
+    });
+  }
+
   // ── 启动 ──
   tick();
   setInterval(tick, 1000);
+  initSidebar();
   buildPresetBar();
   buildHotControls();
   wireHotApply();
