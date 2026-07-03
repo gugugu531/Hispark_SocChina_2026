@@ -371,6 +371,40 @@ v1 已知边界（进阶段 2 前评估是否需要扩）：
 3. 分辨率 512×288（参数效应为全局性，风险低）；
 4. dark_texture 的 LDCI 反序属训练分布内（网络可学），但机制性修正 `ldci.py` 仍值得做。
 
+### 5.6 ParamNet 阶段 2 首轮预训练（2026-07-03）
+
+**设计**（`models/isp_simulator/paramnet.py`）：输入 256×144 RGB；backbone 全卷积
+stride-2 ×5 + 固定核 AvgPool + 1×1 头（NPU 红名单安全，无 Pow/Cast/ReduceMean），
+**352.5K 参数**（<500K 约束内）。核心设计：网络输出 29 维 `u∈[0,1]`，经与 calib LHS
+**逐段相同的可微映射** `u_to_theta` 转成 97 维 θ——**保证输出天然落在校准代理的有效域
+内**（代理在域外无保真承诺，域一致性由结构保证而非正则）。
+
+**训练**：LCDP 双向曝光校正数据集（train 1415 / valid 100，仓库 artifacts 内已有）；
+冻结校准代理（sim + ResidualNet 27.4dB），loss = L1(代理输出, GT)；AdamW 3e-4 +
+cosine 24 epochs。已知妥协：drc_ctrl 3 维 sim 主通路梯度断裂（滤波半径本质离散），
+仅剩 ∂R/∂θ_ctrl 旁路信号——细调参数，最坏仅细调次优，阶段 3 蒸馏纠偏（详见
+paramnet.py 头注释）。
+
+**结果**（LCDP valid 100，512×288，PSNR vs GT）：
+
+| | PSNR 中位 | p5 |
+|---|---|---|
+| 不处理 baseline | 15.32 | 10.10 |
+| **ParamNet + 校准代理** | **20.60（+5.3）** | **15.42** |
+
+**解读**：
+- 曲线 ep8 后进入平台（20.0–20.6）——瓶颈不是容量/信号，而是 **31 维全局参数的表达力
+  上限**（全局参数无法修正空间变化的曝光误差），符合路线预期；
+- 参照：CTBG v9（逐像素 NN）收敛上限 val_psnr 19.83——ParamNet 用全局参数达到
+  **20.60**（口径不严格相同：split/分辨率有差异，量级可比）。**参数化路线在画质上
+  不输逐像素路线**，且天然 30fps 全分辨率施加、无 NPU 逐像素搬运；
+- 该 PSNR 口径经过校准代理（≈硬件行为），即预测的参数上板后应有相近效果——待阶段 3
+  真实 A/B 坐实。
+
+下一步（按杠杆）：① 板端 A/B 冒烟——ParamNet 对真实场景中性帧出 θ→blob→回灌，与
+vendor-auto 对比（打通阶段 3 最短路径）；② calib v2 纳入 Gamma + 真实场景域；
+③ ONNX→ATC→OM 导出与算子探测。
+
 ## 参考文献
 
 - Tseng et al. 2019, *Hyperparameter Optimization in Black-box Image Processing using Differentiable Proxies*, ACM TOG 38(4). https://light.princeton.edu/publication/proxy_opt/
