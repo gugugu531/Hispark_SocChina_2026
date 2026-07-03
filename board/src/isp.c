@@ -438,8 +438,9 @@ fail:
 
 /* ---- ISP 参数 blob 加载（DRC/LDCI 完整参数验证用）---- */
 
-#define ISP_BLOB_MAGIC  0x49535000u  /* "ISP\0" */
-#define ISP_BLOB_VERSION 1u
+#define ISP_BLOB_MAGIC       0x49535000u /* "ISP\0" */
+#define ISP_BLOB_VERSION_MIN 1u
+#define ISP_BLOB_VERSION_MAX 2u /* v2: DRC 段末尾追加 manual strength (u16, 0-1023) */
 
 int isp_load_blob_and_apply(const char *path)
 {
@@ -460,7 +461,8 @@ int isp_load_blob_and_apply(const char *path)
         LOG_ERR("isp_load_blob: header read failed");
         goto cleanup;
     }
-    if (magic != ISP_BLOB_MAGIC || version != ISP_BLOB_VERSION) {
+    if (magic != ISP_BLOB_MAGIC || version < ISP_BLOB_VERSION_MIN ||
+        version > ISP_BLOB_VERSION_MAX) {
         LOG_ERR("isp_load_blob: bad magic %#x or version %u", magic, version);
         goto cleanup;
     }
@@ -501,13 +503,24 @@ int isp_load_blob_and_apply(const char *path)
             LOG_ERR("isp_load_blob: DRC scalar read failed");
             goto cleanup;
         }
-        drc.manual_attr.strength = 512; /* 中等强度 */
+        /* manual strength 是独立于 tone 曲线的整体亮度维度（SDK：值越大越亮），
+         * v1 无此字段时保持历史默认 512。 */
+        drc.manual_attr.strength = 512;
+        if (version >= 2) {
+            uint16_t strength;
+            if (fread(&strength, 2, 1, fp) != 1) {
+                LOG_ERR("isp_load_blob: DRC strength read failed");
+                goto cleanup;
+            }
+            drc.manual_attr.strength = (strength > 1023) ? 1023 : strength;
+        }
 
         if (ss_mpi_isp_set_drc_attr(ISP_PIPE, &drc) != 0) {
             LOG_ERR("isp_load_blob: set drc attr failed");
             goto cleanup;
         }
-        LOG_INFO("isp_load_blob: DRC applied (enable=%d, nodes OK)", drc_enable_raw);
+        LOG_INFO("isp_load_blob: DRC applied (enable=%d, strength=%u)", drc_enable_raw,
+                 drc.manual_attr.strength);
     }
 
     /* LDCI 参数 */

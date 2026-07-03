@@ -210,6 +210,43 @@ loop {
 | 2 预训练 | 校准代理 + 配对数据集 + full-reference loss（伪 linear 域） | 不参与 | 数据集 val 指标收敛 |
 | 3 硬件微调 | 蒸馏信号（黑盒 θ* 回归）微调 head；冻结 backbone + rehearsal；SPSA 可选 polish | 离线产 θ* 标签 + 少量在环查询 | 留出场景 NR-IQA + 人评双轨优于 vendor-auto |
 
+## 5. 保真度闸门首轮结果（2026-07-03，阶段 0 完成）
+
+**目标**：实测裁决"解析模拟器的参数排序是否与硬件 ISP 一致"（§4.4 阶段 0），单场景（室内静物、
+强逆光窗口）、收窄模块（DRC tone / LDCI）。
+
+**命令路径**：`python -m models.isp_simulator.fidelity_gate gen`（16 组参数 blob：中性帧 +
+tone 5 档 + LDCI 4 档 + strength 3 档 + mix 2 档 + 组合）→ 板端
+`test_raw_replay --settle 8 --blob ...`（17 项 84 秒内完成）→ `fidelity_gate analyze`
+（帧级特征 + Spearman 秩相关）。
+
+**结果**：
+
+| 判据 | 数值 | 判定 |
+|---|---|---|
+| DRC tone 组内秩相关（shadow，n=5） | **+1.000** | ✅ |
+| LDCI 组内秩相关（shadow，n=4） | **+1.000** | ✅ |
+| 方向一致率（全特征，vs 中性帧） | 100%（highlight 75%） | ✅ |
+| 全体混合秩相关（shadow） | +0.476 | 参考（见缺口 1） |
+
+**闸门判定：PASS**——模拟器在单模块维度内的参数排序与硬件完全一致，蒸馏/代理校准路线可行。
+
+**解读与已识别缺口**（Phase 2 开工前须知）：
+
+1. **DRC manual strength 未建模，是跨模块幅度错位的根因**（全体混合 rho 低的唯一主因）。
+   SDK 明示"值越大整体图像越亮"[0,1023]；实测响应（恒等 tone，相对中性帧 shadow 0.155）：
+   `s=128→0.211，512→0.388，896→0.578`，超线性、比任何 tone 曲线提升都强。
+   **行动**：模拟器加 strength 维度（以实测响应拟合 gain 曲线），或蒸馏 θ 直接包含 strength。
+2. **参数切换需 ≥8 帧 settle**（ISP 内部时域滤波）：settle=2 时每组首项被前组状态污染
+   （v1 的 t1、v2 的 l1/m1 异常均由此）。校准采集纪律：`--settle 8`。
+3. **highlight 方向一致率 75%**：模拟器高光行为有偏差，残差校准（阶段 1）重点。
+4. **local mixing 对帧级亮度特征不敏感**（m1=m2）：评估该模块需局部梯度/细节特征，暂不纳入判据。
+5. 首轮为单场景；结论外推前应在 3–5 个场景重复（快：每场景 ~2 分钟采集）。
+
+发现过程记录（防重蹈）：v1 闸门 FAIL 的直接原因是板端 blob 加载器把 strength 写死 512，
+LDCI 组净效应（±0.015）被 DRC strength 效果（+0.24）淹没——blob v2 增加 strength 字段
+（板端 `isp.c` 兼容 v1 默认 512），LDCI 组以 strength=0 隔离后组内 rho 从 −0.2 → +1.0。
+
 ## 参考文献
 
 - Tseng et al. 2019, *Hyperparameter Optimization in Black-box Image Processing using Differentiable Proxies*, ACM TOG 38(4). https://light.princeton.edu/publication/proxy_opt/
