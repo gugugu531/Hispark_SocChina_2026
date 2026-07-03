@@ -2,6 +2,9 @@
 #include "log.h"
 #include "menu_render.h"
 #include "touch.h"
+#ifdef ENABLE_LVGL
+#include "ui_port_board.h"
+#endif
 #include "version.h"
 
 /*
@@ -240,6 +243,42 @@ static void ctrl_status_fn(void *opaque, char *buf, size_t buflen)
              snap.display_frames > 0 ? "true" : "false",
              snap.stream_frames > 0 ? "true" : "false");
 }
+
+#ifdef ENABLE_LVGL
+/* 为板端 LVGL worker 填充状态快照(与 socket status 同一数据源,线程安全)。 */
+static void lvgl_snapshot(ui_state_t *st, void *user)
+{
+    app_status_ctx_t  *sc = (app_status_ctx_t *)user;
+    pipeline_metrics_t snap;
+
+    metrics_snapshot(sc->metrics, now_ms() - sc->t0, &snap);
+    st->state_str        = pipeline_state_name(snap.state);
+    st->capture_mode     = 0;                              /* linear 占位,与 status_fn 一致 */
+    st->target_fps       = snap.display_fps > 0 ? 30 : 0;
+    st->fps              = snap.display_fps;
+    st->infer_ms         = snap.infer_last_ms;
+    st->infer_p95        = snap.infer_p95_ms;
+    st->txn_p95          = snap.transaction_p95_ms;
+    st->stream_frames    = (unsigned long long)snap.stream_frames;
+    st->lut_updates      = (unsigned long long)snap.lut_updates;
+    st->stream_drops     = (long)snap.stream_drops;
+    st->timeouts         = (long)snap.frame_timeouts;
+    st->transient_errors = (long)snap.transient_errors;
+    st->fatal_errors     = (long)snap.fatal_errors;
+    st->nn_degraded      = sc->ctrl->health.degraded;
+    st->hdmi             = -1;                             /* 板端暂不透传输出通道状态 */
+    st->rtsp             = -1;
+    st->viewers          = -1;
+    st->enhancement_enabled = sc->ctrl->enhancement_enabled;
+    st->nn_enabled       = sc->ctrl->nn_enabled;
+    st->tone_enabled     = sc->ctrl->tone_enabled;
+    st->tone_strength    = sc->ctrl->strength;
+    st->high_clip_guard  = sc->ctrl->high_clip_guard;
+    st->drc_mode         = sc->ctrl->drc_mode;
+    st->drc_strength     = sc->ctrl->drc_strength;
+    st->ldci_mode        = sc->ctrl->ldci_mode;
+}
+#endif
 
 static void on_sig(int s) {
     (void) s;
@@ -1145,6 +1184,16 @@ int main(int argc, char** argv) {
             goto cleanup;
         }
         disp_up = 1;
+#ifdef ENABLE_LVGL
+        /* 板端 LVGL 触摸 UI(方案 A:GFBG G0 图形层叠加)。此配置下旧全屏菜单休眠
+         * (不 open 触摸 → menu_active 永不置位);worker 自持 G0 图形层与触摸,
+         * 与本显示循环(VPSS→视频层)互不干扰。 */
+        status_ctx.metrics = &runtime_metrics;
+        status_ctx.ctrl    = &control_ctx;
+        status_ctx.t0      = now_ms();
+        if (ui_port_board_start("/dev/fb0", "/dev/input/event0", lvgl_snapshot, &status_ctx) != 0)
+            LOG_WARN("[lvgl] board UI start failed; continuing without touch UI");
+#else
         if (menu_blk[0] != OT_VB_INVALID_HANDLE) {
             touch_fd = touch_open("/dev/input/event0", DISPLAY_WIDTH, DISPLAY_HEIGHT);
             if (touch_fd < 0)
@@ -1152,6 +1201,7 @@ int main(int argc, char** argv) {
             else
                 LOG_INFO("[menu] touch ready on /dev/input/event0 (corner=bottom-left to open)");
         }
+#endif
     }
     if (cfg.enable_stream) {
         if (stream_init(&stream_cfg) != 0) {
@@ -1432,6 +1482,10 @@ cleanup:
     if (!control_ctx.fatal_error) {
         metrics_set_state(&runtime_metrics, PIPELINE_STATE_STOPPING);
     }
+#ifdef ENABLE_LVGL
+    /* 先停 LVGL worker(它会 app_ctrl_push 且用 fb),再拆 app_ctrl 与显示。 */
+    ui_port_board_stop();
+#endif
     if (app_ctrl_up) {
         app_ctrl_stop();
         (void)pthread_join(app_ctrl_tid, TD_NULL);

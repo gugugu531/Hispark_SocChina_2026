@@ -98,9 +98,46 @@ if(ENABLE_SDK)
         pthread m dl)
 endif()
 
+# 板端 LVGL 触摸 UI（方案 A：GFBG G0 图形层叠加）。需 ENABLE_SDK + LVGL 源码。
+option(ENABLE_LVGL "板端 LVGL 触摸 UI（需 ENABLE_SDK + LVGL）" OFF)
+if(ENABLE_LVGL)
+    if(NOT ENABLE_SDK)
+        message(FATAL_ERROR "ENABLE_LVGL=ON 需同时 ENABLE_SDK=ON（GFBG/VO 依赖 SDK）")
+    endif()
+    if(NOT LVGL_DIR)
+        set(LVGL_DIR "${CMAKE_CURRENT_SOURCE_DIR}/sim/vendor/lvgl")
+    endif()
+    if(NOT EXISTS "${LVGL_DIR}/lvgl.h")
+        message(FATAL_ERROR "LVGL 未拉取：先运行 scripts/fetch_lvgl.sh（或设 -DLVGL_DIR=<路径>）")
+    endif()
+
+    # LVGL 源码：排除所有 drivers 后只加回 Linux fbdev + evdev（不含 SDL 等桌面驱动）。
+    # 其余 src 各文件均由 lv_conf 的 #if 守卫，特性关闭时编译为空，无外部依赖。
+    file(GLOB_RECURSE LVGL_SRC ${LVGL_DIR}/src/*.c)
+    list(FILTER LVGL_SRC EXCLUDE REGEX "/src/drivers/")
+    file(GLOB LVGL_FB_SRC ${LVGL_DIR}/src/drivers/display/fb/*.c)
+    file(GLOB LVGL_EVDEV_SRC ${LVGL_DIR}/src/drivers/evdev/*.c)
+    list(APPEND LVGL_SRC ${LVGL_FB_SRC} ${LVGL_EVDEV_SRC})
+    add_library(lvgl STATIC ${LVGL_SRC})
+    target_include_directories(lvgl PUBLIC ${LVGL_DIR} "${CMAKE_CURRENT_SOURCE_DIR}/ui")
+    target_compile_definitions(lvgl PUBLIC LV_CONF_PATH=\"${CMAKE_CURRENT_SOURCE_DIR}/ui/lv_conf_board.h\")
+    target_compile_options(lvgl PRIVATE -w)  # 第三方，不套仓库告警等级
+
+    # 可移植 UI + 板端 port（GFBG/fbdev/evdev/worker）。WITH_SS928_SDK 从 socchina 传递。
+    add_library(socchina_ui STATIC ui/ui_lvgl.c ui/ui_port_board.c)
+    target_include_directories(socchina_ui PUBLIC ui)
+    target_link_libraries(socchina_ui PUBLIC lvgl socchina)
+    target_compile_definitions(socchina_ui PUBLIC ENABLE_LVGL=1)
+endif()
+
 # 主程序
 add_executable(socchina_app src/main.c)
 target_link_libraries(socchina_app PRIVATE socchina)
+if(ENABLE_LVGL)
+    target_link_libraries(socchina_app PRIVATE socchina_ui)
+    target_include_directories(socchina_app PRIVATE ui)
+    target_compile_definitions(socchina_app PRIVATE ENABLE_LVGL=1)
+endif()
 install(TARGETS socchina_app RUNTIME DESTINATION bin)
 
 # 测试：tests/test_*.c 各编一个可执行并注册 ctest
