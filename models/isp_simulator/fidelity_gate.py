@@ -45,13 +45,13 @@ def build_sweep() -> list[dict]:
     """
     items = []
 
-    def make(tag, mutate, drc_on=True, ldci_on=True, strength=512):
+    def make(tag, mutate, drc_on=True, ldci_on=True, strength=512, gamma_on=False):
         p = make_identity_params(1)
         mutate(p)
         # strength 写进参数向量：blob 生成端读它，模拟器 drc_strength_apply 施加它
         p[0, get_offset("drc_strength")] = strength / 1023.0
         items.append({"tag": tag, "params": p, "drc_on": drc_on, "ldci_on": ldci_on,
-                      "strength": strength})
+                      "strength": strength, "gamma_on": gamma_on})
 
     # 中性帧：blob 显式关闭 DRC/LDCI（模拟器输入的采集口径）
     make("neutral", lambda p: None, drc_on=False, ldci_on=False, strength=0)
@@ -92,6 +92,14 @@ def build_sweep() -> list[dict]:
             p[0, off_m:off_m + 12] = m
         make(f"m{i}", mut)
 
+    # G1-G3: Gamma 提亮曲线梯度（blob v3 经 isp_gamma_apply_curve；★5 对齐模块闭环验证）
+    off_g = get_offset("gamma")
+    for i, s in enumerate([0.3, 0.6, 0.9], start=1):
+        def mut(p, s=s):
+            base = torch.linspace(0.0, 1.0, 64)
+            p[0, off_g:off_g + 64] = base.pow(1.0 - 0.55 * s)  # γ<1 提亮，s 控制强度
+        make(f"g{i}", mut, strength=0, gamma_on=True)
+
     # C1: 组合（强 tone + 强 LDCI）
     def mut_c1(p):
         cp = torch.linspace(0.0, 1.0, 6)
@@ -115,11 +123,15 @@ def cmd_gen(args) -> int:
     all_params = []
     for i, it in enumerate(items):
         fname = f"b{i:02d}_{it['tag']}.bin"
-        blob = sim_params_to_blob(it["params"], drc_on=it["drc_on"], ldci_on=it["ldci_on"])
+        # 所有项都带 gamma 段：非 gamma 项 strength=0（isp_gamma_apply_curve 语义
+        # = 还原默认 gamma），显式复位避免 g 组状态泄漏到后续项
+        blob = sim_params_to_blob(it["params"], drc_on=it["drc_on"], ldci_on=it["ldci_on"],
+                                  gamma_on=True,
+                                  gamma_strength=1.0 if it["gamma_on"] else 0.0)
         (outdir / fname).write_bytes(blob)
         manifest.append({"idx": i, "tag": it["tag"], "blob": fname,
                          "drc_on": it["drc_on"], "ldci_on": it["ldci_on"],
-                         "strength": it["strength"]})
+                         "strength": it["strength"], "gamma_on": it["gamma_on"]})
         blob_args.append(f"--blob {fname}")
         all_params.append(it["params"])
 
@@ -214,7 +226,9 @@ def cmd_analyze(args) -> int:
         hw = load_nv21_rgb(board_frame(entry["idx"], entry["blob"]), w, h)
         p = all_params[entry["idx"]:entry["idx"] + 1]
         with torch.no_grad():
-            sim = pipeline(x, p, enable_wdr=False, enable_gamma=False,
+            # gamma 项开 gamma（板端经 isp_gamma_apply_curve 施加）；恒等曲线无影响
+            sim = pipeline(x, p, enable_wdr=False,
+                           enable_gamma=bool(entry.get("gamma_on", False)),
                            enable_dehaze=False)["output"]
         sim_np = sim.squeeze(0).permute(1, 2, 0).numpy()
         rows.append({
@@ -255,7 +269,7 @@ def cmd_analyze(args) -> int:
     # 幅度错位的已知根因，仅作参考指标。）
     print("\n== 分组秩相关（单调梯度组内，主判据）==")
     group_rho = {}
-    for group, prefix in (("DRC tone", "t"), ("LDCI", "l")):
+    for group, prefix in (("DRC tone", "t"), ("LDCI", "l"), ("Gamma", "g")):
         sub = [r for r in rows if r["tag"].startswith(prefix)]
         if len(sub) >= 3:
             hw_v = np.array([r["hw"]["shadow"] for r in sub])

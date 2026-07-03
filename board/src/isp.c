@@ -440,7 +440,14 @@ fail:
 
 #define ISP_BLOB_MAGIC       0x49535000u /* "ISP\0" */
 #define ISP_BLOB_VERSION_MIN 1u
-#define ISP_BLOB_VERSION_MAX 2u /* v2: DRC 段末尾追加 manual strength (u16, 0-1023) */
+#define ISP_BLOB_VERSION_MAX 3u
+/* v2: DRC 段末尾追加 manual strength (u16, 0-1023)
+ * v3: DRC 段再追加 Filter 主通路 local_mixing_bright/dark[33]（v2 只写了 FilterX 通路，
+ *     blend 偏向主通路时 X 通路 mixing 无效应）；新增可选段（按 flags 位序读）：
+ *     bit2=GAMMA(u16 curve[64] 0-65535 + u16 strength 0-1024，经 isp_gamma_apply_curve)
+ *     bit3=DRC_GUARD(u8 bright_gain_limit/step + u8 dark_gain_limit_luma/chroma)
+ *     bit4=DRC_COLOR(u8 cc_ctrl/low_sat/high_sat + u16 color_correction_lut[33])
+ *     bit3/bit4 属 DRC 属性子段，仅在 bit0 置位时有效。 */
 
 int isp_load_blob_and_apply(const char *path)
 {
@@ -515,12 +522,50 @@ int isp_load_blob_and_apply(const char *path)
             drc.manual_attr.strength = (strength > 1023) ? 1023 : strength;
         }
 
+        /* v3: Filter 主通路 local mixing（v2 只写 FilterX 通路） */
+        if (version >= 3) {
+            uint8_t lmb[33], lmd[33];
+            if (fread(lmb, 1, 33, fp) != 33 || fread(lmd, 1, 33, fp) != 33) {
+                LOG_ERR("isp_load_blob: DRC main-path mixing read failed");
+                goto cleanup;
+            }
+            memcpy(drc.local_mixing_bright, lmb, sizeof(lmb));
+            memcpy(drc.local_mixing_dark, lmd, sizeof(lmd));
+        }
+
+        /* v3 可选子段：DRC 护栏（亮区增益上限 = 高光抑制直控；暗区增益护栏） */
+        if (version >= 3 && (flags & 8)) {
+            uint8_t g[4];
+            if (fread(g, 1, 4, fp) != 4) {
+                LOG_ERR("isp_load_blob: DRC guard read failed");
+                goto cleanup;
+            }
+            drc.bright_gain_limit = g[0];
+            drc.bright_gain_limit_step = g[1];
+            drc.dark_gain_limit_luma = g[2];
+            drc.dark_gain_limit_chroma = g[3];
+        }
+
+        /* v3 可选子段：DRC 色彩补偿（提亮后饱和度） */
+        if (version >= 3 && (flags & 16)) {
+            uint8_t c[3];
+            uint16_t cc_lut[33];
+            if (fread(c, 1, 3, fp) != 3 || fread(cc_lut, 2, 33, fp) != 33) {
+                LOG_ERR("isp_load_blob: DRC color read failed");
+                goto cleanup;
+            }
+            drc.color_correction_ctrl = (c[0] != 0) ? TD_TRUE : TD_FALSE;
+            drc.low_saturation_color_ctrl = c[1];
+            drc.high_saturation_color_ctrl = c[2];
+            memcpy(drc.color_correction_lut, cc_lut, sizeof(cc_lut));
+        }
+
         if (ss_mpi_isp_set_drc_attr(ISP_PIPE, &drc) != 0) {
             LOG_ERR("isp_load_blob: set drc attr failed");
             goto cleanup;
         }
-        LOG_INFO("isp_load_blob: DRC applied (enable=%d, strength=%u)", drc_enable_raw,
-                 drc.manual_attr.strength);
+        LOG_INFO("isp_load_blob: DRC applied (enable=%d, strength=%u, guard=%d, color=%d)",
+                 drc_enable_raw, drc.manual_attr.strength, (flags >> 3) & 1, (flags >> 4) & 1);
     }
 
     /* LDCI 参数 */
@@ -562,6 +607,26 @@ int isp_load_blob_and_apply(const char *path)
             goto cleanup;
         }
         LOG_INFO("isp_load_blob: LDCI applied (enable=%d)", ldci_enable_raw);
+    }
+
+    /* v3: Gamma 段（64 节点归一化曲线，经 isp_gamma_apply_curve 叠加施加） */
+    if (version >= 3 && (flags & 4)) {
+        uint16_t curve_u16[64], strength_u16;
+        float curve[64];
+        int i;
+
+        if (fread(curve_u16, 2, 64, fp) != 64 || fread(&strength_u16, 2, 1, fp) != 1) {
+            LOG_ERR("isp_load_blob: gamma read failed");
+            goto cleanup;
+        }
+        for (i = 0; i < 64; i++) {
+            curve[i] = (float)curve_u16[i] / 65535.0f;
+        }
+        if (isp_gamma_apply_curve(curve, 64, (float)strength_u16 / 1024.0f) != 0) {
+            LOG_ERR("isp_load_blob: gamma apply failed");
+            goto cleanup;
+        }
+        LOG_INFO("isp_load_blob: gamma applied (strength=%u/1024)", strength_u16);
     }
 
     ret = 0;

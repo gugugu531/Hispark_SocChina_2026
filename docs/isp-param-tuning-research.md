@@ -320,6 +320,29 @@ he_pos_wgt 单调提亮暗部（0.243→0.318，与所有其他场景一致）�
 `R(sim输出, θ)` 以参数条件化为主轴、空间/色调依赖为辅，v1 数据集已够第一版训练。
 下一步：训残差网络，验收判据 = 留出参数组校正后 PSNR 中位 >25 dB。
 
+### 5.4 blob v3：官方参数对账补缺与 Gamma 闭环（2026-07-03）
+
+**对账结论**（vs SDK `ot_common_isp.h` 官方完整定义）：LDCI 稳态参数已全覆盖
+（`tpr_incr/decr_coef` 时域项固定默认，flicker 验收时复查）；DRC 官方 ~50 字段中
+v2 只覆盖核心 12 组，**三组缺口与项目"双向"目标直接相关**：
+① `bright_gain_limit(+step)`——高光抑制的官方直控（v2 无任何高光侧参数）；
+② `dark_gain_limit_luma/chroma`——提亮护栏；
+③ `color_correction_lut/ctrl + low/high_saturation_color_ctrl`——DRC 提亮后饱和度补偿
+（调优指南明示）。另发现 v2 只写 FilterX 通路 mixing，漏了 Filter 主通路
+`local_mixing_bright/dark[33]`。
+
+**blob v3**（板端 reader 兼容 v1/v2）：DRC 段追加主通路 mixing（与 X 通路同值）；
+新增可选子段 GUARD(bit3)/COLOR(bit4)（护栏与色彩作为固定 preset/规则参数，
+**不进 NN 输出维度**，避免蒸馏标签空间膨胀）；新增 GAMMA 段(bit2)：64 节点 u16 曲线 +
+strength，经 `isp_gamma_apply_curve` 施加，所有 blob 携带该段（非 gamma 项 strength=0
+显式还原默认，防状态泄漏）。
+
+**Gamma 闭环验证**（8 合成场景 × 提亮曲线 3 档梯度）：**8/8 场景 Gamma 组内
+rho=+1.000**——★5 对齐模块坐实。至此 NN 核心输出维度（DRC tone / strength / LDCI /
+Gamma）全部处于已验证的"生成→施加→采集→对比"闭环内。m 组在主通路写入后出现微小
+非零差异（v2 完全相同），确认 local mixing 是帧级亮度不敏感的细节参数（评估需局部
+特征）；dark_texture 的 LDCI 反序一致复现（残差目标 #2 不变）。
+
 ## 参考文献
 
 - Tseng et al. 2019, *Hyperparameter Optimization in Black-box Image Processing using Differentiable Proxies*, ACM TOG 38(4). https://light.princeton.edu/publication/proxy_opt/
