@@ -77,6 +77,11 @@ Dehaze      1×[0,255]     直接标量                         isp_set_dehaze()
 2. 用配对数据集训练：输入低光照图，NN 预测参数，模拟器施加，Loss 对比 GT
 3. 损失函数自选（L1、LPIPS perceptual、Zero-DCE 零参考损失等），消融实验评估各 ISP 模块的独立贡献
 
+> ⚠️ **训练环境选型前必读** [`isp-param-tuning-research.md`](isp-param-tuning-research.md)：解析可微模拟器与闭源
+> SS928 ISP 存在 sim-to-real gap（见 `../models/isp_simulator/semantic_gap.md`）。文献表明硬件不能进 SGD 内层环，
+> 应挪到离线数据生成，推荐分层路线：门控（收窄到 Gamma/DRC-tone/LDCI）→ 蒸馏（离线黑盒优化产 `scene→θ*` 后
+> 参数空间回归）→ 残差代理（只学模拟器到硬件的差量）。纯"解析模拟器 + 开环上板"为高风险,先过保真度闸门。
+
 ### 板端集成
 
 训练完成后：ONNX 导出 → ATC 构建 OM → 替换 `control_worker` 中的 `ctbg_isp_map_apply()` 调用。控制线程中 estimator 触发逻辑不变（场景变化时运行，~10Hz），仅将系数聚合+启发式映射替换为 ParamNet OM 推理。

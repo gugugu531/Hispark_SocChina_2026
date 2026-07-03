@@ -6,6 +6,8 @@
 | `architecture.md` | 系统架构与完整图像增强链数据通路、唯一产品配置、已关闭路线、已核实 SDK 接口与约束。 |
 | `data-path-interface-design.md` | Config-R 阶段 C 协作契约：通道分配、模块接口、线程/帧所有权、LUT 刷新事务、降级策略和并行开发验收。 |
 | `model-route-summary.md` | 模型路线稳定结论：整图访存瓶颈、AIPP 实测、CoTF 主线和待验证边界。 |
+| `isp-auto-tuning-prompt.md` | ISP 参数自动调优系统的 AI 代理实施 Prompt：目标、参数空间、训练与板端集成。 |
+| `isp-param-tuning-research.md` | 训练方法文献调研与执行路线：可微代理/黑盒优化/蒸馏/残差选型，预训练+硬件微调四段执行序及问题对策。 |
 | `quality-acceptance.md` | 画质验收方法、当前场景批量结果、生产回退结论与剩余场景覆盖。 |
 | `web-console-architecture.md` | 板端一体化 Web 控制台路线：MediaMTX 无转码网关、Web/API、热控制、冷配置事务、安全与性能预算。 |
 | `board-operations.md` | 板端部署、启动/重启、健康检查、故障恢复手册。 |
