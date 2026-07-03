@@ -343,6 +343,34 @@ Gamma）全部处于已验证的"生成→施加→采集→对比"闭环内。m
 非零差异（v2 完全相同），确认 local mixing 是帧级亮度不敏感的细节参数（评估需局部
 特征）；dark_texture 的 LDCI 反序一致复现（残差目标 #2 不变）。
 
+### 5.5 残差校准网络 v1：验收 PASS（2026-07-03，阶段 1 核心判据达成）
+
+**架构**（`models/isp_simulator/residual_net.py`）：FiLM 条件化小 CNN，**92.6K 参数**——
+θ（31 维核心参数 = 参数向量 [65:96]）经 MLP 生成逐块 scale/shift，调制 4 层卷积骨干
+（通道 32 + GroupNorm）；输出头 zero-init（初始即恒等，从 16 dB 基线起步）；
+校正输出 = `clamp(sim + Δ)`。
+
+**训练**：v1 校准集（8 合成场景 × 128 LHS 参数，512×288），按**参数组**划分
+train 103 / val 25；L1 loss，AdamW 1e-3 + cosine，120 epochs（RTX 4060 约 40 分钟，
+含 sim 预计算）。曲线平滑收敛、无过拟合（val 后期稳定 27+）。
+
+**验收**（留出参数组 200 对，网络未见过的 θ）：
+
+| 指标 | 未校正 sim | **sim + R（校准代理）** |
+|---|---|---|
+| PSNR 中位 | 15.49 dB | **27.39 dB（+11.9）** |
+| PSNR p5 | 9.06 dB | **20.87 dB** |
+
+**判据（校正后中位 >25 dB）：PASS。** 印证 §5.3 的判断——残差主要由 θ 决定、可被小
+容量参数条件化网络学习。**"校准代理"路线成立**：`sim + R` 已是绝对保真 27 dB 量级的
+可微硬件代理，阶段 2（ParamNet 预训练）的训练环境就绪。
+
+v1 已知边界（进阶段 2 前评估是否需要扩）：
+1. 数据域 = 8 个合成灰度场景（真实彩色场景的色彩残差未覆盖——CC/AWB 交互）；
+2. θ 只含 blob DRC/LDCI 31 维（Gamma 已有硬件闭环但未纳入 θ 与采集，calib v2 应加）；
+3. 分辨率 512×288（参数效应为全局性，风险低）；
+4. dark_texture 的 LDCI 反序属训练分布内（网络可学），但机制性修正 `ldci.py` 仍值得做。
+
 ## 参考文献
 
 - Tseng et al. 2019, *Hyperparameter Optimization in Black-box Image Processing using Differentiable Proxies*, ACM TOG 38(4). https://light.princeton.edu/publication/proxy_opt/
