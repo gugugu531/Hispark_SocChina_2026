@@ -185,9 +185,13 @@ def cmd_analyze(args) -> int:
     manifest = json.loads((sweep_dir / "manifest.json").read_text())
     all_params = torch.load(sweep_dir / "sweep_params.pt")
 
-    # 板端输出命名：out_<idx+1>_blob_<blobname>.nv21（第 0 项是 harness 基线）
+    # 板端输出命名：定格模式 out_<idx+1>_blob_<b>.nv21（第 0 项是 harness 基线）；
+    # 文件回灌模式 out_f<fi>_<idx>_blob_<b>.nv21（无基线偏移，--file-idx 选场景）
     def board_frame(idx: int, blob: str) -> Path:
-        p = board_dir / f"out_{idx + 1:02d}_blob_{blob}.nv21"
+        if args.file_idx is not None:
+            p = board_dir / f"out_f{args.file_idx:02d}_{idx + 1:02d}_blob_{blob}.nv21"
+        else:
+            p = board_dir / f"out_{idx + 1:02d}_blob_{blob}.nv21"
         if not p.exists():
             sys.exit(f"缺板端输出: {p}")
         return p
@@ -290,6 +294,8 @@ def main() -> int:
     a.add_argument("--board-dir", required=True)
     a.add_argument("--width", type=int, default=1024)
     a.add_argument("--height", type=int, default=576)
+    a.add_argument("--file-idx", type=int, default=None,
+                   help="文件回灌模式的场景序号（out_f<NN>_ 前缀）")
 
     args = ap.parse_args()
     return cmd_gen(args) if args.cmd == "gen" else cmd_analyze(args)

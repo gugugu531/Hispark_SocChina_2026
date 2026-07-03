@@ -9,12 +9,18 @@
  *
  * 用法：./test_raw_replay [选项]
  *   --sensor <0|1>       传感器位（默认 1，海鸥派 OS08A20 在 sensor1/J4）
- *   --warmup <n>         预热回灌次数，AE 在 run_once 环内收敛（默认 60）
+ *   --warmup <n>         预热回灌次数，AE 在 run_once 环内收敛（默认 60，文件模式 16）
  *   --settle <n>         每组参数生效等待帧数，取最后一帧落盘（默认 2）
  *   --exptime <us> [--again <x1024>]  预热后锁定手动曝光（推荐，保证 sweep 可比）
  *   --out <WxH>          输出分辨率（默认 1024x576，与串流口径一致）
  *   --outdir <dir>       输出目录（默认 .）
  *   --save-raw           定格 RAW 同时落盘（供离线分析；含 stride 填充）
+ *   --compress-none      起链后把 pipe RAW 压缩改为 NONE（裸 12bpp packed bayer；
+ *                        dump 供主机解析布局，文件回灌必需）
+ *   --raw-file <f>       文件回灌模式（可重复 ≤8）：跳过定格，从裸 bayer 文件构造
+ *                        RAW 帧作输入（须与 --compress-none 采出的布局一致，
+ *                        大小 = stride(=ALIGN(w*12/8)) × h）。每个文件跑完整 sweep，
+ *                        输出 out_f<fi>_<idx>_<tag>.nv21
  *   --drc <s>            追加一组 DRC 手动强度 sweep 项（可重复，0-1023）
  *   --ldci <0|1>         追加一组 LDCI 开/关 sweep 项（可重复）
  *   --blob <file>        追加一组完整 DRC/LDCI 参数 blob（可重复，
@@ -55,10 +61,12 @@ int main(void)
 #include "sample_comm.h"
 #include "ss_mpi_isp.h"
 #include "ss_mpi_sys.h"
+#include "ss_mpi_vb.h"
 #include "ss_mpi_vi.h"
 
 #define REPLAY_VI_PIPE 0
 #define SWEEP_MAX      32
+#define RAW_FILE_MAX   8
 #define CYCLE_TIMEOUT  1000 /* ms：run_once/send/vd/取帧各步超时 */
 
 typedef enum {
@@ -152,6 +160,102 @@ unmap:
     return rc;
 }
 
+/* 把 pipe RAW 压缩改为 NONE（裸 12bpp packed bayer）。dump 出的 RAW 才能被主机
+ * 直接解析/合成；文件回灌要求 RAW 与 pipe 属性一致，是文件模式的前置。 */
+static int set_pipe_compress_none(void)
+{
+    ot_vi_pipe_attr attr;
+
+    CHECK_RET_GOTO(ss_mpi_vi_get_pipe_attr(REPLAY_VI_PIPE, &attr), fail);
+    attr.compress_mode = OT_COMPRESS_MODE_NONE;
+    CHECK_RET_GOTO(ss_mpi_vi_set_pipe_attr(REPLAY_VI_PIPE, &attr), fail);
+    LOG_INFO("pipe compress -> NONE");
+    return 0;
+fail:
+    return -1;
+}
+
+/* 从裸 bayer 文件构造 RAW 回灌帧：公共 VB 池取块 + mmap 写入 + 手填 frame_info
+ * （字段填法照厂商 sample_comm_vi_malloc_frame_blk）。 */
+typedef struct {
+    ot_vb_blk vb_blk;
+    td_u32 blk_size;
+    td_u8 *virt;
+    ot_video_frame_info frame;
+} raw_file_frame_t;
+
+static int load_raw_file_frame(const char *path, unsigned w, unsigned h, raw_file_frame_t *rf)
+{
+    const td_u32 stride = OT_ALIGN_UP(OT_ALIGN_UP(w * 12, 8) / 8, OT_DEFAULT_ALIGN);
+    const td_u32 size = stride * h;
+    td_phys_addr_t phys;
+    FILE *fp = NULL;
+    ot_video_frame *vf;
+
+    memset(rf, 0, sizeof(*rf));
+    rf->vb_blk = ss_mpi_vb_get_blk(OT_VB_INVALID_POOL_ID, size, TD_NULL);
+    if (rf->vb_blk == OT_VB_INVALID_HANDLE) {
+        LOG_ERR("raw file: vb_get_blk(%u) failed", size);
+        return -1;
+    }
+    phys = ss_mpi_vb_handle_to_phys_addr(rf->vb_blk);
+    rf->virt = (td_u8 *)ss_mpi_sys_mmap(phys, size);
+    if (rf->virt == TD_NULL) {
+        LOG_ERR("raw file: mmap failed");
+        goto fail_blk;
+    }
+    rf->blk_size = size;
+
+    fp = fopen(path, "rb");
+    if (fp == NULL || fread(rf->virt, 1, size, fp) != size) {
+        LOG_ERR("raw file: read %s failed (expect %u bytes = stride %u x %u)", path, size,
+                stride, h);
+        goto fail_map;
+    }
+    fclose(fp);
+    fp = NULL;
+
+    vf = &rf->frame.video_frame;
+    rf->frame.pool_id = ss_mpi_vb_handle_to_pool_id(rf->vb_blk);
+    rf->frame.mod_id = OT_ID_VI;
+    vf->phys_addr[0] = phys;
+    vf->phys_addr[1] = phys + size;
+    vf->virt_addr[0] = (td_void *)rf->virt;
+    vf->virt_addr[1] = (td_void *)(rf->virt + size);
+    vf->stride[0] = stride;
+    vf->stride[1] = stride;
+    vf->width = w;
+    vf->height = h;
+    vf->pixel_format = OT_PIXEL_FORMAT_RGB_BAYER_12BPP;
+    vf->video_format = OT_VIDEO_FORMAT_LINEAR;
+    vf->compress_mode = OT_COMPRESS_MODE_NONE;
+    vf->dynamic_range = OT_DYNAMIC_RANGE_SDR8;
+    vf->field = OT_VIDEO_FIELD_FRAME;
+    vf->color_gamut = OT_COLOR_GAMUT_BT601;
+    vf->pts = 0;
+    LOG_INFO("raw file loaded: %s (%ux%u stride=%u)", path, w, h, stride);
+    return 0;
+
+fail_map:
+    if (fp != NULL) {
+        fclose(fp);
+    }
+    CHECK_RET(ss_mpi_sys_munmap(rf->virt, size));
+fail_blk:
+    CHECK_RET(ss_mpi_vb_release_blk(rf->vb_blk));
+    memset(rf, 0, sizeof(*rf));
+    return -1;
+}
+
+static void free_raw_file_frame(raw_file_frame_t *rf)
+{
+    if (rf->virt != NULL) {
+        CHECK_RET(ss_mpi_sys_munmap(rf->virt, rf->blk_size));
+        CHECK_RET(ss_mpi_vb_release_blk(rf->vb_blk));
+        memset(rf, 0, sizeof(*rf));
+    }
+}
+
 /* 一次回灌循环：run_once 驱动固件 → 送 RAW → 等 BE 处理完。厂商顺序
  * （sample_comm_vi.c sample_vi_send_pipe_wdr_frame）。 */
 static int replay_cycle(const ot_video_frame_info *raw)
@@ -207,17 +311,20 @@ static int apply_sweep_item(const sweep_item_t *item)
 int main(int argc, char **argv)
 {
     capture_cfg_t cap_cfg = {CAPTURE_SENSOR_INDEX_DEFAULT, CAPTURE_MODE_LINEAR, 1 /* raw_replay */};
-    int warmup = 60, settle = 2;
+    int warmup = -1, settle = 2;
     unsigned exp_time_us = 0, again_x1024 = 0;
     unsigned out_w = 1024, out_h = 576;
     const char *outdir = ".";
-    int save_raw = 0;
+    int save_raw = 0, compress_none = 0;
+    const char *raw_files[RAW_FILE_MAX];
+    int raw_file_cnt = 0;
+    raw_file_frame_t rf = {0};
     sweep_item_t sweep[SWEEP_MAX];
     int sweep_cnt = 0;
     int rc = 1;
     int sys_up = 0, cap_up = 0, vpss_up = 0, bound = 0, source_user = 0, raw_held = 0;
     unsigned in_w = 0, in_h = 0;
-    int i, k;
+    int i, k, fi;
     char path[512];
     ot_vb_cfg vb_cfg = {0};
     ot_pic_buf_attr buf_attr = {0};
@@ -256,6 +363,11 @@ int main(int argc, char **argv)
             outdir = argv[++i];
         } else if (strcmp(argv[i], "--save-raw") == 0) {
             save_raw = 1;
+        } else if (strcmp(argv[i], "--compress-none") == 0) {
+            compress_none = 1;
+        } else if (strcmp(argv[i], "--raw-file") == 0 && i + 1 < argc &&
+                   raw_file_cnt < RAW_FILE_MAX) {
+            raw_files[raw_file_cnt++] = argv[++i];
         } else if (strcmp(argv[i], "--drc") == 0 && i + 1 < argc && sweep_cnt < SWEEP_MAX) {
             sweep[sweep_cnt].kind = SWEEP_DRC;
             sweep[sweep_cnt].value = (unsigned)atoi(argv[++i]);
@@ -279,13 +391,21 @@ int main(int argc, char **argv)
         }
     }
 
+    if (warmup < 0) {
+        warmup = (raw_file_cnt > 0) ? 16 : 60; /* 文件模式输入固定，只需 3A/统计稳定 */
+    }
+    if (raw_file_cnt > 0) {
+        compress_none = 1; /* 文件回灌前置：pipe RAW 必须为裸 bayer */
+    }
     if (capture_query_in_size(&in_w, &in_h) != 0) {
         return 1;
     }
     chn_cfg[0].width = out_w;
     chn_cfg[0].height = out_h;
-    LOG_INFO("test_raw_replay: sensor=%d in=%ux%u out=%ux%u warmup=%d settle=%d sweep=%d",
-             cap_cfg.sensor_index, in_w, in_h, out_w, out_h, warmup, settle, sweep_cnt);
+    LOG_INFO("test_raw_replay: sensor=%d in=%ux%u out=%ux%u warmup=%d settle=%d sweep=%d "
+             "raw_files=%d compress_none=%d",
+             cap_cfg.sensor_index, in_w, in_h, out_w, out_h, warmup, settle, sweep_cnt,
+             raw_file_cnt, compress_none);
 
     /* VB：池 0 = NV21 全幅（VI chn/VPSS 输出）；池 1 = RAW（VI 离线 FE 写 DDR）。
      * RAW 块按 16bpp 无压缩计算，保守覆盖 12bpp 及 LINE 压缩两种实际形态。 */
@@ -324,6 +444,10 @@ int main(int argc, char **argv)
     }
     cap_up = 1;
 
+    if (compress_none && set_pipe_compress_none() != 0) {
+        goto cleanup;
+    }
+
     if (vpss_init(0, in_w, in_h, chn_cfg) != 0) {
         goto cleanup;
     }
@@ -339,20 +463,31 @@ int main(int argc, char **argv)
                    cleanup);
     source_user = 1;
 
-    /* 预热：连抓连送，AE/3A 在 run_once 环内收敛（此阶段每次用最新 FE 帧）。 */
+    if (raw_file_cnt > 0 && load_raw_file_frame(raw_files[0], in_w, in_h, &rf) != 0) {
+        goto cleanup;
+    }
+
+    /* 预热：AE/3A 在 run_once 环内收敛。dump 模式用最新 FE 帧；
+     * 文件模式直接用文件帧（3A 统计收敛到实际回放内容）。 */
     {
         long t0 = now_ms();
         int ok = 0;
         for (k = 0; k < warmup; k++) {
-            ot_video_frame_info fe_frame;
-            if (ss_mpi_vi_get_pipe_frame(REPLAY_VI_PIPE, &fe_frame, CYCLE_TIMEOUT) != 0) {
-                LOG_ERR("warmup: get_pipe_frame failed at %d", k);
-                goto cleanup;
+            if (raw_file_cnt > 0) {
+                if (replay_and_fetch(&rf.frame, NULL) == 0) {
+                    ok++;
+                }
+            } else {
+                ot_video_frame_info fe_frame;
+                if (ss_mpi_vi_get_pipe_frame(REPLAY_VI_PIPE, &fe_frame, CYCLE_TIMEOUT) != 0) {
+                    LOG_ERR("warmup: get_pipe_frame failed at %d", k);
+                    goto cleanup;
+                }
+                if (replay_and_fetch(&fe_frame, NULL) == 0) {
+                    ok++;
+                }
+                CHECK_RET(ss_mpi_vi_release_pipe_frame(REPLAY_VI_PIPE, &fe_frame));
             }
-            if (replay_and_fetch(&fe_frame, NULL) == 0) {
-                ok++;
-            }
-            CHECK_RET(ss_mpi_vi_release_pipe_frame(REPLAY_VI_PIPE, &fe_frame));
         }
         LOG_INFO("warmup: %d/%d cycles ok, %ldms", ok, warmup, now_ms() - t0);
         if (ok == 0) {
@@ -361,8 +496,8 @@ int main(int argc, char **argv)
         }
     }
 
-    /* 锁定曝光（保证 sweep 输入恒定、结果可比）。 */
-    if (exp_time_us != 0 || again_x1024 != 0) {
+    /* 锁定曝光（dump 模式；文件模式输入来自文件，sensor 曝光不影响内容）。 */
+    if (raw_file_cnt == 0 && (exp_time_us != 0 || again_x1024 != 0)) {
         (void)isp_set_exposure_manual(exp_time_us, again_x1024);
         /* 生效等待：再回灌几帧让 sensor/固件采用手动值 */
         for (k = 0; k < 5; k++) {
@@ -375,41 +510,68 @@ int main(int argc, char **argv)
         }
     }
 
-    /* 定格：抓一帧 RAW 持有到 sweep 结束（该 VB 即回灌输入，全程只读）。 */
-    CHECK_RET_GOTO(ss_mpi_vi_get_pipe_frame(REPLAY_VI_PIPE, &raw_frame, CYCLE_TIMEOUT), cleanup);
-    raw_held = 1;
-    LOG_INFO("raw held: %ux%u pixel_format=%d compress=%d", raw_frame.video_frame.width,
-             raw_frame.video_frame.height, raw_frame.video_frame.pixel_format,
-             raw_frame.video_frame.compress_mode);
-    if (save_raw) {
-        snprintf(path, sizeof(path), "%s/raw_ref.raw", outdir);
-        (void)dump_raw_frame(&raw_frame, path);
+    if (raw_file_cnt == 0) {
+        /* 定格：抓一帧 RAW 持有到 sweep 结束（该 VB 即回灌输入，全程只读）。 */
+        CHECK_RET_GOTO(ss_mpi_vi_get_pipe_frame(REPLAY_VI_PIPE, &raw_frame, CYCLE_TIMEOUT),
+                       cleanup);
+        raw_held = 1;
+        LOG_INFO("raw held: %ux%u pixel_format=%d compress=%d", raw_frame.video_frame.width,
+                 raw_frame.video_frame.height, raw_frame.video_frame.pixel_format,
+                 raw_frame.video_frame.compress_mode);
+        if (save_raw) {
+            snprintf(path, sizeof(path), "%s/raw_ref.raw", outdir);
+            (void)dump_raw_frame(&raw_frame, path);
+        }
     }
 
-    /* θ-sweep：同一 RAW × 各参数组，settle 帧后取输出落盘。 */
-    for (i = 0; i < sweep_cnt; i++) {
-        long t0 = now_ms();
-        if (apply_sweep_item(&sweep[i]) != 0) {
-            LOG_ERR("sweep[%d] %s: apply failed, skip", i, sweep[i].tag);
-            continue;
+    /* θ-sweep：每个输入（定格帧或各 RAW 文件）× 各参数组，settle 帧后取输出落盘。 */
+    for (fi = 0; fi < ((raw_file_cnt > 0) ? raw_file_cnt : 1); fi++) {
+        const ot_video_frame_info *input;
+
+        if (raw_file_cnt > 0) {
+            if (fi > 0) {
+                free_raw_file_frame(&rf);
+                if (load_raw_file_frame(raw_files[fi], in_w, in_h, &rf) != 0) {
+                    goto cleanup;
+                }
+            }
+            input = &rf.frame;
+        } else {
+            input = &raw_frame;
         }
-        for (k = 0; k < settle - 1; k++) {
-            if (replay_and_fetch(&raw_frame, NULL) != 0) {
-                LOG_ERR("sweep[%d] %s: settle cycle %d failed", i, sweep[i].tag, k);
+
+        for (i = 0; i < sweep_cnt; i++) {
+            long t0 = now_ms();
+            if (apply_sweep_item(&sweep[i]) != 0) {
+                LOG_ERR("sweep[%d] %s: apply failed, skip", i, sweep[i].tag);
+                continue;
+            }
+            for (k = 0; k < settle - 1; k++) {
+                if (replay_and_fetch(input, NULL) != 0) {
+                    LOG_ERR("f%d sweep[%d] %s: settle cycle %d failed", fi, i, sweep[i].tag, k);
+                    goto cleanup;
+                }
+            }
+            if (raw_file_cnt > 0) {
+                snprintf(path, sizeof(path), "%s/out_f%02d_%02d_%s.nv21", outdir, fi, i,
+                         sweep[i].tag);
+            } else {
+                snprintf(path, sizeof(path), "%s/out_%02d_%s.nv21", outdir, i, sweep[i].tag);
+            }
+            if (replay_and_fetch(input, path) != 0) {
+                LOG_ERR("f%d sweep[%d] %s: final cycle failed", fi, i, sweep[i].tag);
                 goto cleanup;
             }
+            LOG_INFO("f%d sweep[%d/%d] %s done, %ldms", fi, i + 1, sweep_cnt, sweep[i].tag,
+                     now_ms() - t0);
         }
-        snprintf(path, sizeof(path), "%s/out_%02d_%s.nv21", outdir, i, sweep[i].tag);
-        if (replay_and_fetch(&raw_frame, path) != 0) {
-            LOG_ERR("sweep[%d] %s: final cycle failed", i, sweep[i].tag);
-            goto cleanup;
-        }
-        LOG_INFO("sweep[%d/%d] %s done, %ldms", i + 1, sweep_cnt, sweep[i].tag, now_ms() - t0);
     }
     rc = 0;
-    LOG_INFO("test_raw_replay PASS: %d sweep items, out=%s", sweep_cnt, outdir);
+    LOG_INFO("test_raw_replay PASS: %d input(s) x %d sweep items, out=%s",
+             (raw_file_cnt > 0) ? raw_file_cnt : 1, sweep_cnt, outdir);
 
 cleanup:
+    free_raw_file_frame(&rf);
     if (raw_held) {
         CHECK_RET(ss_mpi_vi_release_pipe_frame(REPLAY_VI_PIPE, &raw_frame));
     }

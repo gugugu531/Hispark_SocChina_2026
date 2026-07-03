@@ -135,8 +135,12 @@ ssh "${BOARD}" '/root/socchina-2026/test_raw_replay --exptime 8000 --again 4096 
 ssh "${BOARD}" '/root/socchina-2026/test_raw_replay --blob p0.bin --blob p1.bin --outdir replay'
 ```
 
-选项：`--warmup <n>`（默认 60）、`--settle <n>`（参数生效等待帧，默认 2）、`--out <WxH>`
-（默认 1024x576）、`--drc/--ldci/--blob` 可重复（≤31 项 + 基线）。
+选项：`--warmup <n>`（默认 60，文件模式 16）、`--settle <n>`（参数生效等待帧，默认 2，
+**校准采集用 8**——ISP 时域滤波，切参后前几帧被前组状态污染）、`--out <WxH>`
+（默认 1024x576）、`--drc/--ldci/--blob` 可重复（≤31 项 + 基线）、
+`--compress-none`（pipe RAW 切裸 12bpp packed bayer）、`--raw-file <f>`（≤8，文件回灌模式：
+从裸 bayer 文件构造帧作输入，配套 `models/isp_simulator/synth_raw.py` 判定布局/合成场景，
+输出 `out_f<fi>_<idx>_<tag>.nv21`）。
 约束（查证依据见 `docs/isp-param-tuning-research.md` §4.2）：仅线性模式
 （`run_once` 不支持帧合成 WDR）；VI 离线与生产在线配置二选一启动；必须独占媒体链
 （先 `systemctl stop socchina-stream`）；运行需 `LD_LIBRARY_PATH=/opt/lib/npu`。

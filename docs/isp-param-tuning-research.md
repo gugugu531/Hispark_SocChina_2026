@@ -269,6 +269,34 @@ mean +0.936，std +0.904；strength 组绝对值误差 <4%。
 
 采集数据归档：`models/weights/fidelity/board_scene1{,_dark,_bright}/`（不入库）。
 
+### 5.2 合成 RAW 多场景外推（2026-07-03，缺口 5/5 关闭，不动相机）
+
+**方法**：闸门测的是排序保真，输入的关键属性是直方图/局部结构分布而非语义——用合成 RAW
+文件回灌替代物理换景，网格化覆盖直方图空间。基础设施：
+
+- 板端 `test_raw_replay` 新增 `--compress-none`（pipe RAW 切裸 12bpp packed bayer）与
+  `--raw-file`（≤8 个文件，公共 VB 池构造帧回灌，字段填法照厂商
+  `sample_comm_vi_malloc_frame_blk`）；
+- 主机 `synth_raw.py`：`parse` 自动判定 12bpp packed 布局（实测 **lsb**：连续
+  little-endian 位流，b0=p0[7:0]，b1=p1[3:0]<<4|p0[11:8]，b2=p1[11:4]；预览图目检验证）
+  并报告黑电平；`gen` 生成 8 个受控直方图场景（平坦暗/中、渐变、逆光双峰、中调纹理、
+  暗纹理、渐变亮斑、低照噪声），灰度 bayer 保 AWB 中性。
+
+**结果**（8 场景 × 16 参数 × settle 8，板端一次会话 ~3 分钟）：
+
+| 场景 | tone | LDCI | strength | 混合 shadow rho |
+|---|---|---|---|---|
+| flat_dark / flat_mid / hgrad / backlit / texture_mid / vgrad_spots / lowlight_noise | +1.000 | +1.000 | +1.000 | 0.93–1.00 |
+| **dark_texture** | +1.000 | **−1.000** | +1.000 | +0.857 |
+
+24 个组内秩相关 23 个 +1.000。**多场景外推坐实：模拟器排序保真不依赖场景内容，
+物理换景对闸门非必需。**
+
+**新发现（残差目标 #2）**：dark_texture（窄直方图暗纹理）上 LDCI 完美反序——硬件
+he_pos_wgt 单调提亮暗部（0.243→0.318，与所有其他场景一致），**模拟器 CLAHE 近似却把
+暗区压暗**（0.199→0.131：对比度拉伸的暗侧下压行为，硬件的正向高斯加权没有）。
+定位在 `ldci.py` 的 CLAHE 近似；蒸馏路线（硬件标签）天然免疫，残差校准阶段修正。
+
 ## 参考文献
 
 - Tseng et al. 2019, *Hyperparameter Optimization in Black-box Image Processing using Differentiable Proxies*, ACM TOG 38(4). https://light.princeton.edu/publication/proxy_opt/
