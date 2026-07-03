@@ -82,4 +82,8 @@ int isp_gamma_apply_tone(isp_tone_t tone, float strength);
  * strength=0 还原默认，1 完全采用模型曲线。 */
 int isp_gamma_apply_curve(const float *curve, unsigned nodes, float strength);
 
+/* 从二进制 blob 文件加载并施加完整 DRC/LDCI 参数。
+ * blob 格式见 models/isp_simulator/isp_blob.py 生成端。返回 0 表示成功，-1 失败。 */
+int isp_load_blob_and_apply(const char *path);
+
 #endif /* SOCCHINA_ISP_H */

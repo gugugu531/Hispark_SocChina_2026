@@ -436,6 +436,127 @@ fail:
     return -1;
 }
 
+/* ---- ISP 参数 blob 加载（DRC/LDCI 完整参数验证用）---- */
+
+#define ISP_BLOB_MAGIC  0x49535000u  /* "ISP\0" */
+#define ISP_BLOB_VERSION 1u
+
+int isp_load_blob_and_apply(const char *path)
+{
+    FILE *fp;
+    uint32_t magic, version, flags;
+    int ret = -1;
+
+    fp = fopen(path, "rb");
+    if (fp == NULL) {
+        LOG_ERR("isp_load_blob: cannot open %s", path);
+        return -1;
+    }
+
+    /* 读取头部 */
+    if (fread(&magic,   4, 1, fp) != 1 ||
+        fread(&version, 4, 1, fp) != 1 ||
+        fread(&flags,   4, 1, fp) != 1) {
+        LOG_ERR("isp_load_blob: header read failed");
+        goto cleanup;
+    }
+    if (magic != ISP_BLOB_MAGIC || version != ISP_BLOB_VERSION) {
+        LOG_ERR("isp_load_blob: bad magic %#x or version %u", magic, version);
+        goto cleanup;
+    }
+
+    /* DRC 参数 */
+    if (flags & 1) {
+        ot_isp_drc_attr drc;
+        uint32_t drc_enable_raw;
+        uint16_t tmv[200];
+        uint8_t  bx[33], dx[33];
+
+        if (fread(&drc_enable_raw, 4, 1, fp) != 1 ||
+            fread(tmv, 2, 200, fp) != 200 ||
+            fread(bx,  1,  33, fp) !=  33 ||
+            fread(dx,  1,  33, fp) !=  33) {
+            LOG_ERR("isp_load_blob: DRC data read failed");
+            goto cleanup;
+        }
+
+        memset(&drc, 0, sizeof(drc));
+        if (ss_mpi_isp_get_drc_attr(ISP_PIPE, &drc) != 0) {
+            LOG_ERR("isp_load_blob: get drc attr failed");
+            goto cleanup;
+        }
+
+        drc.enable = (drc_enable_raw != 0) ? TD_TRUE : TD_FALSE;
+        drc.op_type = OT_OP_MODE_MANUAL;
+        drc.curve_select = OT_ISP_DRC_CURVE_USER;
+        memcpy(drc.tone_mapping_value, tmv, sizeof(tmv));
+        memcpy(drc.local_mixing_bright_x, bx, sizeof(bx));
+        memcpy(drc.local_mixing_dark_x, dx, sizeof(dx));
+
+        /* 读取剩余标量参数 */
+        if (fread(&drc.spatial_filter_coef, 1, 1, fp) != 1 ||
+            fread(&drc.range_filter_coef,   1, 1, fp) != 1 ||
+            fread(&drc.contrast_ctrl,       1, 1, fp) != 1 ||
+            fread(&drc.blend_luma_max,      1, 1, fp) != 1) {
+            LOG_ERR("isp_load_blob: DRC scalar read failed");
+            goto cleanup;
+        }
+        drc.manual_attr.strength = 512; /* 中等强度 */
+
+        if (ss_mpi_isp_set_drc_attr(ISP_PIPE, &drc) != 0) {
+            LOG_ERR("isp_load_blob: set drc attr failed");
+            goto cleanup;
+        }
+        LOG_INFO("isp_load_blob: DRC applied (enable=%d, nodes OK)", drc_enable_raw);
+    }
+
+    /* LDCI 参数 */
+    if (flags & 2) {
+        ot_isp_ldci_attr ldci;
+        uint32_t ldci_enable_raw;
+        uint8_t  hp[3], hn[3];
+        uint16_t blc;
+        uint8_t  sigma;
+
+        if (fread(&ldci_enable_raw, 4, 1, fp) != 1 ||
+            fread(hp, 1, 3, fp) != 3 ||
+            fread(hn, 1, 3, fp) != 3 ||
+            fread(&blc,   2, 1, fp) != 1 ||
+            fread(&sigma, 1, 1, fp) != 1) {
+            LOG_ERR("isp_load_blob: LDCI data read failed");
+            goto cleanup;
+        }
+
+        memset(&ldci, 0, sizeof(ldci));
+        if (ss_mpi_isp_get_ldci_attr(ISP_PIPE, &ldci) != 0) {
+            LOG_ERR("isp_load_blob: get ldci attr failed");
+            goto cleanup;
+        }
+
+        ldci.en = (ldci_enable_raw != 0) ? TD_TRUE : TD_FALSE;
+        ldci.op_type = OT_OP_MODE_MANUAL;
+        ldci.manual_attr.he_wgt.he_pos_wgt.wgt   = hp[0];
+        ldci.manual_attr.he_wgt.he_pos_wgt.sigma = hp[1];
+        ldci.manual_attr.he_wgt.he_pos_wgt.mean  = hp[2];
+        ldci.manual_attr.he_wgt.he_neg_wgt.wgt   = hn[0];
+        ldci.manual_attr.he_wgt.he_neg_wgt.sigma = hn[1];
+        ldci.manual_attr.he_wgt.he_neg_wgt.mean  = hn[2];
+        ldci.manual_attr.blc_ctrl = blc;
+        ldci.gauss_lpf_sigma = sigma;
+
+        if (ss_mpi_isp_set_ldci_attr(ISP_PIPE, &ldci) != 0) {
+            LOG_ERR("isp_load_blob: set ldci attr failed");
+            goto cleanup;
+        }
+        LOG_INFO("isp_load_blob: LDCI applied (enable=%d)", ldci_enable_raw);
+    }
+
+    ret = 0;
+cleanup:
+    fclose(fp);
+    return ret;
+}
+
 #else /* !WITH_SS928_SDK */
 
 /* SDK-free 构建桩。 */
@@ -542,6 +663,12 @@ int isp_gamma_apply_curve(const float *curve, unsigned nodes, float strength)
     (void)curve;
     (void)nodes;
     (void)strength;
+    return -1;
+}
+
+int isp_load_blob_and_apply(const char *path)
+{
+    (void)path;
     return -1;
 }
 

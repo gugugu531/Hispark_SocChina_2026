@@ -119,6 +119,12 @@ static void merge_pending(const app_ctrl_params_t *p)
                                       g_ctrl.pending_params.drc_strength = p->drc_strength; }
     if (p->has_ldci_mode)           { g_ctrl.pending_params.has_ldci_mode = 1;
                                       g_ctrl.pending_params.ldci_mode = p->ldci_mode; }
+    if (p->has_load_isp)            { g_ctrl.pending_params.has_load_isp = 1;
+                                      strncpy(g_ctrl.pending_params.isp_blob_path,
+                                              p->isp_blob_path,
+                                              sizeof(g_ctrl.pending_params.isp_blob_path) - 1);
+                                      g_ctrl.pending_params.isp_blob_path[
+                                          sizeof(g_ctrl.pending_params.isp_blob_path) - 1] = '\0'; }
     g_ctrl.pending = 1;
     pthread_mutex_unlock(&g_ctrl.lock);
 }
@@ -246,6 +252,25 @@ static void handle_client(int fd)
                      p.has_tone_enabled        ? "yes" : "-",
                      p.has_drc_mode            ? "yes" : "-",
                      p.has_ldci_mode           ? "yes" : "-");
+
+        } else if (strcmp(op, "load_isp") == 0) {
+            char fpath[256];
+            if (parse_string(line, "\"file\"", fpath, sizeof(fpath)) == 0) {
+                app_ctrl_params_t p = {0};
+                p.has_load_isp = 1;
+                strncpy(p.isp_blob_path, fpath, sizeof(p.isp_blob_path) - 1);
+                p.isp_blob_path[sizeof(p.isp_blob_path) - 1] = '\0';
+                merge_pending(&p);
+                snprintf(resp, sizeof(resp),
+                         "{\"id\":%llu,\"ok\":true,\"queued\":true}\n",
+                         (unsigned long long)req_id);
+                LOG_INFO("[app_ctrl] load_isp queued: %s", fpath);
+            } else {
+                snprintf(resp, sizeof(resp),
+                         "{\"id\":%llu,\"ok\":false,\"error\":\"missing_file\"}\n",
+                         (unsigned long long)req_id);
+            }
+            send_str(fd, resp);
 
         } else {
             snprintf(resp, sizeof(resp),

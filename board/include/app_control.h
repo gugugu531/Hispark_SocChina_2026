@@ -37,6 +37,8 @@ typedef struct {
     int   drc_strength;           /* 0 .. 1023 */
     int   has_ldci_mode;
     int   ldci_mode;              /* 0 off / 1 auto */
+    int   has_load_isp;           /* 从文件加载完整 ISP 参数 */
+    char  isp_blob_path[256];     /* 二进制 ISP 参数文件路径 */
 } app_ctrl_params_t;
 
 /* 由 main.c 提供：将当前 pipeline 状态序列化为 JSON 对象成员列表写入 buf，

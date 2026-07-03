@@ -347,6 +347,13 @@ static void* control_worker(void* arg) {
                 if (p.has_drc_mode)            ctx->drc_mode            = p.drc_mode;
                 if (p.has_drc_strength)        ctx->drc_strength        = p.drc_strength;
                 if (p.has_ldci_mode)           ctx->ldci_mode           = p.ldci_mode;
+                if (p.has_load_isp) {
+                    if (isp_load_blob_and_apply(p.isp_blob_path) == 0) {
+                        LOG_INFO("[ctrl] isp blob loaded: %s", p.isp_blob_path);
+                    } else {
+                        LOG_WARN("[ctrl] isp blob load failed: %s", p.isp_blob_path);
+                    }
+                }
                 params_dirty = 1;
                 LOG_INFO("[ctrl] params applied: strength=%.3f nn=%d guard=%.2f enh=%d tone=%d "
                          "drc=%d ldci=%d",
