@@ -25,6 +25,7 @@
  *   --ldci <0|1>         追加一组 LDCI 开/关 sweep 项（可重复）
  *   --blob <file>        追加一组完整 DRC/LDCI 参数 blob（可重复，
  *                        models/isp_simulator/isp_blob.py 生成，isp_load_blob_and_apply 施加）
+ *   --blob-dir <dir>     按名序加载目录下全部 *.bin 为 sweep 项（批量校准，≤511）
  *   基线（当前参数不动）总是第 0 项。输出 outdir/out_<idx>_<tag>.nv21。
  *
  * 已知约束（查证记录见 docs/isp-param-tuning-research.md §4.2）：
@@ -48,6 +49,7 @@ int main(void)
 
 #else /* WITH_SS928_SDK */
 
+#include <dirent.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -65,9 +67,10 @@ int main(void)
 #include "ss_mpi_vi.h"
 
 #define REPLAY_VI_PIPE 0
-#define SWEEP_MAX      32
+#define SWEEP_MAX      512 /* 批量校准采集：单会话最多 511 组参数 + 基线 */
 #define RAW_FILE_MAX   8
 #define CYCLE_TIMEOUT  1000 /* ms：run_once/send/vd/取帧各步超时 */
+#define BLOB_PATH_MAX  25000
 
 typedef enum {
     SWEEP_BASELINE = 0,
@@ -292,6 +295,56 @@ static int replay_and_fetch(const ot_video_frame_info *raw, const char *dump_pat
     return 0;
 }
 
+/* 扫描目录下全部 *.bin 按名序追加为 blob sweep 项（批量校准采集）。
+ * 路径存入静态池（sweep_item.path 在 argv 模式指向 argv，此处需自有存储）。 */
+static char g_blob_paths[BLOB_PATH_MAX];
+
+static int name_cmp(const void *a, const void *b)
+{
+    return strcmp(*(const char *const *)a, *(const char *const *)b);
+}
+
+static int scan_blob_dir(const char *dir, sweep_item_t *sweep, int *sweep_cnt)
+{
+    static char names_buf[SWEEP_MAX][64];
+    static char *names[SWEEP_MAX];
+    int n = 0, used = 0;
+    DIR *dp = opendir(dir);
+    struct dirent *de;
+
+    if (dp == NULL) {
+        LOG_ERR("blob-dir: cannot open %s", dir);
+        return -1;
+    }
+    while ((de = readdir(dp)) != NULL && n < SWEEP_MAX) {
+        size_t len = strlen(de->d_name);
+        if (len > 4 && len < sizeof(names_buf[0]) &&
+            strcmp(de->d_name + len - 4, ".bin") == 0) {
+            strcpy(names_buf[n], de->d_name);
+            names[n] = names_buf[n];
+            n++;
+        }
+    }
+    closedir(dp);
+    qsort(names, n, sizeof(names[0]), name_cmp);
+
+    for (int j = 0; j < n && *sweep_cnt < SWEEP_MAX; j++) {
+        int need = snprintf(NULL, 0, "%s/%s", dir, names[j]) + 1;
+        if (used + need > BLOB_PATH_MAX) {
+            LOG_ERR("blob-dir: path pool exhausted at %s", names[j]);
+            return -1;
+        }
+        snprintf(g_blob_paths + used, need, "%s/%s", dir, names[j]);
+        sweep[*sweep_cnt].kind = SWEEP_BLOB;
+        sweep[*sweep_cnt].path = g_blob_paths + used;
+        snprintf(sweep[*sweep_cnt].tag, sizeof(sweep[0].tag), "blob_%s", names[j]);
+        (*sweep_cnt)++;
+        used += need;
+    }
+    LOG_INFO("blob-dir: %d blobs from %s", n, dir);
+    return (n > 0) ? 0 : -1;
+}
+
 static int apply_sweep_item(const sweep_item_t *item)
 {
     switch (item->kind) {
@@ -319,7 +372,7 @@ int main(int argc, char **argv)
     const char *raw_files[RAW_FILE_MAX];
     int raw_file_cnt = 0;
     raw_file_frame_t rf = {0};
-    sweep_item_t sweep[SWEEP_MAX];
+    static sweep_item_t sweep[SWEEP_MAX];
     int sweep_cnt = 0;
     int rc = 1;
     int sys_up = 0, cap_up = 0, vpss_up = 0, bound = 0, source_user = 0, raw_held = 0;
@@ -378,6 +431,10 @@ int main(int argc, char **argv)
             sweep[sweep_cnt].value = (unsigned)atoi(argv[++i]);
             snprintf(sweep[sweep_cnt].tag, sizeof(sweep[0].tag), "ldci%u", sweep[sweep_cnt].value);
             sweep_cnt++;
+        } else if (strcmp(argv[i], "--blob-dir") == 0 && i + 1 < argc) {
+            if (scan_blob_dir(argv[++i], sweep, &sweep_cnt) != 0) {
+                return 1;
+            }
         } else if (strcmp(argv[i], "--blob") == 0 && i + 1 < argc && sweep_cnt < SWEEP_MAX) {
             const char *p = argv[++i];
             const char *base = strrchr(p, '/');
