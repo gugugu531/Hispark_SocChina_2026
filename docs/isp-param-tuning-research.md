@@ -486,6 +486,32 @@ top 邻域精化，目标 = 板端输出 vs GT 的 PSNR），在真实 ISP 上�
    场景（`rgb_to_sensor_raw`）+ 极暗档；重训 R 与 ParamNet；
 4. `hw_search.py` 即阶段 3 蒸馏标签生成的原型（θ\* 就是硬件标签），已转正入库。
 
+### 5.10 命题裁决："ISP 能否完成 Zero-DCE 类任务"（2026-07-04）
+
+**问题**：§5.9 的结构性上限是否意味着"ISP 参数做不了 Zero-DCE 那样的增强"？
+**方法**：把参照系从人工 GT 换成 **Zero-DCE-Lite 输出本身**（板端同款 iter8 模型，
+输入 = 同一板端中性帧），用 `hw_search.py` 搜 θ\* 逼近（复用已有 128 候选离线重评分
++ 一轮定向精化，板端 ~100 秒）。
+
+**结果**（ISP θ\* 复现 Zero-DCE 输出的 PSNR）：
+
+| 图 | ISP 逼近 Zero-DCE | 对照：两者各自逼近人工 GT |
+|---|---|---|
+| under1 | **29.7 dB** | 18.3 / — |
+| under2 | **27.4 dB** | 19.4 / — |
+| over1 | 21.3 dB | 21.0 / — |
+| over2 | 20.8 dB | 25.2 / — |
+
+**裁决**：命题证伪。**欠曝增强（Zero-DCE 的主战场）ISP 参数复现到 27–30 dB
+（目检不可区分）**——Zero-DCE 的有效成分（单调提亮曲线 + 低频空间调制）基本落在
+DRC tone/strength + LDCI 的能力范围内。两点佐证：① under1 上 Zero-DCE 同样提不动
+（0.042→0.052，与 θ\* 的 0.055 一致）——极暗恢复对谁都是信息问题，真正的解在
+AE/WDR（本系统有、离线增强方法没有）；② over 组 Zero-DCE 单向提亮（过曝图也提亮，
+行为本身错误），逼近意义有限。结论：**与人工 GT 的差距是"非语义方法 vs 人工局部修图"
+的共同差距，不是 ISP 相对 Zero-DCE 的短板**；且 Zero-DCE Lite 板端 640×320 需 29.9ms
+（全分辨率 30fps 不可达），ISP 参数路线在效果相当的前提下独享实时性。
+对比图：`artifacts/lcdp-replay-demo/6_isp_vs_zerodce.png`。
+
 ## 参考文献
 
 - Tseng et al. 2019, *Hyperparameter Optimization in Black-box Image Processing using Differentiable Proxies*, ACM TOG 38(4). https://light.princeton.edu/publication/proxy_opt/

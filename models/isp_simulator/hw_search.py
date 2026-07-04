@@ -69,11 +69,11 @@ def psnr(a, b):
     mse = float(((a-b)**2).mean())
     return 10*np.log10(1/max(mse, 1e-10))
 
-def evaluate(board_dir, num_cands, round_tag):
+def evaluate(board_dir, num_cands, round_tag, ref_suffix="gt"):
     board_dir = Path(board_dir)
     results = {}
     for fi, t in enumerate(TAGS):
-        gt = np.asarray(Image.open(D/f"{t}_gt.png").resize((512, 288)), np.float32)/255.0
+        gt = np.asarray(Image.open(D/f"{t}_{ref_suffix}.png").resize((512, 288)), np.float32)/255.0
         scores = []
         for i in range(num_cands):
             hw = load_nv21_rgb(board_dir/f"out_f{fi:02d}_{i+1:02d}_blob_s{i:03d}.bin.nv21", 512, 288)
@@ -93,7 +93,8 @@ if __name__ == "__main__":
         rng = np.random.default_rng(1)
         write_blobs(wide_sample(64, rng), sys.argv[2])
     elif cmd == "eval":
-        r = evaluate(sys.argv[2], int(sys.argv[3]), sys.argv[4])
+        ref = sys.argv[6] if len(sys.argv) > 6 else "gt"
+        r = evaluate(sys.argv[2], int(sys.argv[3]), sys.argv[4], ref_suffix=ref)
         Path(sys.argv[5]).write_text(json.dumps(r, indent=2))
     elif cmd == "gen2":
         prev = json.loads(Path(sys.argv[2]).read_text())
