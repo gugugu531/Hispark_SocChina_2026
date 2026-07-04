@@ -536,6 +536,28 @@ roadside/chairs，中性帧 luma 0.012–0.116，比 LCDP 更暗）走完整链�
    压力测试口径（真实产品 AE 先行），也再次指向 calib v2 极暗档目标。
    对比图：`artifacts/lcdp-replay-demo/7_zerodce_domain.png`。
 
+### 5.12 calib v2 首轮：宽域校准与 ParamNet v2（2026-07-04，进行中）
+
+**v2 内容**（§5.9 归因驱动，全部落地）：采样对称化（tone ±0.30）+ θ 纳入 Gamma
+（γ∈[0.45,1.55] 幂曲线，R 条件扩 95 维）+ 场景换真实内容（LCDP train 10 张，亮度谱
+0.017–0.666 含 3 张极暗，`rgb_to_sensor_raw`）+ 灰度合成 2 张。板端 12 场景 × 162 项
+分两批采集（发现并修复 `RAW_FILE_MAX=8` 上限 → 16）。
+
+**首轮结果**：
+
+| 项 | v1（窄域） | v2（宽域） |
+|---|---|---|
+| R 留出（各自域） | 15.5→27.4 dB | 15.8→**22.0 dB**（+6.1，曲线未饱和） |
+| ParamNet 代理口径 | 20.60 | 20.47（θ 空间大得多） |
+| 板端 4 图 vs GT | 18.1/19.5/16.9/21.6 | 17.9/18.7/**18.3(+1.4)**/20.2 |
+
+**解读**：over1 兑现改善（朝 θ\* 上限 20.98 前进），但整体未达预期——**瓶颈是 R v2
+保真度**：宽域（双向+Gamma+真实彩色+极暗）比 v1 窄域难，22 dB 的代理放大了训练-硬件
+落差（under 组与 over2 轻微退步）。v2 的 θ 行为本身正确（over 组学会 tone 压暗 +
+strength 补偿的组合，under 组强提亮）。**行动**：R v2.1 加容量（32ch/4blk →
+48ch/6blk）+ 240ep 重训（进行中）；若仍不足，下一杠杆是蒸馏（θ\* 硬件标签绕开代理
+保真依赖，`hw_search.py` 已就绪）。另修 `paramnet infer` 未携带 gamma 段的 bug。
+
 ## 参考文献
 
 - Tseng et al. 2019, *Hyperparameter Optimization in Black-box Image Processing using Differentiable Proxies*, ACM TOG 38(4). https://light.princeton.edu/publication/proxy_opt/

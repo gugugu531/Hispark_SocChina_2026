@@ -68,7 +68,7 @@ int main(void)
 
 #define REPLAY_VI_PIPE 0
 #define SWEEP_MAX      512 /* 批量校准采集：单会话最多 511 组参数 + 基线 */
-#define RAW_FILE_MAX   8
+#define RAW_FILE_MAX   16
 #define CYCLE_TIMEOUT  1000 /* ms：run_once/send/vd/取帧各步超时 */
 #define BLOB_PATH_MAX  25000
 

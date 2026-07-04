@@ -34,12 +34,12 @@ import torch.nn.functional as F
 
 from models.isp_simulator import ISPPipeline, make_identity_params
 from models.isp_simulator.params import get_offset
-from models.isp_simulator.residual_net import ResidualNet, THETA_SLICE
+from models.isp_simulator.residual_net import ResidualNet
 
 LCDP_DIR = Path("artifacts/datasets/cotf/lcdp/extracted")  # 相对仓库根（python -m 运行）
 PROXY_W, PROXY_H = 512, 288   # 校准代理训练分辨率
 NET_W, NET_H = 256, 144       # ParamNet 输入分辨率
-U_DIM = 29
+U_DIM = 30  # v2: +1 维 Gamma γ
 
 
 def u_to_theta(u: torch.Tensor) -> torch.Tensor:
@@ -50,7 +50,7 @@ def u_to_theta(u: torch.Tensor) -> torch.Tensor:
 
     off_t = get_offset("drc_tone")
     base = torch.linspace(0.0, 1.0, 6, device=u.device).expand(B, 6).clone()
-    delta = u[:, 0:4] * 0.40 - 0.10
+    delta = u[:, 0:4] * 0.60 - 0.30  # v2: 对称 ±0.30（与 calib v2 同域，可压暗）
     mid = (base[:, 1:5] + delta).clamp(0.0, 1.0)
     cp = torch.cat([base[:, :1], mid, base[:, 5:]], dim=1)
     cp = torch.cummax(cp, dim=1).values
@@ -68,6 +68,12 @@ def u_to_theta(u: torch.Tensor) -> torch.Tensor:
     off_c = get_offset("drc_ctrl")
     params[:, off_c:off_c + 3] = 0.2 + u[:, 25:28] * 0.6
     params[:, get_offset("drc_blend")] = 0.2 + u[:, 28] * 0.6
+
+    # v2: Gamma γ ∈ [0.45, 1.55] 幂曲线（与 calib v2 采样同映射；γ<1 提亮）
+    off_g = get_offset("gamma")
+    gam = (0.45 + u[:, 29] * 1.10).view(-1, 1)
+    nodes = torch.linspace(0.0, 1.0, 64, device=u.device).view(1, -1)
+    params[:, off_g:off_g + 64] = nodes.clamp(min=1e-6).pow(gam)
     return params
 
 
@@ -137,17 +143,22 @@ class CalibratedProxy(nn.Module):
     def __init__(self, resnet_ckpt: Path, device):
         super().__init__()
         self.pipeline = ISPPipeline()
-        self.resnet = ResidualNet().to(device)
         ck = torch.load(resnet_ckpt, map_location=device)
+        ts = ck.get("theta_slice", [65, 96])
+        self.theta_slice = slice(ts[0], ts[1])
+        self.gamma_in_theta = ts[0] <= 1  # v2 条件含 gamma → sim 前向也开 gamma
+        self.resnet = ResidualNet(theta_dim=ts[1] - ts[0], ch=ck.get("ch", 32),
+                                  blocks=ck.get("blocks", 4)).to(device)
         self.resnet.load_state_dict(ck["state_dict"])
         self.resnet.eval()
         for p in self.resnet.parameters():
             p.requires_grad_(False)
 
     def forward(self, x: torch.Tensor, theta: torch.Tensor) -> torch.Tensor:
-        sim = self.pipeline(x, theta, enable_wdr=False, enable_gamma=False,
+        sim = self.pipeline(x, theta, enable_wdr=False,
+                            enable_gamma=self.gamma_in_theta,
                             enable_dehaze=False)["output"]
-        return self.resnet(sim, theta[:, THETA_SLICE])
+        return self.resnet(sim, theta[:, self.theta_slice])
 
 
 def psnr(a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
@@ -266,7 +277,9 @@ def cmd_infer(args) -> int:
     with torch.no_grad():
         u = model(x)
         theta = u_to_theta(u)
-    Path(args.out).write_bytes(sim_params_to_blob(theta.cpu()))
+    # v2 θ 含 Gamma 曲线，blob 必须携带 gamma 段（strength=1.0 完全施加）
+    Path(args.out).write_bytes(sim_params_to_blob(theta.cpu(), gamma_on=True,
+                                                  gamma_strength=1.0))
 
     t = theta[0].cpu()
     off_t, off_l = get_offset("drc_tone"), get_offset("ldci")

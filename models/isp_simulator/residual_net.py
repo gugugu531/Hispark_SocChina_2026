@@ -36,7 +36,7 @@ import torch.nn.functional as F
 
 from models.isp_simulator import ISPPipeline
 
-THETA_SLICE = slice(65, 96)  # 31 维核心参数（board blob 覆盖范围）
+THETA_SLICE = slice(1, 96)  # 95 维条件（gamma 64 + DRC/LDCI 31；v1 为 slice(65,96)）
 SPLIT_SEED = 20260705
 VAL_FRAC = 0.2
 
@@ -58,7 +58,7 @@ class FiLMBlock(nn.Module):
 class ResidualNet(nn.Module):
     """R(sim, θ) → 校正输出。zero-init 头保证初始恒等。"""
 
-    def __init__(self, theta_dim: int = 31, ch: int = 32, emb: int = 128, blocks: int = 4):
+    def __init__(self, theta_dim: int = 95, ch: int = 32, emb: int = 128, blocks: int = 4):
         super().__init__()
         self.theta_mlp = nn.Sequential(
             nn.Linear(theta_dim, emb), nn.ReLU(), nn.Linear(emb, emb), nn.ReLU())
@@ -99,7 +99,7 @@ def load_dataset(calib_dir: Path, board_dir: Path, scenes: int, w: int, h: int,
             hw_u8[fi, i] = torch.from_numpy((hw * 255.0).astype(np.uint8)).permute(2, 0, 1)
             with torch.no_grad():
                 sim = pipeline(x, params[i:i + 1].to(device), enable_wdr=False,
-                               enable_gamma=False, enable_dehaze=False)["output"]
+                               enable_gamma=True, enable_dehaze=False)["output"]
             sim_u8[fi, i] = (sim.squeeze(0).clamp(0, 1) * 255.0).to(torch.uint8).cpu()
         print(f"  场景 f{fi:02d} 预计算完成")
 
@@ -133,7 +133,7 @@ def cmd_train(args) -> int:
     tr_idx, va_idx = param_split(num)
     print(f"数据: {scenes} 场景 × {num} 参数; train={len(tr_idx)} val={len(va_idx)} (参数组划分)")
 
-    model = ResidualNet().to(device)
+    model = ResidualNet(ch=args.ch, blocks=args.blocks).to(device)
     n_par = sum(p.numel() for p in model.parameters())
     opt = torch.optim.AdamW(model.parameters(), lr=args.lr)
     sched = torch.optim.lr_scheduler.CosineAnnealingLR(opt, T_max=args.epochs)
@@ -167,7 +167,8 @@ def cmd_train(args) -> int:
             if va > best_val:
                 best_val = va
                 torch.save({"state_dict": model.state_dict(), "val_psnr_med": va,
-                            "theta_slice": [65, 96]}, ckpt)
+                            "theta_slice": [THETA_SLICE.start, THETA_SLICE.stop],
+                            "ch": args.ch, "blocks": args.blocks}, ckpt)
     print(f"best val PSNR 中位 = {best_val:.2f} dB  -> {ckpt}")
     return 0
 
@@ -192,7 +193,7 @@ def cmd_eval(args) -> int:
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     calib_dir, board_dir = Path(args.calib_dir), Path(args.board_dir)
     ck = torch.load(calib_dir / "residual_net.pt", map_location=device)
-    model = ResidualNet().to(device)
+    model = ResidualNet(ch=ck.get("ch", 32), blocks=ck.get("blocks", 4)).to(device)
     model.load_state_dict(ck["state_dict"])
     model.eval()
 
@@ -234,6 +235,8 @@ def main() -> int:
         p.add_argument("--width", type=int, default=512)
         p.add_argument("--height", type=int, default=288)
         p.add_argument("--batch", type=int, default=16)
+        p.add_argument("--ch", type=int, default=32)
+        p.add_argument("--blocks", type=int, default=4)
         if name == "train":
             p.add_argument("--epochs", type=int, default=120)
             p.add_argument("--lr", type=float, default=1e-3)

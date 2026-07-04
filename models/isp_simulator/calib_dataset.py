@@ -42,22 +42,34 @@ def lhs(n: int, dims: int, rng: np.random.Generator) -> np.ndarray:
     return u
 
 
-def sample_params(num: int, rng: np.random.Generator) -> torch.Tensor:
-    """LHS → (num, 97) 参数向量。范围偏向提亮（曝光校正用途）。"""
-    # 采样维：tone 中间 4 点扰动(4) + strength(1) + ldci(8) + mix(12) + ctrl(3) + blend(1) = 29
-    u = lhs(num, 29, rng)
+def sample_params(num: int, rng: np.random.Generator, version: int = 2) -> torch.Tensor:
+    """LHS → (num, 97) 参数向量。
+
+    v1: tone 偏提亮 [-0.10,+0.30]，无 Gamma —— §5.9 归因证实压暗域覆盖不足。
+    v2: tone 对称 ±0.30 + Gamma γ 幂曲线维（θ* 诊断后的修正，2026-07-04）。
+    """
+    # 采样维：tone(4) + strength(1) + ldci(8) + mix(12) + ctrl(3) + blend(1) + gamma γ(1) = 30
+    u = lhs(num, 30, rng)
     params = make_identity_params(num)
 
     off_t = get_offset("drc_tone")
     base = torch.linspace(0.0, 1.0, 6)
+    lo, span = (-0.30, 0.60) if version >= 2 else (-0.10, 0.40)
     for i in range(num):
         cp = base.clone()
-        # 中间 4 控制点：[-0.10, +0.30] 偏提亮扰动，cummax 保单调，端点固定
-        delta = torch.from_numpy(u[i, 0:4]).float() * 0.40 - 0.10
+        delta = torch.from_numpy(u[i, 0:4]).float() * span + lo
         cp[1:5] = (cp[1:5] + delta).clamp(0.0, 1.0)
         cp = torch.cummax(cp, dim=0).values
         cp[0], cp[5] = 0.0, 1.0
         params[i, off_t:off_t + 6] = cp
+
+    if version >= 2:
+        # Gamma：γ ∈ [0.45, 1.55] 幂曲线（γ<1 提亮），64 节点写入参数向量
+        off_g = get_offset("gamma")
+        gam = 0.45 + u[:, 29] * 1.10
+        nodes = torch.linspace(0.0, 1.0, 64)
+        for i in range(num):
+            params[i, off_g:off_g + 64] = nodes.pow(float(gam[i]))
 
     params[:, get_offset("drc_strength")] = torch.from_numpy(u[:, 4]).float()  # [0,1] 全程
 
@@ -87,13 +99,14 @@ def cmd_gen(args) -> int:
     rng = np.random.default_rng(SEED)
     params = sample_params(args.num, rng)
 
-    # c000 = 中性（DRC/LDCI 显式关闭）：每场景的模拟器输入采集口径
+    # c000 = 中性（DRC/LDCI 显式关闭 + Gamma strength=0 还原默认）
     neutral = make_identity_params(1)
     (outdir / "blobs" / "c000_neutral.bin").write_bytes(
-        sim_params_to_blob(neutral, drc_on=False, ldci_on=False))
+        sim_params_to_blob(neutral, drc_on=False, ldci_on=False,
+                           gamma_on=True, gamma_strength=0.0))
     for i in range(args.num):
         (outdir / "blobs" / f"c{i + 1:03d}.bin").write_bytes(
-            sim_params_to_blob(params[i:i + 1]))
+            sim_params_to_blob(params[i:i + 1], gamma_on=True, gamma_strength=1.0))
 
     torch.save(params, outdir / "params.pt")
     (outdir / "manifest.json").write_text(json.dumps(
