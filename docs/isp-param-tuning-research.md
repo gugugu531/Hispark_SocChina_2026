@@ -512,6 +512,30 @@ AE/WDR（本系统有、离线增强方法没有）；② over 组 Zero-DCE 单�
 （全分辨率 30fps 不可达），ISP 参数路线在效果相当的前提下独享实时性。
 对比图：`artifacts/lcdp-replay-demo/6_isp_vs_zerodce.png`。
 
+### 5.11 Zero-DCE 原生数据域复验（2026-07-04）
+
+**方法**：Zero-DCE-Lite 仓库自带 sample_images 取 4 张真实低光照片（car/street/
+roadside/chairs，中性帧 luma 0.012–0.116，比 LCDP 更暗）走完整链路：
+`rgb_to_sensor_raw` 回灌 → 中性帧 → {Zero-DCE-Lite 参照, ParamNet θ, θ\* 逼近}。
+
+**结果**：
+
+| 图 | θ\* 复现 Zero-DCE | 中性 luma | Zero-DCE luma | **ParamNet luma** |
+|---|---|---|---|---|
+| car | 29.6 dB | 0.012 | 0.028 | **0.111** |
+| street | 23.5 dB | 0.052 | 0.108 | **0.275** |
+| roadside | 28.1 dB | 0.022 | 0.060 | **0.200** |
+| chairs | 24.0 dB | 0.116 | 0.167 | **0.270** |
+
+1. **θ\* 复现 23.5–29.6 dB**：在 Zero-DCE 原生域再次确认 ISP 参数覆盖其表达力（§5.10 结论成立）；
+2. **意外发现：ParamNet 的实际增强显著强于 Zero-DCE-Lite 本尊**——极暗输入上
+   Zero-DCE-Lite（零参考损失）提亮保守（车库/唐人街/椅子仍暗），ParamNet（LCDP 配对
+   监督）出图接近可用照片（街景招牌路面全亮、房间细节可辨）。ParamNet vs Zero-DCE 的
+   PSNR 低（12.7–17.8）恰是因为它**做得更多**而非更差；
+3. 诚实记录：极暗区强提亮暴露伪影（car 地面色块/banding、暗区色偏）——极暗域是
+   压力测试口径（真实产品 AE 先行），也再次指向 calib v2 极暗档目标。
+   对比图：`artifacts/lcdp-replay-demo/7_zerodce_domain.png`。
+
 ## 参考文献
 
 - Tseng et al. 2019, *Hyperparameter Optimization in Black-box Image Processing using Differentiable Proxies*, ACM TOG 38(4). https://light.princeton.edu/publication/proxy_opt/
