@@ -141,8 +141,31 @@ def cmd_train(args) -> int:
 
     pairs = [(fi, pi) for fi in range(scenes) for pi in tr_idx]
     best_val = -1.0
+    start_ep = 0
     ckpt = calib_dir / "residual_net.pt"
-    for ep in range(args.epochs):
+    last_ckpt = calib_dir / "last.pt"
+
+    if args.init:  # 权重热启动（新优化器）
+        model.load_state_dict(torch.load(args.init, map_location=device)["state_dict"])
+        print(f"[init] 权重热启动自 {args.init}")
+    if args.resume and last_ckpt.exists():  # 全状态续训
+        st = torch.load(last_ckpt, map_location=device)
+        model.load_state_dict(st["state_dict"])
+        opt.load_state_dict(st["opt"])
+        sched.load_state_dict(st["sched"])
+        start_ep = st["epoch"] + 1
+        best_val = st.get("best_val", -1.0)
+        print(f"[resume] 自 last.pt 续训 ep{start_ep}（best={best_val:.2f}）")
+
+    def save_full(path, ep):  # 原子保存全状态，防冻结丢进度
+        tmp = str(path) + ".tmp"
+        torch.save({"state_dict": model.state_dict(), "opt": opt.state_dict(),
+                    "sched": sched.state_dict(), "epoch": ep, "best_val": best_val,
+                    "theta_slice": [THETA_SLICE.start, THETA_SLICE.stop],
+                    "ch": args.ch, "blocks": args.blocks}, tmp)
+        Path(tmp).replace(path)
+
+    for ep in range(start_ep, args.epochs):
         model.train()
         rng = np.random.default_rng(ep)
         order = rng.permutation(len(pairs))
@@ -163,12 +186,14 @@ def cmd_train(args) -> int:
 
         if (ep + 1) % args.eval_every == 0 or ep == args.epochs - 1:
             va = evaluate(model, sim_u8, hw_u8, theta, va_idx, device, args.batch)
-            print(f"ep {ep + 1:3d}: train_l1={tot / nb:.4f}  val_psnr_med={va:.2f} dB")
+            print(f"ep {ep + 1:3d}: train_l1={tot / nb:.4f}  val_psnr_med={va:.2f} dB",
+                  flush=True)
             if va > best_val:
                 best_val = va
                 torch.save({"state_dict": model.state_dict(), "val_psnr_med": va,
                             "theta_slice": [THETA_SLICE.start, THETA_SLICE.stop],
                             "ch": args.ch, "blocks": args.blocks}, ckpt)
+            save_full(last_ckpt, ep)  # 每次 eval 存全状态，冻结后可 --resume
     print(f"best val PSNR 中位 = {best_val:.2f} dB  -> {ckpt}")
     return 0
 
@@ -241,6 +266,10 @@ def main() -> int:
             p.add_argument("--epochs", type=int, default=120)
             p.add_argument("--lr", type=float, default=1e-3)
             p.add_argument("--eval-every", type=int, default=10)
+            p.add_argument("--init", default=None,
+                           help="从该 ckpt 热启动权重（新优化器/调度器）")
+            p.add_argument("--resume", action="store_true",
+                           help="从 <calib-dir>/last.pt 续训（模型+优化器+调度器+epoch）")
     args = ap.parse_args()
     return cmd_train(args) if args.cmd == "train" else cmd_eval(args)
 
