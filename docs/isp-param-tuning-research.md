@@ -566,6 +566,30 @@ strength 补偿的组合，under 组强提亮）。另修 `paramnet infer` 未�
 过程坑记录：48ch/6blk 全帧 batch16 在 8GB 显存 OOM（→batch 8）；训练进程会偶发
 CPU 忙等冻结（原子 last.pt + resume 兜底）。
 
+### 5.13 容量路线板端裁决：转蒸馏（2026-07-05，收敛数据）
+
+R v2.1 断点续训至**真收敛**（48ch/6blk，val 曲线 ep75→120 走平）：留出 **22.37 dB**
+（+0.4 over v2.0 的 22.0）。用它重训 ParamNet v2.1 并板端复验 4 图（vs GT）：
+
+| 图 | input | v1 | v2 | v2.1 | θ\* 上限 |
+|---|---|---|---|---|---|
+| under1 | 17.07 | 18.08 | 17.85 | 18.03 | 18.30 |
+| under2 | 16.55 | 19.45 | 18.67 | 18.71 | 19.35 |
+| over1 | 15.39 | 16.94 | **18.34** | 18.27 | **20.98** |
+| over2 | 22.46 | 21.64 | 20.24 | **18.44** | **25.23** |
+
+**裁决（收敛 + 板端实测，非截断残局）**：
+1. **+0.4dB 更强代理未转化为板端提升**：v2.1 ≈ v2（under/over1 差 <0.1dB）；
+2. **over2 逐版恶化**（22.46→21.64→20.24→18.44）：对称采样修好 over1（v1→v2 +1.4dB）
+   却副作用性地**过压只需微调的过曝图**（v2.1 strength 拉满 0.844）——代理训练的网络
+   导航不了"该压 vs 不该压"的权衡；
+3. **θ\* 上限缺口巨大**：over1 差 2.7dB、over2 差 **6.8dB**——θ\* 知道 over2 应近恒等
+   （GT≈input），代理训练的 ParamNet 学不到。
+
+**结论：代理保真度 ~22dB 是硬约束，继续加容量/数据边际收益为负甚至为负向。
+转 θ\* 硬件标签蒸馏**——`scene→θ*` 参数空间回归绕开代理保真依赖，`hw_search.py`
+已证 θ\* 在过曝方向优 2.7–6.8dB。这是本项目四段执行序的阶段 3 主路径。
+
 ## 参考文献
 
 - Tseng et al. 2019, *Hyperparameter Optimization in Black-box Image Processing using Differentiable Proxies*, ACM TOG 38(4). https://light.princeton.edu/publication/proxy_opt/
