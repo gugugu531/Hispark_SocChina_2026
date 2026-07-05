@@ -648,6 +648,32 @@ img13 上 ParamNet(17.63) < input(18.59) 的**过压 bug 被 θ*(21.28) 纠正**
 全分辨率 ISP 增强（Zero-DCE Lite 板端 640×320 已需 29.9ms、Retinexformer 更重，均不可实
 时全分辨率）；离线 sRGB 恢复不是其目标。对比图 `artifacts/lcdp-replay-demo/9_lolv1_benchmark.png`。
 
+### 5.16 公平域对比：真实相机 RAW 欠曝恢复（2026-07-05）
+
+§5.15 的 LOL 落在对 RAW 域最不利的域。公平域测试：**真实相机、真实 RAW、实时可跑的方法**。
+静态桌面场景，板端两次真实采集——正常曝光（AE 收敛，luma 0.505，作恢复参考）+
+锁定低曝光（exptime 6000/1x，真实 12-bit RAW，中性帧 luma 0.044）。恢复 ~12x。
+本路线 `欠曝 RAW → distill ParamNet θ → ISP`；Zero-DCE-Lite 处理同一欠曝 8-bit 帧。
+
+| 方法 | PSNR | SSIM | 输出 luma |
+|---|---|---|---|
+| 欠曝输入 | 6.56 | 0.131 | 0.044 |
+| Zero-DCE-Lite | 9.23 | 0.480 | 0.159 |
+| **Ours(ParamNet+ISP)** | **14.42** | **0.811** | 0.329 |
+
+**结果反转（vs §5.15 LOL）**：真实 RAW 域，本路线**大幅胜出** Zero-DCE（+5.2 dB PSNR，
+SSIM 0.811 vs 0.480），且**无 LOL 的噪声/色偏**（对比图 `10_real_underexposure.png`：纸张
+文字/木纹干净 recovered）。机理明确：本路线在 12-bit RAW 上操作，能利用真实传感器阴影
+信号；Zero-DCE 吃的是同一欠曝的 8-bit 帧（luma 0.044 仅 ~11 个 8-bit 级），信息更少。
+两者都未完全追平参考亮度（12x 恢复偏保守），但本路线的结构/噪声/色彩明显更优。
+
+**两个 benchmark 合起来的完整结论**：
+- **离线恢复已裁掉信息的 8-bit 暗图**（LOL 协议）→ 重型 RGB 深网（Retinexformer 22.58）主场，
+  本路线因 RAW 重编码 artifact 失利；
+- **真实相机 RAW 实时增强**（本路线的部署域）→ 本路线胜过同样实时可跑的 Zero-DCE，
+  且 ISP 硬件 30fps 全分辨率施加（Zero-DCE Lite 板端 640×320 已需 29.9ms）。
+路线定位由此坐实：**不是离线画质 SOTA 的竞争者，是实时 RAW-域 ISP 增强的可行解**。
+
 ## 参考文献
 
 - Tseng et al. 2019, *Hyperparameter Optimization in Black-box Image Processing using Differentiable Proxies*, ACM TOG 38(4). https://light.princeton.edu/publication/proxy_opt/
