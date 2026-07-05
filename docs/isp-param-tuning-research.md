@@ -618,6 +618,36 @@ img13 上 ParamNet(17.63) < input(18.59) 的**过压 bug 被 θ*(21.28) 纠正**
 噪声明显。**下一步：扩 θ* 标签规模**（数百图、多会话，~数小时板端），使增益跨场景一致。
 对比图 `artifacts/lcdp-replay-demo/8_distill.png`。
 
+### 5.15 LOLv1 跨方法 benchmark（2026-07-05）
+
+用户要求：本路线 vs 开源权重模型（Zero-DCE-Lite、Retinexformer）在 LOLv1 test（15 对）
+同输入对比。公平口径：所有方法处理同一 16:9 裁剪→512×288 输入，对同一 GT 算指标。
+本路线：`sRGB→rgb_to_sensor_raw→板端回灌→distill ParamNet θ→ISP`。
+
+| 方法 | PSNR | SSIM | PSNR*(GT均值对齐) |
+|---|---|---|---|
+| input（不处理） | 7.76 | 0.197 | 19.34 |
+| Zero-DCE-Lite | 12.43 | 0.586 | 20.65 |
+| **Retinexformer**（RGB 深网） | **22.58** | **0.863** | **26.81** |
+| Ours(ParamNet 蒸馏) | 9.08 | 0.255 | 13.70 |
+
+（Retinexformer 复现 22.58 ≈ 官方 22.97，验证 benchmark 口径正确。）
+
+**诚实诊断——本路线的低分是方法学 artifact，非 ISP 增强能力**：
+- LOLv1 输入是极暗 8-bit sRGB（输入→GT 仅 7.76dB），需 **7.5x 提亮**（luma 0.060→0.455）；
+- 本路线部署路径是 RAW 域：`rgb_to_sensor_raw` 把暗 sRGB（0.06）经 ^2.2 压到 ~0.002，
+  映射进 12-bit `[BLC=256,3700]` 后仅高于黑电平 **~6 个量化级**——阴影真实信号几乎全丢；
+  ISP 增益放大的是量化噪声 + AWB/CCM 在近黑信号上的色偏（对比图第 4 列可见绿/紫噪）；
+- **这是 LOL 协议对任何 RAW 域管线的固有不公**：8-bit 暗图重编码进"高于 BLC 的 12-bit"丢
+  阴影，而 RGB 深网在 8-bit sRGB 上直接操作仍有信息。真实相机靠满阱深度+模拟增益在阴影
+  保留真实信号，不会这样被压——LCDP（适度低光、3x 提亮）本路线可达 18–20dB 即为证。
+- 次因：回灌锁定 1x 增益（`--again 1024`）阻止 ISP 增益上探，加剧欠提亮（输出仅到 0.103）。
+
+**结论**：LOLv1 这类"离线恢复已裁掉信息的 8-bit 暗图"是 RGB 深网（Retinexformer）的主场，
+不是实时 RAW-域 ISP 参数路线的适用域。两者是**不同任务**：本路线做的是实时相机 30fps
+全分辨率 ISP 增强（Zero-DCE Lite 板端 640×320 已需 29.9ms、Retinexformer 更重，均不可实
+时全分辨率）；离线 sRGB 恢复不是其目标。对比图 `artifacts/lcdp-replay-demo/9_lolv1_benchmark.png`。
+
 ## 参考文献
 
 - Tseng et al. 2019, *Hyperparameter Optimization in Black-box Image Processing using Differentiable Proxies*, ACM TOG 38(4). https://light.princeton.edu/publication/proxy_opt/
