@@ -267,7 +267,8 @@ def cmd_infer(args) -> int:
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model = ParamNet().to(device)
-    ck = torch.load(Path(args.outdir) / "paramnet.pt", map_location=device)
+    ckpt_path = Path(args.ckpt) if args.ckpt else Path(args.outdir) / "paramnet.pt"
+    ck = torch.load(ckpt_path, map_location=device)
     model.load_state_dict(ck["state_dict"])
     model.eval()
 
@@ -289,10 +290,28 @@ def cmd_infer(args) -> int:
     return 0
 
 
+def cmd_export(args) -> int:
+    """导出 ONNX（Phase 3：ATC→OM 前置。架构固定，权重可后换重导）。"""
+    device = torch.device("cpu")
+    model = ParamNet().to(device)
+    ck = torch.load(Path(args.outdir) / "paramnet.pt", map_location=device)
+    model.load_state_dict(ck["state_dict"])
+    model.eval()
+    dummy = torch.zeros(1, 3, NET_H, NET_W)
+    out = Path(args.outdir) / "paramnet_256x144_fp32.onnx"
+    torch.onnx.export(model, dummy, str(out), opset_version=13,
+                      input_names=["image"], output_names=["u"],
+                      do_constant_folding=True)
+    print(f"ONNX -> {out}  (输入 1x3x{NET_H}x{NET_W} NCHW，输出 1x{U_DIM})")
+    print("ATC: atc --model=... --framework=5 --soc_version=OPTG --output=... "
+          "--input_format=NCHW（FP16 由 ATC 默认精度处理）")
+    return 0
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     sub = ap.add_subparsers(dest="cmd", required=True)
-    for name in ("prepare", "train", "eval", "infer"):
+    for name in ("prepare", "train", "eval", "infer", "export"):
         p = sub.add_parser(name)
         p.add_argument("--outdir", default="models/weights/paramnet")
         p.add_argument("--resnet", default="models/weights/calib/residual_net.pt")
@@ -303,12 +322,13 @@ def main() -> int:
             p.add_argument("--eval-every", type=int, default=2)
         if name == "infer":
             p.add_argument("--frame", required=True, help="中性帧 NV21")
+            p.add_argument("--ckpt", default=None, help="指定 ParamNet ckpt(默认 outdir/paramnet.pt)")
             p.add_argument("--frame-width", type=int, default=1024)
             p.add_argument("--frame-height", type=int, default=576)
             p.add_argument("--out", default="models/weights/paramnet/paramnet_theta.bin")
     args = ap.parse_args()
     return {"prepare": cmd_prepare, "train": cmd_train, "eval": cmd_eval,
-            "infer": cmd_infer}[args.cmd](args)
+            "infer": cmd_infer, "export": cmd_export}[args.cmd](args)
 
 
 if __name__ == "__main__":
