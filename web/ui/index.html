@@ -39,6 +39,7 @@
         <button id="btn-webrtc" class="vid-mode-btn active" title="WebRTC 低延迟">WebRTC</button>
         <button id="btn-hls" class="vid-mode-btn" title="HLS 兼容回退">HLS</button>
         <button id="btn-rtsp" class="vid-mode-btn" title="复制 RTSP 地址">RTSP</button>
+        <button id="btn-snapshot" title="截图(PNG)">📷</button>
         <button id="btn-reconnect" title="重连">↻</button>
         <span id="video-latency" class="latency"></span>
       </div>
@@ -94,6 +95,17 @@
           <span class="label">应用控制 Socket</span><span id="h-app" class="value">—</span>
           <span class="label">MediaMTX 网关</span><span id="h-media" class="value">—</span>
           <span class="label">管理 Socket</span><span id="h-admin" class="value">—</span>
+        </div>
+      </section>
+
+      <!-- 实时亮度直方图（客户端从视频帧计算，不请求板端） -->
+      <section class="card" id="histogram-card">
+        <h2>亮度直方图</h2>
+        <canvas id="histogram" width="256" height="72"></canvas>
+        <div class="kv">
+          <span class="label">高光裁剪 (≥245)</span><span id="hist-clip-high" class="value">—</span>
+          <span class="label">暗部 (≤16)</span><span id="hist-clip-low" class="value">—</span>
+          <span class="label">平均亮度</span><span id="hist-mean" class="value">—</span>
         </div>
       </section>
 

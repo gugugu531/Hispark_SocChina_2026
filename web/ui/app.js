@@ -593,9 +593,62 @@
     });
   }
 
+  // ── 截图 + 实时亮度直方图（客户端从视频帧计算，不请求板端；§8 canvas 截图） ──
+  var snapCanvas = document.createElement('canvas');
+  $('btn-snapshot').addEventListener('click', function () {
+    var v = $('live-video');
+    if (!v.videoWidth) {
+      $('video-latency').textContent = '无视频帧';
+      setTimeout(function () { $('video-latency').textContent = ''; }, 2000);
+      return;
+    }
+    snapCanvas.width = v.videoWidth;
+    snapCanvas.height = v.videoHeight;
+    snapCanvas.getContext('2d').drawImage(v, 0, 0);
+    var a = document.createElement('a');
+    a.download = 'socchina_' + new Date().toISOString().replace(/[:.]/g, '-') + '.png';
+    a.href = snapCanvas.toDataURL('image/png');
+    a.click();
+  });
+
+  var histC = $('histogram'), histCtx = histC.getContext('2d');
+  var sampC = document.createElement('canvas');
+  sampC.width = 192; sampC.height = 108;
+  var sampCtx = sampC.getContext('2d', { willReadFrequently: true });
+  function updateHistogram() {
+    var v = $('live-video');
+    if (!v.videoWidth) return;
+    try {
+      sampCtx.drawImage(v, 0, 0, sampC.width, sampC.height);
+      var d = sampCtx.getImageData(0, 0, sampC.width, sampC.height).data;
+      var hist = new Array(256).fill(0), n = d.length / 4, sum = 0, hi = 0, lo = 0;
+      for (var i = 0; i < d.length; i += 4) {
+        var y = (d[i] * 0.299 + d[i + 1] * 0.587 + d[i + 2] * 0.114) | 0;
+        hist[y]++; sum += y;
+        if (y >= 245) hi++;
+        if (y <= 16) lo++;
+      }
+      histCtx.clearRect(0, 0, histC.width, histC.height);
+      var max = 1;
+      for (var k = 0; k < 256; k++) if (hist[k] > max) max = hist[k];
+      histCtx.fillStyle = '#d4a017';
+      for (var x = 0; x < 256; x++) {
+        var hgt = Math.round(hist[x] / max * histC.height);
+        if (hgt > 0) histCtx.fillRect(x, histC.height - hgt, 1, hgt);
+      }
+      var hiPct = hi / n * 100, loPct = lo / n * 100;
+      $('hist-clip-high').textContent = hiPct.toFixed(1) + '%';
+      $('hist-clip-high').className = 'value' + (hiPct > 2 ? ' warn' : '');
+      $('hist-clip-low').textContent = loPct.toFixed(1) + '%';
+      $('hist-clip-low').className = 'value' + (loPct > 5 ? ' warn' : '');
+      $('hist-mean').textContent = (sum / n).toFixed(0);
+    } catch (e) { /* 视频未就绪 / 跨源污染 → 跳过本帧 */ }
+  }
+
   // ── 启动 ──
   tick();
   setInterval(tick, 1000);
+  setInterval(updateHistogram, 350);
   initSidebar();
   buildPresetBar();
   buildHotControls();
