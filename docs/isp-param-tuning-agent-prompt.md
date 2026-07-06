@@ -78,6 +78,8 @@ NN（ParamNet）从场景图预测 SS928 ISP 参数（DRC/LDCI/Gamma），ISP �
     （Pow/Cast/ReduceMean/Resize…命中即 FAIL）/ 静态 NCHW shape / 单 opset。权重可缺
     （算子与权重无关，随机初始化即可审图）。`export`/`audit` 已改为无权重时随机初始化，
     不再硬失败。**已实测 PASS**（见 §4 路线 B）。
+- `build_paramnet_om.sh`（路线 B1 关口②）：ONNX→OM（AIPP，部署形态，soc=OPTG）。ASCEND_TOOLKIT_HOME
+  + ATC_PYTHON 驱动（CANN 5.20 在 `tools/local/Ascend/`）。**已实测产物 0 Cast/0 AICPU**（见 §4）。
 - `hw_search.py`：真实 ISP 上两轮黑盒 θ\* 搜索（蒸馏标签原型，`--ref` 参照后缀）。
 - `distill.py`：`gen`（选图+候选池 LHS+γ+per-image warmstart 保底）/`labels`（逐图 θ\*）/
   `finetune`（**排练式**：LCDP 代理目标保泛化 + 硬件 θ\* 拉修正）。
@@ -120,8 +122,16 @@ NN（ParamNet）从场景图预测 SS928 ISP 参数（DRC/LDCI/Gamma），ISP �
     `Conv×6 / Relu×5 / AveragePool×1 / Sigmoid×1 / Flatten×1`——**零红名单算子**（AvgPool 是固定核，
     非 ReduceMean）。红名单安全声称已客观坐实。
 - ATC→OM（FP16、`soc_version=OPTG`）；**算子探测先行**：转 OM 确认无 AICPU/Cast 残留、profiling 全落 AICore。
-  - **B1 关口②（ATC→OM）待 CANN**：本机无 CANN/atc 编译器（`atc` conda env 仅 Python 侧依赖），
-    需在装有 CANN 的机器或板端做。关口①已扫清图层面障碍，②主要验证 ATC 落地与 AICore 占比。
+  - **B1 关口②（ATC→OM）已 PASS**（主机离线，CANN 5.20.t6.2.b060 在 `tools/local/Ascend/`）：
+    一键脚本 `models/isp_simulator/build_paramnet_om.sh`（ASCEND_TOOLKIT_HOME + ATC_PYTHON 驱动）。
+    - **AIPP 部署版**（`--insert_op_conf=configs/aipp_nv21_256x144.cfg --output_type=FP16`）：
+      算子仅 `Conv2D×5 / FullyConnection / AvgPoolV2 / Flatten / TransData`——**0 Cast、0 AICPU**。
+      AIPP 把 chn2 NV21→RGB→/255→fp16 吸进 OM 前端，边界 Cast 全消。
+    - 无 AIPP 基线：多 2 个 FP32 输入/输出边界 Cast（`trans_Cast_0` 吃 image、`trans_Cast_28` 出 u），
+      仍全 AICore、无 AICPU；部署走 AIPP 即可消掉。
+    - **踩坑**：ATC 的 TBE 编译器需带依赖(numpy/decorator/sympy/cffi)的 python3——用 conda `atc`
+      环境 python；系统/base python3 会 `Failed to init tbe`。CANN 环境 `source <toolkit>/bin/setenv.bash`。
+  - **剩余未验证**：端到端**实时帧率**（是否 30fps / param-net ~10Hz 刷新延迟）——需板端 profiling（关口②只证图/编译干净，非运行时性能）。这是路线 B 的下一关，走 B2 实时闭环。
 - 实时闭环：`chn2 缩略图 → AIPP → ParamNet OM → u→θ → blob → ss_mpi_isp_set_*_attr 热刷新`。
   复用 `board/src/main.c` control worker（场景变化触发 ~10Hz）、CLUT 桥的逐次步长护栏/反馈抑制。
 - 注意闭环稳定性：ParamNet 输入是"当前参数处理后的帧"，存在反馈回路——板端复用步长护栏经验。
