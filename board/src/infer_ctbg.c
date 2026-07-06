@@ -9,6 +9,8 @@
 #include <string.h>
 #include <time.h>
 
+#ifdef WITH_SS928_SDK
+
 #include "acl.h"
 
 /* ---- 内部状态 ---- */
@@ -246,3 +248,18 @@ void ctbg_deinit(void)
     if (g_acl_ready) { aclrtResetDevice(g_device); g_acl_ready = 0; }
     g_inited = 0;
 }
+
+#else /* !WITH_SS928_SDK — 无 SDK 构建桩 */
+
+int ctbg_init(const ctbg_cfg_t *cfg) { (void)cfg; LOG_ERR("ctbg: built without SS928 SDK"); return -1; }
+int ctbg_estimator_run(const void *low_fp16, void *raw_coeff_out, ctbg_timing_t *timing)
+{ (void)low_fp16; (void)raw_coeff_out; (void)timing; return -1; }
+int ctbg_apply_run(const void *full_rgb_fp16, const void *coeff, void *out_rgb_fp16, ctbg_timing_t *timing)
+{ (void)full_rgb_fp16; (void)coeff; (void)out_rgb_fp16; (void)timing; return -1; }
+int ctbg_apply_run_nv21(const void *nv21_frame, const void *coeff, void *out_rgb_fp16, ctbg_timing_t *timing)
+{ (void)nv21_frame; (void)coeff; (void)out_rgb_fp16; (void)timing; return -1; }
+size_t ctbg_coeff_size(void) { return 0; }
+size_t ctbg_coeff_app_size(void) { return 0; }
+void ctbg_deinit(void) {}
+
+#endif /* WITH_SS928_SDK */

@@ -10,10 +10,11 @@
 #include <math.h>
 #include <string.h>
 
+#ifdef WITH_SS928_SDK
 #include "ot_common_isp.h"
 #include "ss_mpi_isp.h"
-
 #define ISP_PIPE 0
+#endif
 #include <string.h>
 
 /* fp16→float 解码（来自 main.c） */
@@ -161,6 +162,7 @@ int ctbg_isp_map_apply(const uint16_t *coeff_up,
                        unsigned full_w, unsigned full_h,
                        float strength)
 {
+#ifdef WITH_SS928_SDK
     ctbg_block_stat_t blocks[CTBG_ISP_MAP_ROWS][CTBG_ISP_MAP_COLS];
     uint16_t tmv[200];
     uint8_t  bright_lut[33], dark_lut[33];
@@ -228,4 +230,8 @@ int ctbg_isp_map_apply(const uint16_t *coeff_up,
     LOG_INFO("ctbg_isp_map: DRC+LUT+LDCI (dark=%.0f%%, strength=%.2f)",
              dark_ratio * 100.0f, strength);
     return 0;
+#else
+    (void)coeff_up; (void)full_w; (void)full_h; (void)strength;
+    return -1;
+#endif
 }

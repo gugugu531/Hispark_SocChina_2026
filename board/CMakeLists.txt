@@ -17,6 +17,7 @@ file(GLOB LIB_SRC CONFIGURE_DEPENDS src/*.c)
 list(REMOVE_ITEM LIB_SRC "${CMAKE_CURRENT_SOURCE_DIR}/src/main.c")
 add_library(socchina STATIC ${LIB_SRC})
 target_include_directories(socchina PUBLIC include)
+target_link_libraries(socchina PUBLIC m)  # paramnet_map/isp 等用 powf/lrintf；SDK-free 构建也需 -lm
 
 if(ENABLE_SDK)
     if(NOT SS928_SDK_ROOT)
