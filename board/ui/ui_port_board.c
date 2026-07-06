@@ -153,6 +153,7 @@ static void *worker(void *arg)
     }
 
     ui_lvgl_build(cmd_cb, NULL);
+    ui_lvgl_set_overlay_mode();   /* GFBG G0 透明叠加：视频区透出下方 VO 视频层 */
 
     uint32_t last = tick_ms_cb();
     while (g_run) {

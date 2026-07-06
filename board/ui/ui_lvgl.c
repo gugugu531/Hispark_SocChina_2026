@@ -37,6 +37,7 @@ static lv_obj_t *g_badge;        /* 状态徽章 */
 static lv_obj_t *g_lbl_fps, *g_lbl_infer, *g_lbl_txn, *g_lbl_drops,
                 *g_lbl_frames, *g_lbl_mode, *g_lbl_nn, *g_lbl_out;
 static lv_obj_t *g_sidebar;
+static lv_obj_t *g_video;   /* 视频占位区(board overlay 模式下置透明,透出 VO 视频层) */
 
 static lv_obj_t *g_sw_enh, *g_sw_nn, *g_sw_tone, *g_sw_drc, *g_sw_ldci;
 static lv_obj_t *g_sld_tone, *g_sld_guard, *g_sld_drc;
@@ -352,6 +353,7 @@ void ui_lvgl_build(ui_cmd_cb cb, void *user)
 
     /* 视频占位(板端:此区透明,透出 VO 视频层;模拟器:画占位) */
     lv_obj_t *video = lv_obj_create(body);
+    g_video = video;
     lv_obj_set_flex_grow(video, 1);
     lv_obj_set_height(video, lv_pct(100));
     lv_obj_set_style_bg_color(video, COL_BLACK, 0);
@@ -419,6 +421,17 @@ static void set_badge(const char *state)
     lv_label_set_text(g_badge, state ? state : "--");
     lv_obj_set_style_text_color(g_badge, c, 0);
     lv_obj_set_style_bg_color(g_badge, c, 0);
+}
+
+/* 板端 overlay 模式：屏幕与视频占位区置透明，让 GFBG G0 下方的 VO 视频层透出。
+ * 顶栏/侧边栏/卡片仍不透明（UI chrome 覆盖）。sim 不调用此函数 → 保持不透明预览。 */
+void ui_lvgl_set_overlay_mode(void)
+{
+    lv_obj_t *scr = lv_screen_active();
+    lv_obj_set_style_bg_opa(scr, LV_OPA_TRANSP, 0);
+    if (g_video) {
+        lv_obj_set_style_bg_opa(g_video, LV_OPA_TRANSP, 0);
+    }
 }
 
 void ui_lvgl_update(const ui_state_t *st)

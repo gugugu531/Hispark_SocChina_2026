@@ -65,6 +65,10 @@ typedef void (*ui_cmd_cb)(const ui_cmd_t *cmd, void *user);
  * cb/user 保存供事件回调使用。调用前需已 lv_init() 且 display 已注册。 */
 void ui_lvgl_build(ui_cmd_cb cb, void *user);
 
+/* 板端 overlay 模式：屏幕/视频区置透明，让 GFBG G0 下方 VO 视频层透出（顶栏/侧边栏仍不透明）。
+ * 在 ui_lvgl_build 之后调用；sim 不调用（保持不透明预览）。 */
+void ui_lvgl_set_overlay_mode(void);
+
 /* 用最新状态刷新只读显示与控件回填(建议 5..10 Hz 周期调用)。
  * 回填控件时会屏蔽事件,不会反向触发 cb。 */
 void ui_lvgl_update(const ui_state_t *st);
