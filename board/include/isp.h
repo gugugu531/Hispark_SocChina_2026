@@ -86,4 +86,8 @@ int isp_gamma_apply_curve(const float *curve, unsigned nodes, float strength);
  * blob 格式见 models/isp_simulator/isp_blob.py 生成端。返回 0 表示成功，-1 失败。 */
 int isp_load_blob_and_apply(const char *path);
 
+/* 从内存 buffer 施加同格式 blob（实时闭环用，免落盘；
+ * 与 paramnet_theta_to_blob 产物对接）。返回 0 成功，-1 失败。 */
+int isp_apply_blob_buffer(const unsigned char *buf, unsigned long len);
+
 #endif /* SOCCHINA_ISP_H */

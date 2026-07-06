@@ -2,6 +2,7 @@
 #include "log.h"
 #include "menu_render.h"
 #include "touch.h"
+#include "paramnet_ctrl.h"
 #ifdef ENABLE_LVGL
 #include "ui_port_board.h"
 #endif
@@ -66,6 +67,9 @@ static volatile sig_atomic_t g_stop = 0;
 
 /* ---- CTBG 全局（v9 6ch 双 OM 路线） ---- */
 static volatile int g_ctbg_mode = 0;
+/* ParamNet 实时闭环模式（路线 B2）：control worker 跑 chn2→OM→u→θ→blob→ISP 热刷新，
+ * 整体替代 CoTF 的 Gamma+CLUT 路径。需 --paramnet + --model <paramnet_256x144_aipp.om>。 */
+static volatile int g_paramnet_mode = 0;
 static volatile int g_ctbg_writeback = 0;     /* --ctbg-writeback：启用写回（~23fps），默认仅诊断 */
 static uint16_t *g_ctbg_coeff = NULL;        /* 预上采样 6ch 系数（full_h×full_w，供 v9 apply 用） */
 static uint16_t *g_ctbg_coeff_raw = NULL;    /* estimator 原始输出 6ch（low_h×low_w fp16） */
@@ -419,6 +423,52 @@ static void* control_worker(void* arg) {
         effective_nn       = ctx->nn_enabled;
         if (!ctx->enhancement_enabled) { effective_strength = 0.0f; effective_nn = 0; }
         if (!ctx->tone_enabled)        { effective_strength = 0.0f; }
+
+        /* ---- ParamNet 实时闭环路径（路线 B2）：θ 已含 DRC/LDCI/Gamma，整体替代
+         *      CoTF 的 Gamma+CLUT 逻辑。刷新判决通过即跑一拍热刷新后 continue。
+         *      帧生命周期与 metrics 记法沿用 CTBG 路径。 ---- */
+        if (g_paramnet_mode) {
+            if (effective_nn && !ctx->health.degraded) {
+                ot_video_frame_info control_frame;
+                long transaction_start_us = now_us();
+                atomic_fetch_add(&metrics->lut_requests, 1);
+                if (vpss_get_frame(PIPELINE_VPSS_GRP, PIPELINE_VPSS_CHN_CONTROL, &control_frame,
+                                   APP_CONTROL_TIMEOUT_MS) == 0) {
+                    long infer_start_us = now_us();
+                    int prc = paramnet_run_and_apply(&control_frame);
+                    float infer_ms = (now_us() - infer_start_us) / 1000.0f;
+                    if (vpss_release_frame(PIPELINE_VPSS_GRP, PIPELINE_VPSS_CHN_CONTROL,
+                                           &control_frame) != 0) {
+                        LOG_ERR("[ctrl] failed to release chn2 frame");
+                        atomic_fetch_add(&metrics->transient_errors, 1);
+                    }
+                    atomic_fetch_add(&metrics->infer_runs, 1);
+                    if (prc == 0) {
+                        float transaction_ms = (now_us() - transaction_start_us) / 1000.0f;
+                        unsigned sample_index = metrics->timing_samples % APP_TIMING_SAMPLES;
+                        (void)control_health_record(&ctx->health, 1, APP_NN_FAILURE_LIMIT);
+                        atomic_fetch_add(&metrics->lut_updates, 1);
+                        metrics->infer_last_ms = infer_ms;
+                        if (infer_ms > metrics->infer_max_ms) metrics->infer_max_ms = infer_ms;
+                        metrics->transaction_last_ms = transaction_ms;
+                        if (transaction_ms > metrics->transaction_max_ms)
+                            metrics->transaction_max_ms = transaction_ms;
+                        metrics->infer_samples[sample_index] = infer_ms;
+                        metrics->transaction_samples[sample_index] = transaction_ms;
+                        metrics->timing_samples++;
+                        control_feedback_commit(&feedback);
+                    } else {
+                        /* 推理/施加失败：NPU 瞬态可恢复，不降级，保留上次参数。 */
+                        atomic_fetch_add(&metrics->lut_failures, 1);
+                        atomic_fetch_add(&metrics->transient_errors, 1);
+                    }
+                } else {
+                    atomic_fetch_add(&metrics->frame_timeouts, 1);
+                }
+            }
+            params_dirty = 0;
+            continue;
+        }
 
         mode = control_decide(&cur);
         /* 用户手动给了非零强度但自动判为 BYPASS 时，提升为 BRIGHTEN，
@@ -1013,6 +1063,8 @@ int main(int argc, char** argv) {
             cfg.nn_high_clip_guard = (float)atof(argv[++i]);
         } else if (strcmp(argv[i], "--ctbg") == 0) {
             g_ctbg_mode = 1;
+        } else if (strcmp(argv[i], "--paramnet") == 0) {
+            g_paramnet_mode = 1;   /* 路线 B2：需配合 --model <paramnet_256x144_aipp.om> */
         } else if (strcmp(argv[i], "--ctbg-writeback") == 0) {
             g_ctbg_writeback = 1;
         } else if (strcmp(argv[i], "--ctbg-est-om") == 0 && i + 1 < argc) {

@@ -1,3 +1,5 @@
+#define _GNU_SOURCE   /* fmemopen（内存 buffer 施加 blob） */
+
 #include "isp.h"
 
 #include "log.h"
@@ -449,17 +451,12 @@ fail:
  *     bit4=DRC_COLOR(u8 cc_ctrl/low_sat/high_sat + u16 color_correction_lut[33])
  *     bit3/bit4 属 DRC 属性子段，仅在 bit0 置位时有效。 */
 
-int isp_load_blob_and_apply(const char *path)
+/* 从已打开的 FILE*（文件或 fmemopen 的内存）解析并施加 blob；不关闭 fp。
+ * 解析逻辑单一来源，文件入口与实时闭环的内存 buffer 入口共用。 */
+static int isp_apply_blob_fp(FILE *fp)
 {
-    FILE *fp;
     uint32_t magic, version, flags;
     int ret = -1;
-
-    fp = fopen(path, "rb");
-    if (fp == NULL) {
-        LOG_ERR("isp_load_blob: cannot open %s", path);
-        return -1;
-    }
 
     /* 读取头部 */
     if (fread(&magic,   4, 1, fp) != 1 ||
@@ -631,8 +628,33 @@ int isp_load_blob_and_apply(const char *path)
 
     ret = 0;
 cleanup:
+    return ret;   /* fp 由调用方关闭 */
+}
+
+/* 从内存 buffer 施加 blob（实时闭环：paramnet_theta_to_blob 产物 → 此处，免落盘）。 */
+int isp_apply_blob_buffer(const unsigned char *buf, unsigned long len)
+{
+    FILE *fp = fmemopen((void *)buf, (size_t)len, "rb");
+    if (fp == NULL) {
+        LOG_ERR("isp_apply_blob_buffer: fmemopen failed");
+        return -1;
+    }
+    int rc = isp_apply_blob_fp(fp);
     fclose(fp);
-    return ret;
+    return rc;
+}
+
+/* 从文件加载并施加 blob（诊断/离线 load_isp 用）。 */
+int isp_load_blob_and_apply(const char *path)
+{
+    FILE *fp = fopen(path, "rb");
+    if (fp == NULL) {
+        LOG_ERR("isp_load_blob: cannot open %s", path);
+        return -1;
+    }
+    int rc = isp_apply_blob_fp(fp);
+    fclose(fp);
+    return rc;
 }
 
 #else /* !WITH_SS928_SDK */
@@ -747,6 +769,13 @@ int isp_gamma_apply_curve(const float *curve, unsigned nodes, float strength)
 int isp_load_blob_and_apply(const char *path)
 {
     (void)path;
+    return -1;
+}
+
+int isp_apply_blob_buffer(const unsigned char *buf, unsigned long len)
+{
+    (void)buf;
+    (void)len;
     return -1;
 }
 
