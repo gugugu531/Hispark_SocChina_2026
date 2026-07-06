@@ -26,6 +26,13 @@ cc -std=c11 -Wall -Wextra -I"${BOARD}/include" \
 echo "== running test_lut_bridge =="
 "${bin}" || fail=1
 
+# ParamNet u(30)→θ(97) 映射：核对 C 移植与 Python u_to_theta 逐值一致（域一致性）。
+bin="${OUT}/test_paramnet_map"
+cc -std=c11 -Wall -Wextra -I"${BOARD}/include" \
+    "${BOARD}/tests/test_paramnet_map.c" "${BOARD}/src/paramnet_map.c" -lm -o "${bin}"
+echo "== running test_paramnet_map =="
+"${bin}" || fail=1
+
 # 流水线配置、状态与退出码契约测试。
 bin="${OUT}/test_pipeline_contract"
 cc -std=c11 -Wall -Wextra -I"${BOARD}/include" \
