@@ -290,28 +290,119 @@ def cmd_infer(args) -> int:
     return 0
 
 
-def cmd_export(args) -> int:
-    """导出 ONNX（Phase 3：ATC→OM 前置。架构固定，权重可后换重导）。"""
-    device = torch.device("cpu")
-    model = ParamNet().to(device)
-    ck = torch.load(Path(args.outdir) / "paramnet.pt", map_location=device)
-    model.load_state_dict(ck["state_dict"])
+# ── ONNX 导出 + NPU 部署前置审计（路线 B1）────────────────────────
+# 红名单：ONNX 层面易落 AICPU / 板端实测异常的算子（AGENTS.md：禁 Resize/插值；
+# 转 OM 须无 AICPU/Cast 残留）。命中即 FAIL。
+NPU_FORBIDDEN_OPS = {
+    "Pow", "Cast", "ReduceMean", "ReduceSum", "ReduceMax", "ReduceMin",
+    "ReduceProd", "Resize", "Upsample", "NonZero", "ScatterND", "GatherND",
+    "TopK", "NonMaxSuppression", "RoiAlign", "Einsum",
+}
+# 已知 AICore 友好算子；不在此表也不在红名单的算子仅告警（建议人工确认）。
+NPU_SAFE_OPS = {
+    "Conv", "Relu", "Clip", "LeakyRelu", "PRelu", "AveragePool", "MaxPool",
+    "GlobalAveragePool", "Sigmoid", "Tanh", "Add", "Mul", "Sub", "Div",
+    "Flatten", "Reshape", "Transpose", "Concat", "Gemm", "MatMul",
+    "BatchNormalization", "Softmax", "Constant", "Identity",
+}
+
+
+def _build_paramnet(outdir: Path, ckpt: Path | None):
+    """构建 ParamNet；有权重则加载，无则随机初始化。
+    注意：ONNX 图/算子集与权重值无关，随机初始化足以做算子/形状审计。"""
+    model = ParamNet()
+    path = ckpt if ckpt else (outdir / "paramnet.pt")
+    loaded = None
+    if path.exists():
+        ck = torch.load(path, map_location="cpu")
+        model.load_state_dict(ck["state_dict"])
+        loaded = str(path)
     model.eval()
+    return model, loaded
+
+
+def _export_onnx(model, out_path: Path, opset: int = 13):
+    """统一导出入口（export 与 audit 共用，保证审计对象 = 实际导出图）。"""
     dummy = torch.zeros(1, 3, NET_H, NET_W)
-    out = Path(args.outdir) / "paramnet_256x144_fp32.onnx"
-    torch.onnx.export(model, dummy, str(out), opset_version=13,
+    torch.onnx.export(model, dummy, str(out_path), opset_version=opset,
                       input_names=["image"], output_names=["u"],
                       do_constant_folding=True)
+
+
+def _audit_onnx(onnx_path: Path) -> bool:
+    """审计导出图是否 NPU 部署友好。返回 True=PASS。"""
+    import onnx
+    from collections import Counter
+
+    m = onnx.load(str(onnx_path))
+    onnx.checker.check_model(m)
+    ok = True
+
+    default_opsets = [op.version for op in m.opset_import if op.domain in ("", "ai.onnx")]
+    print(f"  opset(默认域): {default_opsets}")
+    if len(set(default_opsets)) != 1:
+        print("  ⚠ 非单一默认域 opset"); ok = False
+
+    def _shape(vi):
+        out = []
+        for d in vi.type.tensor_type.shape.dim:
+            out.append(d.dim_value if d.HasField("dim_value") else (d.dim_param or "?"))
+        return out
+
+    in_shape = _shape(m.graph.input[0])
+    out_shape = _shape(m.graph.output[0])
+    print(f"  输入 {m.graph.input[0].name}: {in_shape}")
+    print(f"  输出 {m.graph.output[0].name}: {out_shape}")
+    if in_shape != [1, 3, NET_H, NET_W]:
+        print(f"  ⚠ 输入非静态 1x3x{NET_H}x{NET_W}"); ok = False
+    if any(not isinstance(d, int) for d in in_shape + out_shape):
+        print("  ⚠ 存在动态维(dynamic axis)——ATC 需固定 shape"); ok = False
+
+    ops = Counter(n.op_type for n in m.graph.node)
+    print(f"  算子分布: {dict(ops)}")
+    forbidden = sorted(set(ops) & NPU_FORBIDDEN_OPS)
+    unknown = sorted(set(ops) - NPU_SAFE_OPS - NPU_FORBIDDEN_OPS)
+    if forbidden:
+        print(f"  ✗ 命中红名单算子(易落 AICPU/异常): {forbidden}"); ok = False
+    if unknown:
+        print(f"  ⚠ 未在已知安全表中的算子(人工确认是否 AICore): {unknown}")
+    return ok
+
+
+def cmd_export(args) -> int:
+    """导出 ONNX（Phase 3：ATC→OM 前置。架构固定，权重可后换重导）。"""
+    outdir = Path(args.outdir)
+    outdir.mkdir(parents=True, exist_ok=True)
+    model, loaded = _build_paramnet(outdir, Path(args.ckpt) if args.ckpt else None)
+    if loaded is None:
+        print("⚠ 未找到 paramnet.pt；导出随机权重图（仅供算子/形状验证，非部署权重）")
+    out = outdir / "paramnet_256x144_fp32.onnx"
+    _export_onnx(model, out)
     print(f"ONNX -> {out}  (输入 1x3x{NET_H}x{NET_W} NCHW，输出 1x{U_DIM})")
     print("ATC: atc --model=... --framework=5 --soc_version=OPTG --output=... "
           "--input_format=NCHW（FP16 由 ATC 默认精度处理）")
     return 0
 
 
+def cmd_audit(args) -> int:
+    """路线 B1 关口：导出 ONNX 并审计是否 NPU 部署友好
+    （算子红名单 / 静态 shape / 单 opset）。权重可缺（算子与权重无关）。"""
+    outdir = Path(args.outdir)
+    outdir.mkdir(parents=True, exist_ok=True)
+    model, loaded = _build_paramnet(outdir, Path(args.ckpt) if args.ckpt else None)
+    print(f"权重: {loaded or '未找到 → 随机初始化(仅审计图结构，与权重无关)'}")
+    onnx_path = outdir / "paramnet_256x144_fp32.onnx"
+    _export_onnx(model, onnx_path)
+    print(f"ONNX -> {onnx_path}")
+    ok = _audit_onnx(onnx_path)
+    print(f"\n审计结论: {'PASS ✅ 可进 ATC→OM' if ok else 'FAIL ✗ 需修图后重导'}")
+    return 0 if ok else 1
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     sub = ap.add_subparsers(dest="cmd", required=True)
-    for name in ("prepare", "train", "eval", "infer", "export"):
+    for name in ("prepare", "train", "eval", "infer", "export", "audit"):
         p = sub.add_parser(name)
         p.add_argument("--outdir", default="models/weights/paramnet")
         p.add_argument("--resnet", default="models/weights/calib/residual_net.pt")
@@ -320,15 +411,16 @@ def main() -> int:
             p.add_argument("--epochs", type=int, default=24)
             p.add_argument("--lr", type=float, default=3e-4)
             p.add_argument("--eval-every", type=int, default=2)
+        if name in ("infer", "export", "audit"):
+            p.add_argument("--ckpt", default=None, help="指定 ParamNet ckpt(默认 outdir/paramnet.pt)")
         if name == "infer":
             p.add_argument("--frame", required=True, help="中性帧 NV21")
-            p.add_argument("--ckpt", default=None, help="指定 ParamNet ckpt(默认 outdir/paramnet.pt)")
             p.add_argument("--frame-width", type=int, default=1024)
             p.add_argument("--frame-height", type=int, default=576)
             p.add_argument("--out", default="models/weights/paramnet/paramnet_theta.bin")
     args = ap.parse_args()
     return {"prepare": cmd_prepare, "train": cmd_train, "eval": cmd_eval,
-            "infer": cmd_infer, "export": cmd_export}[args.cmd](args)
+            "infer": cmd_infer, "export": cmd_export, "audit": cmd_audit}[args.cmd](args)
 
 
 if __name__ == "__main__":

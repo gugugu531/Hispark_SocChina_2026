@@ -72,8 +72,12 @@ NN（ParamNet）从场景图预测 SS928 ISP 参数（DRC/LDCI/Gamma），ISP �
 - `calib_dataset.py`：LHS 采样（v2 对称+γ，30 维）→ blob 目录；`report` 残差量化。
 - `residual_net.py`：FiLM 残差校准网 R（θ 条件 95 维含 gamma；`--ch/--blocks` 可配；
   **`--init` 热启动 / `--resume` 全状态 + 每 eval 原子存 `last.pt`**——训练偶发 CUDA 忙等冻结，靠这个兜底）。
-- `paramnet.py`：352K ParamNet（NPU 红名单安全：无 Pow/Cast/ReduceMean）；`prepare/train/eval/infer`
-  （`infer --ckpt` 指定权重）；`CalibratedProxy` 按 ckpt 的 theta_slice/ch/blocks 自适应。
+- `paramnet.py`：352K ParamNet（NPU 红名单安全：无 Pow/Cast/ReduceMean）；`prepare/train/eval/infer/export/audit`
+  （`infer/export/audit --ckpt` 指定权重）；`CalibratedProxy` 按 ckpt 的 theta_slice/ch/blocks 自适应。
+  - **`audit`（路线 B1 前置关口）**：导出 ONNX 并审计 NPU 部署友好性——红名单算子
+    （Pow/Cast/ReduceMean/Resize…命中即 FAIL）/ 静态 NCHW shape / 单 opset。权重可缺
+    （算子与权重无关，随机初始化即可审图）。`export`/`audit` 已改为无权重时随机初始化，
+    不再硬失败。**已实测 PASS**（见 §4 路线 B）。
 - `hw_search.py`：真实 ISP 上两轮黑盒 θ\* 搜索（蒸馏标签原型，`--ref` 参照后缀）。
 - `distill.py`：`gen`（选图+候选池 LHS+γ+per-image warmstart 保底）/`labels`（逐图 θ\*）/
   `finetune`（**排练式**：LCDP 代理目标保泛化 + 硬件 θ\* 拉修正）。
@@ -111,7 +115,13 @@ NN（ParamNet）从场景图预测 SS928 ISP 参数（DRC/LDCI/Gamma），ISP �
 ### 路线 B（部署验证，可能比 A 更根本）：OM 导出 + 实时闭环
 "能否 30fps 实时"是整个架构成立的前提，尚未端到端验证。
 - ONNX 导出 ParamNet（红名单已规避 Pow/Cast/ReduceMean；固定输入 256×144 NCHW，单 opset）。
+  - **B1 关口①（ONNX 算子审计）已 PASS**（`python -m models.isp_simulator.paramnet audit`，主机离线，
+    随机权重即可）：opset 单一 =13、输入 `[1,3,144,256]` 静态 NCHW、输出 `[1,30]`，算子仅
+    `Conv×6 / Relu×5 / AveragePool×1 / Sigmoid×1 / Flatten×1`——**零红名单算子**（AvgPool 是固定核，
+    非 ReduceMean）。红名单安全声称已客观坐实。
 - ATC→OM（FP16、`soc_version=OPTG`）；**算子探测先行**：转 OM 确认无 AICPU/Cast 残留、profiling 全落 AICore。
+  - **B1 关口②（ATC→OM）待 CANN**：本机无 CANN/atc 编译器（`atc` conda env 仅 Python 侧依赖），
+    需在装有 CANN 的机器或板端做。关口①已扫清图层面障碍，②主要验证 ATC 落地与 AICore 占比。
 - 实时闭环：`chn2 缩略图 → AIPP → ParamNet OM → u→θ → blob → ss_mpi_isp_set_*_attr 热刷新`。
   复用 `board/src/main.c` control worker（场景变化触发 ~10Hz）、CLUT 桥的逐次步长护栏/反馈抑制。
 - 注意闭环稳定性：ParamNet 输入是"当前参数处理后的帧"，存在反馈回路——板端复用步长护栏经验。
