@@ -95,7 +95,9 @@
     cleanupWebRTC();
 
     try {
-      webrtcPc = new RTCPeerConnection({iceServers: [{urls: 'stun:stun.l.google.com:19302'}]});
+      // LAN 部署（受管网/直连）无需 NAT 穿透；不设 STUN，避免离线时 ICE 等待
+      // 公网 STUN 超时才发 WHEP、超过下方回退计时导致 WebRTC "超时"。
+      webrtcPc = new RTCPeerConnection({iceServers: []});
       webrtcPc.addTransceiver('video', {direction: 'recvonly'});
       webrtcPc.onicecandidate = function(e) {
         if (e.candidate) return;

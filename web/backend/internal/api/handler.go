@@ -55,6 +55,26 @@ func New(app *appclient.Client, med *media.Client, admin *adminclient.Client, st
 			p.ModifyResponse = func(r *http.Response) error {
 				// Allow CORS so browser can access HLS from different port
 				r.Header.Set("Access-Control-Allow-Origin", "*")
+				// MediaMTX 的 HLS cookie 校验会下发 `Secure` cookie 并 302 到
+				// /live/...?cookieCheck=1。控制台走明文 HTTP 时:
+				//   1) Secure cookie 浏览器不回传 → 死循环;剥掉 Secure（本地网可信）。
+				//   2) 302 Location 是绝对路径 /live/...，会绕过 /hls 代理前缀;补回 /hls。
+				// 明文 HTTP 下 cookie 需可回传：去 Secure/Partitioned，SameSite=None→Lax
+				// （SameSite=None 规范强制要求 Secure，二者只去其一浏览器仍拒收）。
+				if sc := r.Header["Set-Cookie"]; len(sc) > 0 {
+					for i, c := range sc {
+						c = strings.ReplaceAll(c, "; Secure", "")
+						c = strings.ReplaceAll(c, "; secure", "")
+						c = strings.ReplaceAll(c, "; Partitioned", "")
+						c = strings.ReplaceAll(c, "SameSite=None", "SameSite=Lax")
+						sc[i] = c
+					}
+					r.Header["Set-Cookie"] = sc
+				}
+				if loc := r.Header.Get("Location"); strings.HasPrefix(loc, "/") &&
+					!strings.HasPrefix(loc, "/hls") {
+					r.Header.Set("Location", "/hls"+loc)
+				}
 				return nil
 			}
 			h.hlsProxy = p
