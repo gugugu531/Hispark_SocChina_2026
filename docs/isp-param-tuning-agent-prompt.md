@@ -18,7 +18,9 @@ NN（ParamNet）从场景图预测 SS928 ISP 参数（DRC/LDCI/Gamma），ISP �
 | 3 硬件蒸馏 | θ\* 硬件标签 + 排练微调；4 留出图 over2 过压 +2.28dB；机制验证成功，**需扩标签规模** | 🔶 首轮 |
 | — 定位验证 | 真实 RAW 欠曝恢复本路线胜 Zero-DCE +5.2dB；LOL(8-bit暗图)是 RGB 深网主场（§5.15/5.16） | ✅ |
 
-**下一步最高优先级**：扩蒸馏标签规模（画质路线）**或** OM 导出+实时闭环集成（部署验证）。见 §5。
+**下一步最高优先级**：~~OM 导出+实时闭环集成（部署验证）~~ **已板端跑通**（§4 路线 B，socchina_app
+`--paramnet`，30fps/0 drops/无 AICPU）→ 现转向 **画质裁决**（夜间/逆光难场景 A/B，路线 C）与
+**扩蒸馏标签规模**（路线 A，`distill_expand` 已备 177 图候选池，待板端 labels）。
 
 ## 1. 不可违背的核心方法论（每一条都有实测代价背书）
 
@@ -135,6 +137,19 @@ NN（ParamNet）从场景图预测 SS928 ISP 参数（DRC/LDCI/Gamma），ISP �
 - 实时闭环：`chn2 缩略图 → AIPP → ParamNet OM → u→θ → blob → ss_mpi_isp_set_*_attr 热刷新`。
   复用 `board/src/main.c` control worker（场景变化触发 ~10Hz）、CLUT 桥的逐次步长护栏/反馈抑制。
 - 注意闭环稳定性：ParamNet 输入是"当前参数处理后的帧"，存在反馈回路——板端复用步长护栏经验。
+- **✅ 已板端验证（B2 端到端跑通，架构成立前提坐实）**：C 侧实现全在 `board/src/`——
+  `paramnet_map.c`（u→θ / θ→blob，主机单测**逐值/字节级**对齐 Python）+ `paramnet_ctrl.c`
+  （`paramnet_run_and_apply`：`infer_run_nv21`→u→θ→blob→`isp_apply_blob_buffer` 内存施加）+
+  main.c `--paramnet` 开关（control worker 刷新判决通过后整体替代 CoTF 的 Gamma+CLUT）。
+  - 用法：`socchina_app --paramnet --model <paramnet_256x144_aipp.om>`。OM 由 `build_paramnet_om.sh` 产。
+  - 冒烟实测（22s，`--no-display --stream`，静态白天桌面）：`infer up in=55296B out=60B`；
+    ParamNet 推理 **~1.6ms**；DRC(strength 随场景 743~753)/LDCI/Gamma 全段施加；
+    **stream 646 帧 0 drops，timeouts=0 fail=0 transient=0 fatal=0 degraded=0，exit=0**；
+    **无 AICPU/SMMU/CMDQ/aclmdlExecute 错误**。→ "能否 30fps 实时" 已 YES。
+  - **画质初评（同场景 A/B，paramnet vs no-nn/vendor）**：easy 场景 paramnet 中度压暗
+    （mean 159→146，std 35→26，两者均 0% 高光裁剪）——**非强改善**，符合"白天 vendor-auto 本无问题"。
+    画质裁决仍需**夜间/逆光/过曝难场景**（路线 C）+ 与离线 sim 预测对账。
+  - **未测**：显示/HDMI 路径、10 分钟长稳、多场景切换的反馈环稳定性、WDR 模式。
 
 ### 路线 C（现场验收）：考验场景真实 A/B
 桌面白天场景 vendor-auto 本无明显问题。需夜间/强逆光真实采集，与 vendor-auto/WDR 对比 + 10 分钟稳定性 +
