@@ -216,6 +216,7 @@ type outputsBlock struct {
 type healthBlock struct {
 	AppOK   bool `json:"app_ok"`
 	MediaOK bool `json:"media_ok"`
+	AdminOK bool `json:"admin_ok"`
 }
 
 func (h *Handler) buildStatus() statusPayload {
@@ -242,6 +243,7 @@ func (h *Handler) buildStatus() statusPayload {
 		Health: healthBlock{
 			AppOK:   h.App.Ping(),
 			MediaOK: h.Media.Ping(),
+			AdminOK: h.Admin.Ping(),
 		},
 	}
 }

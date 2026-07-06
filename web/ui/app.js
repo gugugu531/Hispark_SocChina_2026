@@ -66,9 +66,13 @@
     setBool('o-hls', o.hls);
     setNum('o-viewers', o.viewers, '');
 
-    // 健康
+    // 健康（admin_ok 由后端 SSE health 块带出，不再每秒轮询 /api/v1/config）
     setBool('h-app', h.app_ok);
     setBool('h-media', h.media_ok);
+    setBool('h-admin', h.admin_ok);
+
+    // 热控件回填（原为覆盖 updateDashboard 的猴子补丁，现直接内联）
+    syncHotFromStatus(data);
 
     // 如果应用不可用，切换到 HLS 视频模式
     if (p.state === 'UNAVAILABLE' && videoMode === 'webrtc') {
@@ -260,7 +264,14 @@
   });
   $('btn-rtsp').addEventListener('click', function () {
     setVideoModeBtn('rtsp');
-    $('video-latency').textContent = 'rtsp://板子IP:8554/live (VLC/ffplay)';
+    var url = 'rtsp://' + window.location.hostname + ':8554/live';
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(url).then(
+        function() { $('video-latency').textContent = '已复制: ' + url; },
+        function() { $('video-latency').textContent = url + ' (VLC/ffplay)'; });
+    } else {
+      $('video-latency').textContent = url + ' (VLC/ffplay)';
+    }
     setTimeout(function() { $('video-latency').textContent = ''; }, 5000);
   });
   $('btn-reconnect').addEventListener('click', function () {
@@ -458,13 +469,6 @@
     });
   }
 
-  // Hook into the existing updateDashboard to also sync hot controls
-  var _origUpdateDashboard = updateDashboard;
-  updateDashboard = function(data) {
-    _origUpdateDashboard(data);
-    syncHotFromStatus(data);
-  };
-
   // ── 冷配置 (W2) ──
   function loadConfig() {
     fetch('/api/v1/config')
@@ -569,19 +573,6 @@
       })
       .catch(function() { $('cfg-status').textContent = '请求失败'; hideProgress(); });
   });
-
-  // ── 健康检查加 admin ──
-  var origBuild = updateDashboard;
-  updateDashboard = function(data) {
-    origBuild(data);
-    // Also check admin socket
-    fetch('/api/v1/config')
-      .then(function(r) { return r.json(); })
-      .then(function(d) {
-        setBool('h-admin', !d.error);
-      })
-      .catch(function() { setBool('h-admin', false); });
-  };
 
   // ── 参数侧边栏 显示/隐藏 ──
   // 语义:body.sidebar-hidden 在宽屏 = 移除侧边栏(主区占满);
