@@ -21,6 +21,8 @@ DRC（S-curve 色调映射）+ LDCI（9×9 局域直方图均衡）三级级联�
 | Phase 1.8 | 残差校准网络 v1：sim+R 校准代理，留出集 15.5→27.4 dB | ✅ PASS (2026-07-03) |
 | Phase 2 | ISP ParamNet 训练 + 消融（训练环境 = 校准代理） | 🔶 首轮完成 (2026-07-03)：352K 全卷积，LCDP valid 15.3→20.6 dB，超 CTBG v9 上限(19.83) |
 | Phase 3 | ONNX→OM 导出 + 板端集成 + A/B 测试 | 🔶 A/B 冒烟打通 (2026-07-03)：NN→θ→blob→回灌施加，真实场景暗部 +35% 零裁剪 |
+| Phase 3.5 | **实时闭环板端验证**（socchina_app `--paramnet`：chn2→OM→u→θ→blob→ISP 热刷新） | ✅ **端到端跑通 (2026-07-06)**：OM 推理 ~1.6ms，DRC/LDCI/Gamma 场景相关施加，stream 646 帧 **0 drops / 0 error / 无 AICPU**，exit=0。"能否 30fps 实时"这一架构成立前提坐实。C 侧：`board/src/paramnet_map.c`(u→θ/θ→blob，主机字节级单测) + `paramnet_ctrl.c` + main.c `--paramnet`。OM 由 `models/isp_simulator/build_paramnet_om.sh` 产。 |
+| Phase 4 | 扩蒸馏标签（Route A）：177 图候选池 `distill_expand/` 已备；板端 labels | 🔶 **pilot 通 (2026-07-06)**：3 图小样全链跑通，θ* 均超 ParamNet +0.28 dB；**全量 177 图(~3h 板端)未开** |
 
 > 保真度闸门、blob v1→v3、批量校准与残差网络的完整实验记录见
 > [isp-param-tuning-research.md](isp-param-tuning-research.md) §5。
@@ -98,8 +100,20 @@ DRC（S-curve 色调映射）+ LDCI（9×9 局域直方图均衡）三级级联�
 
 ## 4. 待完成项
 
-- 📋 ISP 参数自动调优（Phase 1-3，见 §0）
-- ❌ 板端测试自动化
+**ISP 参数自动调优主线（部署闭环已通，剩画质裁决与扩标签）**
+- 🟡 **画质裁决（路线 C，最高优先级）**：B2 easy 场景 A/B 显示 paramnet 中度压暗、非强改善；
+  需**夜间/强逆光/过曝真实场景** A/B（paramnet vs vendor-auto/WDR），并与离线 sim 预测对账。
+- 🔶 **扩蒸馏标签全量（路线 A）**：pilot 已通（+0.28dB），全量 177 图（`distill_expand/`，~3h 板端多会话）
+  未开 → `distill labels` → `distill finetune`（排练式）。见 [isp-param-tuning-agent-prompt.md](isp-param-tuning-agent-prompt.md) §4。
+- 🟡 **B2 runtime 深验**：显示/HDMI 路径未测、10 分钟长稳未测、多场景切换反馈环稳定性未压、WDR 模式未测。
+- 🟡 已知模拟器残差（蒸馏免疫，走代理路线才需修）：极暗域 DRC strength 外推低估、`ldci.py` CLAHE 暗纹理反序。
+
+**板端交互 / 工程**
+- 🟡 **LVGL 板端 UI 上板收尾**：交叉编译已通（`board/ui/`, `--DENABLE_LVGL`）；上板 flicker/触摸标定/
+  透明叠加（GFBG G0 视频透出）待验证（当前 ui_lvgl 屏幕不透明，首次上板会盖住视频，属预期）。
+- 🟢 SDK-free **全量**板端构建在既有 `ctbg_isp_map.c`/`infer_ctbg.c` 处失败（无条件 include SDK 头）；
+  正规 SDK-free 验证 `test_host.sh` 全绿。若需全量 SDK-free 可加 `#ifdef WITH_SS928_SDK` 守卫。
+- ❌ 板端测试自动化（触硬件 `test_<名>` 目前手动跑）
 - ❌ `LICENSE` 内容待定
 - 🟡 面板 flicker 观感需现场目视确认
 - 🟡 WDR 强逆光场景画质细调、运动鬼影、长时稳定性
