@@ -10,7 +10,8 @@
 - 选一个不需要看视频的时段(如夜间)。SSH 会话要稳(建议 `tmux`/`nohup`,断连不杀脚本)。
 
 ## 已就绪(本会话已准备)
-- 板端 `/root/socchina-2026/distill_run/`:`img000..176.raw`(177 张)+ `pool/z000..304.bin`(305 候选)。
+- 板端 `/root/socchina-2026/distill_run/`:**已齐**(2026-07-07 本会话):`pool/z000..304.bin`(305 候选)
+  + `img00..176.raw`(177 张,2.1GB)。直连以太网推入(IP 192.168.1.168,~10.6 MB/s)。
 - 板端评选工具:`/root/socchina-2026/test_raw_replay_b2`(支持 `--raw-file`;旧 `test_raw_replay` 不支持)。
 - 一键脚本:`/root/socchina-2026/distill_run/board_distill_run_all.sh`(源在仓库 `scripts/board_distill_run_all.sh`)。
 - 主机:`distill_expand/` 的 `img*_input.png`/`img*_gt.png`/`pool.pt`/`meta.json` 齐备;GPU + LCDP 数据集可离线微调。
