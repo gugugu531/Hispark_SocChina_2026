@@ -115,9 +115,9 @@ DRC（S-curve 色调映射）+ LDCI（9×9 局域直方图均衡）三级级联�
 - 🟡 已知模拟器残差（蒸馏免疫，走代理路线才需修）：极暗域 DRC strength 外推低估、`ldci.py` CLAHE 暗纹理反序。
 
 **板端交互 / 工程**
-- 🟡 **authproxy 未鉴权端点**：`web/authproxy/main.go` 的 `/api/v1/config*`、`/api/v1/status` 处理器注册在
-  `/` 鉴权兜底之外，不校验 session cookie → 可无凭证直连 :8080 改冷配置/读状态。需给这些处理器补 session 校验
-  （与 `/` 一致），保留浏览器同源 cookie 正常放行。
+- ✅ **authproxy 未鉴权端点**（2026-07-07 已修，已上板验证）：`web/authproxy/main.go` 的
+  `/api/v1/config*`、`/api/v1/status` 处理器原注册在 `/` 鉴权兜底之外、不校验 session → 可无凭证直连
+  :8080 改冷配置/读状态。已加 `requireSession` 在四处理器入口守卫（浏览器同源 cookie 正常放行）。
 - 🟡 **LVGL 板端 UI 上板收尾**：交叉编译已通（`board/ui/`, `--DENABLE_LVGL`）；上板 flicker/触摸标定/
   透明叠加（GFBG G0 视频透出）待验证（当前 ui_lvgl 屏幕不透明，首次上板会盖住视频，属预期）。
 - 🟢 SDK-free **全量**板端构建在既有 `ctbg_isp_map.c`/`infer_ctbg.c` 处失败（无条件 include SDK 头）；
