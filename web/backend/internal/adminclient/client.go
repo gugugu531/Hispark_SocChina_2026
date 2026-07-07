@@ -21,8 +21,27 @@ func New(addr string) *Client {
 	return &Client{addr: addr}
 }
 
-// call sends a request and returns the raw response map.
+// Per-op response deadlines. Short ops (get/validate) return promptly, but
+// cold-config transactions on the admin side restart socchina-stream and wait
+// for health (up to ~15s), and a failed apply additionally rolls back with a
+// second restart+health wait. A blanket 5s deadline made those legitimately
+// slow ops falsely report "admin socket unavailable" even though the board
+// completed the transaction. Give the long ops a deadline that exceeds the
+// admin's worst-case synchronous time.
+const (
+	shortOpTimeout = 5 * time.Second
+	applyTimeout   = 45 * time.Second // restart+health(15s) ×2 (apply + rollback) + margin
+	restartTimeout = 20 * time.Second // single service restart
+)
+
+// call sends a request with the default short-op deadline.
 func (c *Client) call(op string, params map[string]interface{}) (map[string]interface{}, error) {
+	return c.callTimeout(op, params, shortOpTimeout)
+}
+
+// callTimeout sends a request and returns the raw response map, using the
+// given response deadline.
+func (c *Client) callTimeout(op string, params map[string]interface{}, timeout time.Duration) (map[string]interface{}, error) {
 	if c.addr == "" {
 		return nil, errUnavailable
 	}
@@ -41,7 +60,7 @@ func (c *Client) call(op string, params map[string]interface{}) (map[string]inte
 	}
 	defer conn.Close()
 
-	conn.SetDeadline(time.Now().Add(5 * time.Second))
+	conn.SetDeadline(time.Now().Add(timeout))
 	if _, err := conn.Write(reqB); err != nil {
 		return nil, errUnavailable
 	}
@@ -112,25 +131,25 @@ func (c *Client) ApplyConfig(cfg map[string]string) error {
 	for k, v := range cfg {
 		params[k] = v
 	}
-	_, err := c.call("config.apply", params)
+	_, err := c.callTimeout("config.apply", params, applyTimeout)
 	return err
 }
 
 // Rollback restores the last-good configuration.
 func (c *Client) Rollback() error {
-	_, err := c.call("config.rollback", nil)
+	_, err := c.callTimeout("config.rollback", nil, applyTimeout)
 	return err
 }
 
-// SetHDMI enables or disables HDMI output.
+// SetHDMI enables or disables HDMI output (cold change → full apply transaction).
 func (c *Client) SetHDMI(enable bool) error {
-	_, err := c.call("hdmi.set", map[string]interface{}{"enable": enable})
+	_, err := c.callTimeout("hdmi.set", map[string]interface{}{"enable": enable}, applyTimeout)
 	return err
 }
 
 // RestartService restarts the core streaming service via admin socket.
 func (c *Client) RestartService() error {
-	_, err := c.call("service.restart", nil)
+	_, err := c.callTimeout("service.restart", nil, restartTimeout)
 	return err
 }
 

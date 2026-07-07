@@ -398,6 +398,7 @@ func (h *Handler) controlHandler(w http.ResponseWriter, r *http.Request) {
 		"drc_mode":            true,
 		"drc_strength":        true,
 		"ldci_mode":           true,
+		"bitrate_kbps":        true,
 	}
 	filtered := map[string]interface{}{}
 	for k, v := range params {

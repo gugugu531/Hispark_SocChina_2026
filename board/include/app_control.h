@@ -37,6 +37,8 @@ typedef struct {
     int   drc_strength;           /* 0 .. 1023 */
     int   has_ldci_mode;
     int   ldci_mode;              /* 0 off / 1 auto */
+    int   has_bitrate_kbps;       /* VENC 编码码率热更新（无需重启视频流） */
+    int   bitrate_kbps;           /* 128 .. 51200 kbps */
     int   has_load_isp;           /* 从文件加载完整 ISP 参数 */
     char  isp_blob_path[256];     /* 二进制 ISP 参数文件路径 */
 } app_ctrl_params_t;

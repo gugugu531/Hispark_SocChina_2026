@@ -206,6 +206,40 @@ int stream_send_frame(const void* frame_info, int timeout_ms) {
     return 0;
 }
 
+int stream_set_bitrate(unsigned kbps) {
+    ot_venc_chn_attr attr;
+    td_s32 ret;
+
+    if (!g_stream.initialized) {
+        return -1;
+    }
+    if (kbps < 128u || kbps > 51200u) {
+        LOG_WARN("stream_set_bitrate: %u kbps out of range [128,51200]", kbps);
+        return -1;
+    }
+    ret = ss_mpi_venc_get_chn_attr(STREAM_VENC_CHN, &attr);
+    if (ret != TD_SUCCESS) {
+        LOG_ERR("ss_mpi_venc_get_chn_attr failed: %#x", (unsigned) ret);
+        return -1;
+    }
+    /* 仅支持在 CBR 模式下热改目标码率（本应用固定 H.264 CBR）。 */
+    if (attr.rc_attr.rc_mode != OT_VENC_RC_MODE_H264_CBR) {
+        LOG_WARN("stream_set_bitrate: rc_mode not H264_CBR, skip");
+        return -1;
+    }
+    if (attr.rc_attr.h264_cbr.bit_rate == kbps) {
+        return 0; /* 值未变，避免无谓的 set 抖动 RC */
+    }
+    attr.rc_attr.h264_cbr.bit_rate = kbps;
+    ret = ss_mpi_venc_set_chn_attr(STREAM_VENC_CHN, &attr);
+    if (ret != TD_SUCCESS) {
+        LOG_ERR("ss_mpi_venc_set_chn_attr failed: %#x", (unsigned) ret);
+        return -1;
+    }
+    LOG_INFO("venc bitrate -> %u kbps (hot)", kbps);
+    return 0;
+}
+
 int stream_deinit(void) {
     g_stream.stop = 1;
     if (g_stream.drain_started) {
@@ -238,6 +272,11 @@ int stream_init(const stream_cfg_t* cfg) {
 int stream_send_frame(const void* frame_info, int timeout_ms) {
     (void) frame_info;
     (void) timeout_ms;
+    return -1;
+}
+
+int stream_set_bitrate(unsigned kbps) {
+    (void) kbps;
     return -1;
 }
 

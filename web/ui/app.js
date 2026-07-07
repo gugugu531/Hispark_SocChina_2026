@@ -303,7 +303,8 @@
     {key: 'nn_high_clip_guard',  label: '高光保护阈值',      type: 'range',  min: 0, max: 100,  step: 1,    hot: true},
     {key: 'drc_mode',            label: '动态范围压缩',      type: 'select', opts: ['off','auto'], hot: true},
     {key: 'drc_strength',        label: '压缩强度',          type: 'range',  min: 0, max: 1023, step: 1,    hot: true},
-    {key: 'ldci_mode',           label: '局部对比度增强',    type: 'select', opts: ['off','auto'], hot: true}
+    {key: 'ldci_mode',           label: '局部对比度增强',    type: 'select', opts: ['off','auto'], hot: true},
+    {key: 'bitrate_kbps',        label: '编码码率(kbps·实时)', type: 'range', min: 128, max: 10000, step: 100, hot: true}
   ];
 
   var presets = {
@@ -490,6 +491,14 @@
         $('cfg-bitrate').value = c.BITRATE_KBPS || '3000';
         $('cfg-hdmi').value = c.ENABLE_HDMI || '0';
         $('cfg-status').textContent = 'gen ' + (d.generation || 0);
+        // 实时码率滑块初值同步配置里的持久码率（用户未在编辑时）
+        var brEl = $('hc-bitrate_kbps');
+        if (brEl && document.activeElement !== brEl && curHot.bitrate_kbps == null) {
+          var br = parseFloat(c.BITRATE_KBPS || '3000');
+          curHot.bitrate_kbps = br;
+          brEl.value = br;
+          hotDefs.forEach(function(d) { if (d.key === 'bitrate_kbps') updateHotVal(d); });
+        }
       })
       .catch(function() { $('cfg-status').textContent = 'admin 未连接'; });
   }

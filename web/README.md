@@ -84,7 +84,7 @@ Web 控制台依赖以下板端组件（不在 `web/` 范围内）：
 | 组件 | 路径 | 说明 |
 |------|------|------|
 | app-control socket | `/run/socchina/app-control.sock` | `socchina_app` 内 Unix socket（`board/src/app_control.c`，独立线程 + drain 槽），解析热参数交 control worker 串行应用到 ISP |
-| admin socket | `/tmp/socchina-admin.sock` | `socchina-admin` 冷配置事务服务 |
+| admin socket | `/run/socchina/admin.sock` | `socchina-admin` 冷配置事务服务（可用 `SOCCHINA_ADMIN_SOCK` 覆盖） |
 | MediaMTX | `:8888` (HLS) `:8889` (WebRTC) `:8554` (RTSP) | 视频网关，无转码协议转发 |
 | NN 推理 | `ENABLE_NN_CONTROL=1` in `runtime.conf` | 必须设 1 否则 `--no-nn` 导致 VPSS chn2 不创建 |
 

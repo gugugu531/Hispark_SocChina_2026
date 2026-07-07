@@ -76,8 +76,20 @@ func (e *Engine) Apply(candidate Raw) error {
 	}
 	writeKV(previousConf, current)
 
-	// Write candidate
-	if err := writeKV(pendingConf, candidate); err != nil {
+	// Merge candidate over the current config so operational keys the web
+	// form doesn't manage (e.g. CTRL_SOCK, which enables the app control
+	// socket) survive a cold-config apply. Writing the candidate verbatim
+	// would drop them and silently disable the hot-control channel.
+	merged := Raw{}
+	for k, v := range current {
+		merged[k] = v
+	}
+	for k, v := range candidate {
+		merged[k] = v
+	}
+
+	// Write merged config
+	if err := writeKV(pendingConf, merged); err != nil {
 		return fmt.Errorf("write pending: %w", err)
 	}
 

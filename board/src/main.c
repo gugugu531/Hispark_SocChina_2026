@@ -390,6 +390,14 @@ static void* control_worker(void* arg) {
                 if (p.has_drc_mode)            ctx->drc_mode            = p.drc_mode;
                 if (p.has_drc_strength)        ctx->drc_strength        = p.drc_strength;
                 if (p.has_ldci_mode)           ctx->ldci_mode           = p.ldci_mode;
+                if (p.has_bitrate_kbps) {
+                    /* VENC 码率热更新：直接作用于编码通道，不经 ISP 刷新路径 */
+                    if (stream_set_bitrate((unsigned)p.bitrate_kbps) == 0) {
+                        LOG_INFO("[ctrl] venc bitrate set: %d kbps", p.bitrate_kbps);
+                    } else {
+                        LOG_WARN("[ctrl] venc bitrate set failed: %d kbps", p.bitrate_kbps);
+                    }
+                }
                 if (p.has_load_isp) {
                     if (isp_load_blob_and_apply(p.isp_blob_path) == 0) {
                         LOG_INFO("[ctrl] isp blob loaded: %s", p.isp_blob_path);

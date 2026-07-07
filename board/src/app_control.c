@@ -12,6 +12,7 @@
 #include <string.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
+#include <sys/time.h>
 #include <sys/un.h>
 #include <unistd.h>
 
@@ -119,6 +120,8 @@ static void merge_pending(const app_ctrl_params_t *p)
                                       g_ctrl.pending_params.drc_strength = p->drc_strength; }
     if (p->has_ldci_mode)           { g_ctrl.pending_params.has_ldci_mode = 1;
                                       g_ctrl.pending_params.ldci_mode = p->ldci_mode; }
+    if (p->has_bitrate_kbps)        { g_ctrl.pending_params.has_bitrate_kbps = 1;
+                                      g_ctrl.pending_params.bitrate_kbps = p->bitrate_kbps; }
     if (p->has_load_isp)            { g_ctrl.pending_params.has_load_isp = 1;
                                       strncpy(g_ctrl.pending_params.isp_blob_path,
                                               p->isp_blob_path,
@@ -237,6 +240,12 @@ static void handle_client(int fd)
                 else if (strcmp(ev, "auto") == 0) m = 1;
                 if (m >= 0) { p.has_ldci_mode = 1; p.ldci_mode = m; }
             }
+            /* 编码码率热更新：运行时改 VENC CBR 目标码率，不重启视频流 */
+            if (parse_float(line, "\"bitrate_kbps\"", &fv) == 0 &&
+                fv >= 128.0f && fv <= 51200.0f) {
+                p.has_bitrate_kbps = 1;
+                p.bitrate_kbps     = (int)fv;
+            }
 
             merge_pending(&p);
 
@@ -244,14 +253,15 @@ static void handle_client(int fd)
                      "{\"id\":%llu,\"ok\":true,\"queued\":true}\n",
                      (unsigned long long)req_id);
             send_str(fd, resp);
-            LOG_INFO("[app_ctrl] set queued: strength=%s nn=%s guard=%s enh=%s tone=%s drc=%s ldci=%s",
+            LOG_INFO("[app_ctrl] set queued: strength=%s nn=%s guard=%s enh=%s tone=%s drc=%s ldci=%s bitrate=%s",
                      p.has_tone_strength       ? "yes" : "-",
                      p.has_nn_clut_enabled     ? "yes" : "-",
                      p.has_high_clip_guard     ? "yes" : "-",
                      p.has_enhancement_enabled ? "yes" : "-",
                      p.has_tone_enabled        ? "yes" : "-",
                      p.has_drc_mode            ? "yes" : "-",
-                     p.has_ldci_mode           ? "yes" : "-");
+                     p.has_ldci_mode           ? "yes" : "-",
+                     p.has_bitrate_kbps        ? "yes" : "-");
 
         } else if (strcmp(op, "load_isp") == 0) {
             char fpath[256];
@@ -342,6 +352,13 @@ void *app_ctrl_worker(void *arg)
         if (r <= 0) continue;
         int client = accept(fd, NULL, NULL);
         if (client < 0) continue;
+        /* 加固：给客户端连接设读超时，避免慢/半开客户端把单线程 accept 循环
+         * 卡死（recv 无限阻塞会让并发的 status/set 连接全部超时→web 报
+         * "app socket unavailable"）。500ms 足够本地回环的一问一答。 */
+        {
+            struct timeval rcvto = {0, 500 * 1000};
+            (void)setsockopt(client, SOL_SOCKET, SO_RCVTIMEO, &rcvto, sizeof(rcvto));
+        }
         handle_client(client);
         close(client);
     }

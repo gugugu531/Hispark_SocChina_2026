@@ -33,6 +33,16 @@ var (
 	sessions   = map[string]time.Time{}
 	sessionsMu sync.Mutex
 	tokenKey   = randomHex(16)
+
+	// adminSockPath 是冷配置事务用的 admin Unix socket。默认板端 /run/socchina/admin.sock，
+	// 与 socchina-admin 监听地址、socchina-web adminclient 及 web.conf 的 ADMIN_SOCK 一致；
+	// 主机侧测试可用 SOCCHINA_ADMIN_SOCK 覆盖。
+	adminSockPath = func() string {
+		if p := os.Getenv("SOCCHINA_ADMIN_SOCK"); p != "" {
+			return p
+		}
+		return "/run/socchina/admin.sock"
+	}()
 )
 
 func main() {
@@ -265,12 +275,19 @@ func rateLimit(key string) bool {
 }
 
 func adminCall(op string, params map[string]interface{}) []byte {
-	conn, err := net.DialTimeout("unix", "/tmp/socchina-admin.sock", 2*time.Second)
+	conn, err := net.DialTimeout("unix", adminSockPath, 2*time.Second)
 	if err != nil {
 		return []byte(`{"error":"admin unavailable"}`)
 	}
 	defer conn.Close()
-	conn.SetDeadline(time.Now().Add(5 * time.Second))
+	// 冷配置事务（apply/rollback）在板端要重启视频流并等健康（最多 ~15s）；短操作
+	// （get/validate）很快返回。给长事务足够读超时，避免慢 apply 被误判为 admin
+	// unavailable。上限压在 srv.WriteTimeout(30s) 之内，防止响应被 HTTP 层截断。
+	timeout := 5 * time.Second
+	if op == "config.apply" || op == "config.rollback" {
+		timeout = 25 * time.Second
+	}
+	conn.SetDeadline(time.Now().Add(timeout))
 	req := map[string]interface{}{"id": 1, "op": op}
 	if params != nil {
 		req["params"] = params

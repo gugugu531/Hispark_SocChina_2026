@@ -18,6 +18,10 @@ int stream_init(const stream_cfg_t *cfg);
 /* frame_info 实际为 const ot_video_frame_info*；同步送入 VENC，不保留借用帧。 */
 int stream_send_frame(const void *frame_info, int timeout_ms);
 
+/* 运行时修改 H.264 CBR 目标码率（kbps），不重启编码通道/视频流。
+ * 返回 0 成功；-1 失败（未初始化、越界、或 SDK 调用失败）。值不变时为 no-op。 */
+int stream_set_bitrate(unsigned kbps);
+
 int stream_deinit(void);
 
 #endif /* SOCCHINA_STREAM_H */

@@ -20,7 +20,15 @@ import (
 	"socchina-admin/internal/configtx"
 )
 
-const sockPath = "/tmp/socchina-admin.sock"
+// sockPath 是 admin 服务的监听地址。默认板端路径 /run/socchina/admin.sock，
+// 与 web.conf 的 ADMIN_SOCK 及 backend adminclient 契约一致；
+// 主机侧测试可用 SOCCHINA_ADMIN_SOCK 覆盖（如 /tmp/socchina-admin.sock）。
+var sockPath = func() string {
+	if p := os.Getenv("SOCCHINA_ADMIN_SOCK"); p != "" {
+		return p
+	}
+	return "/run/socchina/admin.sock"
+}()
 
 type request struct {
 	ID     int                    `json:"id"`
