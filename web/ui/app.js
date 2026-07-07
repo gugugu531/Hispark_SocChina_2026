@@ -7,6 +7,13 @@
   let videoMode = 'webrtc';  // 'webrtc' | 'hls' | 'unavailable'
   const $ = (id) => document.getElementById(id);
 
+  // 构造带端口 URL 用的主机部分：IPv6 字面量(location.hostname 返回裸地址)需加方括号，
+  // 否则 'http://2001:db8::1:8889' 是非法 URL（受管网络走 IPv6 时的 WebRTC/RTSP bug）。
+  function urlHost() {
+    var h = window.location.hostname;
+    return h.indexOf(':') >= 0 ? '[' + h + ']' : h;
+  }
+
   // ── SSE ──
   function connectSSE() {
     const es = new EventSource('/api/v1/events');
@@ -101,7 +108,7 @@
       webrtcPc.addTransceiver('video', {direction: 'recvonly'});
       webrtcPc.onicecandidate = function(e) {
         if (e.candidate) return;
-        var whepUrl = 'http://' + window.location.hostname + ':8889/live/whep';
+        var whepUrl = 'http://' + urlHost() + ':8889/live/whep';
         fetch(whepUrl, {
           method: 'POST',
           headers: {'Content-Type': 'application/sdp'},
@@ -266,7 +273,7 @@
   });
   $('btn-rtsp').addEventListener('click', function () {
     setVideoModeBtn('rtsp');
-    var url = 'rtsp://' + window.location.hostname + ':8554/live';
+    var url = 'rtsp://' + urlHost() + ':8554/live';
     if (navigator.clipboard && navigator.clipboard.writeText) {
       navigator.clipboard.writeText(url).then(
         function() { $('video-latency').textContent = '已复制: ' + url; },
