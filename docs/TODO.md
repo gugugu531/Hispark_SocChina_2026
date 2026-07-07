@@ -89,6 +89,12 @@ DRC（S-curve 色调映射）+ LDCI（9×9 局域直方图均衡）三级级联�
 - OS08A20 WDR 2to1 实测正面：高光裁剪 5.7%→1.6%、暗部 36.5%→5.3%。
 - 触摸输入开箱即用（Waveshare 7 寸面板 USB，`/dev/input/event0`，1:1 像素映射）。
 - 板端 Web 控制台（MediaMTX + socchina-web + socchina-admin + socchina-auth），浏览器实时视频 + 参数控制。
+- Web 控制链加固（2026-07-07，已上板验证）：**编码码率热更新**（VENC `set_chn_attr` 运行时改 CBR，
+  不再走冷配置重启）；控制 socket 三处路径统一 `/run/socchina/admin.sock`（admin 监听 / socchina-web /
+  authproxy 一致，`SOCCHINA_ADMIN_SOCK` 可覆盖）；`configtx.Apply` 合并写入保留 `CTRL_SOCK` 等运维键
+  （修复冷 apply 后控制 socket 永久消失）；adminclient/authproxy 冷事务读超时按 op 放宽；app_control
+  accept 加 `SO_RCVTIMEO`。板端另加 `RuntimeDirectoryPreserve=yes` drop-in（运维配置，不在仓库）解决
+  admin/stream 共用 `RuntimeDirectory=socchina` 互删 socket。
 
 ## 3. 已关闭路线
 
@@ -109,6 +115,9 @@ DRC（S-curve 色调映射）+ LDCI（9×9 局域直方图均衡）三级级联�
 - 🟡 已知模拟器残差（蒸馏免疫，走代理路线才需修）：极暗域 DRC strength 外推低估、`ldci.py` CLAHE 暗纹理反序。
 
 **板端交互 / 工程**
+- 🟡 **authproxy 未鉴权端点**：`web/authproxy/main.go` 的 `/api/v1/config*`、`/api/v1/status` 处理器注册在
+  `/` 鉴权兜底之外，不校验 session cookie → 可无凭证直连 :8080 改冷配置/读状态。需给这些处理器补 session 校验
+  （与 `/` 一致），保留浏览器同源 cookie 正常放行。
 - 🟡 **LVGL 板端 UI 上板收尾**：交叉编译已通（`board/ui/`, `--DENABLE_LVGL`）；上板 flicker/触摸标定/
   透明叠加（GFBG G0 视频透出）待验证（当前 ui_lvgl 屏幕不透明，首次上板会盖住视频，属预期）。
 - 🟢 SDK-free **全量**板端构建在既有 `ctbg_isp_map.c`/`infer_ctbg.c` 处失败（无条件 include SDK 头）；

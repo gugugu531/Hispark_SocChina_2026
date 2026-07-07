@@ -113,6 +113,9 @@ func main() {
 
 	// Cold config via admin socket
 	http.HandleFunc("/api/v1/config", func(w http.ResponseWriter, r *http.Request) {
+		if !requireSession(w, r) {
+			return
+		}
 		w.Header().Set("Content-Type", "application/json")
 		switch r.Method {
 		case http.MethodGet:
@@ -141,6 +144,9 @@ func main() {
 		}
 	})
 	http.HandleFunc("/api/v1/config/apply", func(w http.ResponseWriter, r *http.Request) {
+		if !requireSession(w, r) {
+			return
+		}
 		w.Header().Set("Content-Type", "application/json")
 		var body map[string]string
 		json.NewDecoder(r.Body).Decode(&body)
@@ -151,12 +157,18 @@ func main() {
 		w.Write(adminCall("config.apply", params))
 	})
 	http.HandleFunc("/api/v1/config/rollback", func(w http.ResponseWriter, r *http.Request) {
+		if !requireSession(w, r) {
+			return
+		}
 		w.Header().Set("Content-Type", "application/json")
 		w.Write(adminCall("config.rollback", nil))
 	})
 
 	// Full status from app-control socket
 	http.HandleFunc("/api/v1/status", func(w http.ResponseWriter, r *http.Request) {
+		if !requireSession(w, r) {
+			return
+		}
 		w.Header().Set("Content-Type", "application/json")
 		w.Header().Set("Access-Control-Allow-Origin", "*")
 		conn, err := net.DialTimeout("unix", "/run/socchina/app-control.sock", 2*time.Second)
@@ -271,6 +283,27 @@ func rateLimit(key string) bool {
 		b.tokens--
 		return true
 	}
+	return false
+}
+
+// requireSession 校验 socchina_session cookie；已认证返回 true，否则写 401 JSON 返回 false。
+// 与 "/" 兜底处理器同一套 session 校验，供绕过兜底的显式 API 处理器复用。
+func requireSession(w http.ResponseWriter, r *http.Request) bool {
+	if cookie, _ := r.Cookie("socchina_session"); cookie != nil {
+		sessionsMu.Lock()
+		expires, exists := sessions[cookie.Value]
+		if exists && time.Now().Before(expires) {
+			sessionsMu.Unlock()
+			return true
+		}
+		if exists {
+			delete(sessions, cookie.Value)
+		}
+		sessionsMu.Unlock()
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusUnauthorized)
+	w.Write([]byte(`{"error":"unauthorized"}`))
 	return false
 }
 
