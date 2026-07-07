@@ -109,8 +109,12 @@ DRC（S-curve 色调映射）+ LDCI（9×9 局域直方图均衡）三级级联�
 **ISP 参数自动调优主线（部署闭环已通，剩画质裁决与扩标签）**
 - 🟡 **画质裁决（路线 C，最高优先级）**：B2 easy 场景 A/B 显示 paramnet 中度压暗、非强改善；
   需**夜间/强逆光/过曝真实场景** A/B（paramnet vs vendor-auto/WDR），并与离线 sim 预测对账。
-- 🔶 **扩蒸馏标签全量（路线 A）**：pilot 已通（+0.28dB），全量 177 图（`distill_expand/`，~3h 板端多会话）
-  未开 → `distill labels` → `distill finetune`（排练式）。见 [isp-param-tuning-agent-prompt.md](isp-param-tuning-agent-prompt.md) §4。
+- 🔶 **扩蒸馏标签全量（路线 A）**：pilot 已通（+0.28dB）；全量 177 图（`distill_expand/` gen 已完成）
+  **板端评选未跑**，已备好一键启动(2026-07-07)：板端 `distill_run/` staged 177 raw + 305 候选池 +
+  `board_distill_run_all.sh`（源 `scripts/`），启动/成本/恢复见 [distill-fulllabel-runbook.md](distill-fulllabel-runbook.md)。
+  实测 **261ms/blob → ~80s/图 → 全量 ~3.9h 纯 replay、直播全程黑屏**，23 会话（≤8 图/次，用
+  `test_raw_replay_b2`，**不可中途 kill**——残留 MPP/VB 挂死视频，恢复 `cd /opt/ko && ./load_ss928v100 -a`）。
+  跑完拉回 NV21(11GB) → `distill labels` → `distill finetune`。等专属窗口执行。
 - 🟡 **B2 runtime 深验**：显示/HDMI 路径未测、10 分钟长稳未测、多场景切换反馈环稳定性未压、WDR 模式未测。
 - 🟡 已知模拟器残差（蒸馏免疫，走代理路线才需修）：极暗域 DRC strength 外推低估、`ldci.py` CLAHE 暗纹理反序。
 
