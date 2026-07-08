@@ -1,4 +1,4 @@
-/* ui_port_board — 板端 LVGL port(方案 A:GFBG G0 图形层叠加)。见 ui_port_board.h。 */
+/* ui_port_board — 板端 LVGL port(方案 C:离屏渲染 + 合成进 VO 视频帧,绕开 GFBG)。见 ui_port_board.h。 */
 
 #include "ui_port_board.h"
 
@@ -7,19 +7,14 @@
 #if defined(WITH_SS928_SDK) && defined(ENABLE_LVGL)
 
 #include "lvgl.h"
-#include "src/drivers/display/fb/lv_linux_fbdev.h"
 #include "src/drivers/evdev/lv_evdev.h"
-
-#include "ot_type.h"
-#include "gfbg.h"                 /* GFBG ioctl + ot_fb_* */
 
 #include "app_control.h"          /* app_ctrl_params_t / app_ctrl_push */
 
-#include <fcntl.h>
-#include <linux/fb.h>
 #include <pthread.h>
+#include <stdint.h>
+#include <stdlib.h>
 #include <string.h>
-#include <sys/ioctl.h>
 #include <time.h>
 #include <unistd.h>
 
@@ -31,8 +26,25 @@ static pthread_t     g_tid;
 static volatile int  g_run;
 static ui_snapshot_fn g_snap;
 static void         *g_snap_user;
-static char          g_fb_dev[64]    = "/dev/fb0";
 static char          g_touch_dev[64] = "/dev/input/event0";
+
+/* LVGL 离屏渲染缓冲(ARGB8888,FULL 模式整屏一次 flush) */
+static uint8_t      *g_render_buf;        /* UI_SCR_W*UI_SCR_H*4,LVGL 渲染目标 */
+
+/* worker → 显示线程的共享 UI 帧(受锁保护) */
+static pthread_mutex_t g_lock = PTHREAD_MUTEX_INITIALIZER;
+static uint8_t      *g_shared_argb;       /* 最新一帧 ARGB8888(flush_cb 写入) */
+static uint32_t      g_shared_version;    /* 每 flush 自增 */
+static int           g_have_frame;        /* 首帧已产出 */
+
+/* 显示线程本地:ARGB 快照 + 烘焙的 NV21+alpha 平面(仅版本变化时重算) */
+static uint8_t      *g_local_argb;
+static uint32_t      g_local_version;     /* 与 g_shared_version 比较 */
+static uint8_t      *g_bake_y;            /* UI_SCR_W*UI_SCR_H */
+static uint8_t      *g_bake_cr;           /* V */
+static uint8_t      *g_bake_cb;           /* U */
+static uint8_t      *g_bake_a;            /* alpha */
+static int           g_baked_valid;
 
 /* LVGL tick 源:单调时钟毫秒 */
 static uint32_t tick_ms_cb(void)
@@ -59,75 +71,106 @@ static void cmd_cb(const ui_cmd_t *c, void *user)
     app_ctrl_push(&p);
 }
 
-/* 配置 GFBG G0:ARGB8888 / 双缓冲 / 抗闪烁 auto / 像素 alpha / 显示使能。
- * 在 lv_linux_fbdev 打开该 fb 之前完成(设备层由 display_init 已使能)。 */
-static int gfbg_setup(const char *dev)
+/* LVGL flush:方案 C 不写 fb,而是把整屏 ARGB8888 拷进共享缓冲供显示线程合成。
+ * FULL 渲染模式下 area 覆盖整屏、px_map 指向整块渲染缓冲,故整帧拷贝。 */
+static void flush_cb(lv_display_t *disp, const lv_area_t *area, uint8_t *px_map)
 {
-    int fd = open(dev, O_RDWR);
-    if (fd < 0) {
-        LOG_ERR("[lvgl] gfbg open %s failed", dev);
-        return -1;
+    (void)area;
+    pthread_mutex_lock(&g_lock);
+    memcpy(g_shared_argb, px_map, (size_t)UI_SCR_W * UI_SCR_H * 4);
+    g_shared_version++;
+    g_have_frame = 1;
+    pthread_mutex_unlock(&g_lock);
+    lv_display_flush_ready(disp);
+}
+
+/* 由 g_local_argb 烘焙 NV21+alpha 平面。BT.601 limited-range(与 menu_render 的
+ * 16..235 调色板一致),NV21=Y 平面 + 交织 VU。ARGB8888 内存序:B,G,R,A。 */
+static void rebake(void)
+{
+    const int n = UI_SCR_W * UI_SCR_H;
+    const uint8_t *p = g_local_argb;
+    for (int i = 0; i < n; i++, p += 4) {
+        uint8_t a = p[3];
+        g_bake_a[i] = a;
+        if (a == 0) {
+            continue;              /* 透明:不需要颜色 */
+        }
+        int b = p[0], g = p[1], r = p[2];
+        int Y  = ((  66 * r + 129 * g +  25 * b + 128) >> 8) + 16;
+        int Cb = (((-38 * r -  74 * g + 112 * b + 128) >> 8) + 128);   /* U */
+        int Cr = ((( 112 * r -  94 * g -  18 * b + 128) >> 8) + 128);   /* V */
+        if (Y  < 0) Y = 0;   else if (Y  > 255) Y = 255;
+        if (Cb < 0) Cb = 0;  else if (Cb > 255) Cb = 255;
+        if (Cr < 0) Cr = 0;  else if (Cr > 255) Cr = 255;
+        g_bake_y[i]  = (uint8_t)Y;
+        g_bake_cb[i] = (uint8_t)Cb;
+        g_bake_cr[i] = (uint8_t)Cr;
+    }
+    g_baked_valid = 1;
+}
+
+int ui_port_board_active(void)
+{
+    return g_run && g_have_frame;
+}
+
+void ui_port_board_composite_nv21(uint8_t *y, uint8_t *uv, int stride, int w, int h)
+{
+    if (!y || !uv || w != UI_SCR_W || h != UI_SCR_H) {
+        return;
     }
 
-    /* 1) vscreeninfo:32bpp ARGB8888,1024x600,yres_virtual 双缓冲 */
-    struct fb_var_screeninfo vinfo;
-    if (ioctl(fd, FBIOGET_VSCREENINFO, &vinfo) < 0) {
-        LOG_ERR("[lvgl] FBIOGET_VSCREENINFO failed");
-        close(fd);
-        return -1;
+    /* 取共享 ARGB 快照(仅版本变化时拷贝),锁只护一次 memcpy */
+    int changed = 0;
+    pthread_mutex_lock(&g_lock);
+    int have = g_have_frame;
+    if (have && g_shared_version != g_local_version) {
+        memcpy(g_local_argb, g_shared_argb, (size_t)UI_SCR_W * UI_SCR_H * 4);
+        g_local_version = g_shared_version;
+        changed = 1;
     }
-    vinfo.xres = UI_SCR_W;
-    vinfo.yres = UI_SCR_H;
-    vinfo.xres_virtual = UI_SCR_W;
-    vinfo.yres_virtual = UI_SCR_H * 2;   /* 双缓冲 */
-    vinfo.bits_per_pixel = 32;
-    vinfo.transp.offset = 24; vinfo.transp.length = 8;
-    vinfo.red.offset    = 16; vinfo.red.length    = 8;
-    vinfo.green.offset  = 8;  vinfo.green.length  = 8;
-    vinfo.blue.offset   = 0;  vinfo.blue.length   = 8;
-    if (ioctl(fd, FBIOPUT_VSCREENINFO, &vinfo) < 0) {
-        LOG_ERR("[lvgl] FBIOPUT_VSCREENINFO failed");
-        close(fd);
-        return -1;
+    pthread_mutex_unlock(&g_lock);
+
+    if (!have) {
+        return;
+    }
+    if (changed || !g_baked_valid) {
+        rebake();
     }
 
-    /* 2) layer info:双缓冲 + 抗闪烁 auto + 全屏位置/尺寸 */
-    ot_fb_layer_info li;
-    memset(&li, 0, sizeof(li));
-    li.buf_mode = OT_FB_LAYER_BUF_DOUBLE;
-    li.antiflicker_level = OT_FB_LAYER_ANTIFLICKER_AUTO;
-    li.x_pos = 0;
-    li.y_pos = 0;
-    li.canvas_width  = UI_SCR_W; li.canvas_height  = UI_SCR_H;
-    li.display_width = UI_SCR_W; li.display_height = UI_SCR_H;
-    li.screen_width  = UI_SCR_W; li.screen_height  = UI_SCR_H;
-    li.mask = OT_FB_LAYER_MASK_BUF_MODE | OT_FB_LAYER_MASK_ANTIFLICKER_MODE |
-              OT_FB_LAYER_MASK_POS | OT_FB_LAYER_MASK_CANVAS_SIZE |
-              OT_FB_LAYER_MASK_DISPLAY_SIZE | OT_FB_LAYER_MASK_SCREEN_SIZE;
-    if (ioctl(fd, FBIOPUT_LAYER_INFO, &li) < 0) {
-        LOG_WARN("[lvgl] FBIOPUT_LAYER_INFO failed (continuing)");
+    /* 逐像素合成:a==0 跳过、a==255 覆盖、否则与底层视频混合。
+     * 色度按 NV21 2x2 子采样,取块左上像素的 alpha。 */
+    for (int j = 0; j < h; j++) {
+        const int row = j * UI_SCR_W;
+        const int yrow = j * stride;
+        const int crow = (j >> 1) * stride;
+        for (int i = 0; i < w; i++) {
+            const int idx = row + i;
+            const uint8_t a = g_bake_a[idx];
+            if (a == 0) {
+                continue;
+            }
+            const int yoff = yrow + i;
+            if (a == 255) {
+                y[yoff] = g_bake_y[idx];
+            } else {
+                int ia = 255 - a;
+                y[yoff] = (uint8_t)((g_bake_y[idx] * a + y[yoff] * ia + 127) / 255);
+            }
+            if ((i & 1) == 0 && (j & 1) == 0) {
+                const int coff = crow + i;     /* i 已偶 */
+                if (a == 255) {
+                    uv[coff]     = g_bake_cr[idx];  /* V */
+                    uv[coff + 1] = g_bake_cb[idx];  /* U */
+                } else {
+                    int ia = 255 - a;
+                    uv[coff]     = (uint8_t)((g_bake_cr[idx] * a + uv[coff] * ia + 127) / 255);
+                    uv[coff + 1] = (uint8_t)((g_bake_cb[idx] * a + uv[coff + 1] * ia + 127) / 255);
+                }
+            }
+        }
     }
-
-    /* 3) 像素 alpha 使能:未绘制区域(alpha=0)透出下方视频层 */
-    ot_fb_alpha alpha;
-    memset(&alpha, 0, sizeof(alpha));
-    alpha.alpha_en = TD_TRUE;         /* per-pixel alpha */
-    alpha.alpha_chn_en = TD_FALSE;
-    alpha.global_alpha = 0xff;
-    if (ioctl(fd, FBIOPUT_ALPHA_GFBG, &alpha) < 0) {
-        LOG_WARN("[lvgl] FBIOPUT_ALPHA_GFBG failed (continuing)");
-    }
-
-    /* 4) 显示使能 */
-    td_bool show = TD_TRUE;
-    if (ioctl(fd, FBIOPUT_SHOW_GFBG, &show) < 0) {
-        LOG_WARN("[lvgl] FBIOPUT_SHOW_GFBG failed (continuing)");
-    }
-
-    close(fd);
-    LOG_INFO("[lvgl] GFBG G0 configured: %s ARGB8888 %dx%d double-buffer antiflicker=auto",
-             dev, UI_SCR_W, UI_SCR_H);
-    return 0;
 }
 
 static void *worker(void *arg)
@@ -137,23 +180,28 @@ static void *worker(void *arg)
     lv_init();
     lv_tick_set_cb(tick_ms_cb);
 
-    lv_display_t *disp = lv_linux_fbdev_create();
+    lv_display_t *disp = lv_display_create(UI_SCR_W, UI_SCR_H);
     if (!disp) {
-        LOG_ERR("[lvgl] lv_linux_fbdev_create failed");
+        LOG_ERR("[lvgl] lv_display_create failed");
         return NULL;
     }
-    lv_linux_fbdev_set_file(disp, g_fb_dev);
+    /* ARGB8888:保留 per-pixel alpha,透明屏区域 alpha=0,供合成器让视频透出。
+     * LVGL v9 在 has-alpha 的 display 上每次刷新前会把缓冲清为透明。 */
+    lv_display_set_color_format(disp, LV_COLOR_FORMAT_ARGB8888);
+    lv_display_set_buffers(disp, g_render_buf, NULL,
+                           (uint32_t)UI_SCR_W * UI_SCR_H * 4, LV_DISPLAY_RENDER_MODE_FULL);
+    lv_display_set_flush_cb(disp, flush_cb);
 
     lv_indev_t *touch = lv_evdev_create(LV_INDEV_TYPE_POINTER, g_touch_dev);
     if (touch) {
-        /* 触摸原始坐标 → 屏幕坐标;实际标定值待上板调 */
+        /* 面板即 1024x600,触摸 1:1 标定 */
         lv_evdev_set_calibration(touch, 0, 0, UI_SCR_W - 1, UI_SCR_H - 1);
     } else {
         LOG_WARN("[lvgl] evdev %s open failed; touch disabled", g_touch_dev);
     }
 
     ui_lvgl_build(cmd_cb, NULL);
-    ui_lvgl_set_overlay_mode();   /* GFBG G0 透明叠加：视频区透出下方 VO 视频层 */
+    ui_lvgl_set_overlay_mode();   /* 屏幕/视频区透明:合成时视频透出,顶栏/侧栏覆盖 */
 
     uint32_t last = tick_ms_cb();
     while (g_run) {
@@ -175,25 +223,53 @@ static void *worker(void *arg)
     return NULL;
 }
 
+static void free_buffers(void)
+{
+    free(g_render_buf);  g_render_buf = NULL;
+    free(g_shared_argb); g_shared_argb = NULL;
+    free(g_local_argb);  g_local_argb = NULL;
+    free(g_bake_y);      g_bake_y = NULL;
+    free(g_bake_cr);     g_bake_cr = NULL;
+    free(g_bake_cb);     g_bake_cb = NULL;
+    free(g_bake_a);      g_bake_a = NULL;
+}
+
 int ui_port_board_start(const char *fb_dev, const char *touch_dev,
                         ui_snapshot_fn snap, void *user)
 {
-    if (fb_dev)    { strncpy(g_fb_dev, fb_dev, sizeof(g_fb_dev) - 1);       g_fb_dev[sizeof(g_fb_dev) - 1] = '\0'; }
+    (void)fb_dev;   /* 方案 C 不再使用 fb 设备 */
     if (touch_dev) { strncpy(g_touch_dev, touch_dev, sizeof(g_touch_dev) - 1); g_touch_dev[sizeof(g_touch_dev) - 1] = '\0'; }
     g_snap = snap;
     g_snap_user = user;
 
-    if (gfbg_setup(g_fb_dev) != 0) {
+    const size_t argb_sz = (size_t)UI_SCR_W * UI_SCR_H * 4;
+    const size_t plane_sz = (size_t)UI_SCR_W * UI_SCR_H;
+    g_render_buf  = (uint8_t *)malloc(argb_sz);
+    g_shared_argb = (uint8_t *)malloc(argb_sz);
+    g_local_argb  = (uint8_t *)malloc(argb_sz);
+    g_bake_y      = (uint8_t *)malloc(plane_sz);
+    g_bake_cr     = (uint8_t *)malloc(plane_sz);
+    g_bake_cb     = (uint8_t *)malloc(plane_sz);
+    g_bake_a      = (uint8_t *)calloc(plane_sz, 1);   /* 首帧前 alpha=0 → 合成为 no-op */
+    if (!g_render_buf || !g_shared_argb || !g_local_argb ||
+        !g_bake_y || !g_bake_cr || !g_bake_cb || !g_bake_a) {
+        LOG_ERR("[lvgl] UI buffers oom");
+        free_buffers();
         return -1;
     }
+    g_shared_version = 0;
+    g_local_version  = 0;
+    g_have_frame     = 0;
+    g_baked_valid    = 0;
 
     g_run = 1;
     if (pthread_create(&g_tid, NULL, worker, NULL) != 0) {
         LOG_ERR("[lvgl] worker thread create failed");
         g_run = 0;
+        free_buffers();
         return -1;
     }
-    LOG_INFO("[lvgl] board UI worker started (fb=%s touch=%s)", g_fb_dev, g_touch_dev);
+    LOG_INFO("[lvgl] board UI worker started (composite path, touch=%s)", g_touch_dev);
     return 0;
 }
 
@@ -203,7 +279,8 @@ void ui_port_board_stop(void)
         return;
     }
     g_run = 0;
-    pthread_join(g_tid, TD_NULL);
+    pthread_join(g_tid, NULL);
+    free_buffers();
     LOG_INFO("[lvgl] board UI worker stopped");
 }
 
@@ -217,5 +294,10 @@ int ui_port_board_start(const char *fb_dev, const char *touch_dev,
     return -1;
 }
 void ui_port_board_stop(void) {}
+int  ui_port_board_active(void) { return 0; }
+void ui_port_board_composite_nv21(uint8_t *y, uint8_t *uv, int stride, int w, int h)
+{
+    (void)y; (void)uv; (void)stride; (void)w; (void)h;
+}
 
 #endif

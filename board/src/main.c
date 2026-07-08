@@ -1245,13 +1245,13 @@ int main(int argc, char** argv) {
         }
         disp_up = 1;
 #ifdef ENABLE_LVGL
-        /* 板端 LVGL 触摸 UI(方案 A:GFBG G0 图形层叠加)。此配置下旧全屏菜单休眠
-         * (不 open 触摸 → menu_active 永不置位);worker 自持 G0 图形层与触摸,
-         * 与本显示循环(VPSS→视频层)互不干扰。 */
+        /* 板端 LVGL 触摸 UI(方案 C:离屏渲染 + 合成进 VO 视频帧,绕开 GFBG)。此配置下旧全屏
+         * 菜单休眠(不 open 触摸 → menu_active 永不置位);worker 离屏渲染 ARGB8888 + 接触摸,
+         * 显示循环每帧在 display_send_frame 前把 UI 合成进 VPSS NV21 帧(见下方合成 hook)。 */
         status_ctx.metrics = &runtime_metrics;
         status_ctx.ctrl    = &control_ctx;
         status_ctx.t0      = now_ms();
-        if (ui_port_board_start("/dev/fb0", "/dev/input/event0", lvgl_snapshot, &status_ctx) != 0)
+        if (ui_port_board_start(NULL, "/dev/input/event0", lvgl_snapshot, &status_ctx) != 0)
             LOG_WARN("[lvgl] board UI start failed; continuing without touch UI");
 #else
         if (menu_blk[0] != OT_VB_INVALID_HANDLE) {
@@ -1510,6 +1510,26 @@ int main(int argc, char** argv) {
             LOG_WARN("vpss_get_frame timeout/err");
             continue;
         }
+#ifdef ENABLE_LVGL
+        /* 方案 C 合成 hook：UI 就绪时把离屏 UI 帧按 per-pixel alpha 合成进本 VPSS NV21 帧,
+         * 然后 flush cache 供 VO DMA 读取。写入用帧真实 stride 的 Y/UV 平面(非 width)。 */
+        if (ui_port_board_active()) {
+            ot_video_frame *vf = &frame.video_frame;
+            size_t ysz  = (size_t)vf->stride[0] * vf->height;
+            size_t uvsz = (size_t)vf->stride[1] * (vf->height / 2);
+            td_void *yv  = ss_mpi_sys_mmap(vf->phys_addr[0], ysz);
+            td_void *uvv = ss_mpi_sys_mmap(vf->phys_addr[1], uvsz);
+            if (yv != TD_NULL && uvv != TD_NULL) {
+                ui_port_board_composite_nv21((uint8_t *)yv, (uint8_t *)uvv,
+                                             (int)vf->stride[0],
+                                             (int)vf->width, (int)vf->height);
+                (void)ss_mpi_sys_flush_cache(vf->phys_addr[0], yv, ysz);
+                (void)ss_mpi_sys_flush_cache(vf->phys_addr[1], uvv, uvsz);
+            }
+            if (yv != TD_NULL)  (void)ss_mpi_sys_munmap(yv, ysz);
+            if (uvv != TD_NULL) (void)ss_mpi_sys_munmap(uvv, uvsz);
+        }
+#endif
         if (display_send_frame(&frame, -1) != 0) {
             (void) vpss_release_frame(0, 0, &frame);
             atomic_fetch_add(&runtime_metrics.display_drops, 1);

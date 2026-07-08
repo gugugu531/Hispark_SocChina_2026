@@ -65,7 +65,7 @@ typedef void (*ui_cmd_cb)(const ui_cmd_t *cmd, void *user);
  * cb/user 保存供事件回调使用。调用前需已 lv_init() 且 display 已注册。 */
 void ui_lvgl_build(ui_cmd_cb cb, void *user);
 
-/* 板端 overlay 模式：屏幕/视频区置透明，让 GFBG G0 下方 VO 视频层透出（顶栏/侧边栏仍不透明）。
+/* 板端 overlay 模式：屏幕/视频区置透明（alpha=0），合成进视频帧时视频透出（顶栏/侧边栏仍不透明）。
  * 在 ui_lvgl_build 之后调用；sim 不调用（保持不透明预览）。 */
 void ui_lvgl_set_overlay_mode(void);
 

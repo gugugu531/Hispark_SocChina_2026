@@ -1295,8 +1295,9 @@
     #define LV_WAYLAND_DIRECT_EXIT          1     /**< 1: Exit the application when all Wayland windows are closed */
 #endif
 
-/** Driver for /dev/fb */
-#define LV_USE_LINUX_FBDEV      1
+/* Driver for /dev/fb — 方案 C（合成进视频帧）不经 GFBG /dev/fb0,故关闭 fbdev 驱动。
+ * 板端 LVGL 改为离屏渲染 ARGB8888 + CPU 合成进 VPSS NV21 帧(见 board/ui/ui_port_board.c)。 */
+#define LV_USE_LINUX_FBDEV      0
 #if LV_USE_LINUX_FBDEV
     #define LV_LINUX_FBDEV_BSD           0
     #define LV_LINUX_FBDEV_RENDER_MODE   LV_DISPLAY_RENDER_MODE_PARTIAL

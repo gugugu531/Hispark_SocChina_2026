@@ -37,7 +37,8 @@ static lv_obj_t *g_badge;        /* 状态徽章 */
 static lv_obj_t *g_lbl_fps, *g_lbl_infer, *g_lbl_txn, *g_lbl_drops,
                 *g_lbl_frames, *g_lbl_mode, *g_lbl_nn, *g_lbl_out;
 static lv_obj_t *g_sidebar;
-static lv_obj_t *g_video;   /* 视频占位区(board overlay 模式下置透明,透出 VO 视频层) */
+static lv_obj_t *g_video;      /* 视频占位区(board overlay 模式下置透明,透出 VO 视频层) */
+static lv_obj_t *g_video_ph;   /* 视频占位文字(overlay 模式隐藏,避免盖在视频上) */
 
 static lv_obj_t *g_sw_enh, *g_sw_nn, *g_sw_tone, *g_sw_drc, *g_sw_ldci;
 static lv_obj_t *g_sld_tone, *g_sld_guard, *g_sld_drc;
@@ -361,6 +362,7 @@ void ui_lvgl_build(ui_cmd_cb cb, void *user)
     lv_obj_set_style_radius(video, 0, 0);
     lv_obj_remove_flag(video, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_t *vph = lv_label_create(video);
+    g_video_ph = vph;
     lv_label_set_text(vph, LV_SYMBOL_VIDEO "  LIVE 1024x576\n(camera passthrough)");
     lv_obj_set_style_text_align(vph, LV_TEXT_ALIGN_CENTER, 0);
     lv_obj_set_style_text_color(vph, lv_color_hex(0x6e6250), 0);
@@ -423,14 +425,18 @@ static void set_badge(const char *state)
     lv_obj_set_style_bg_color(g_badge, c, 0);
 }
 
-/* 板端 overlay 模式：屏幕与视频占位区置透明，让 GFBG G0 下方的 VO 视频层透出。
- * 顶栏/侧边栏/卡片仍不透明（UI chrome 覆盖）。sim 不调用此函数 → 保持不透明预览。 */
+/* 板端 overlay 模式：屏幕与视频占位区置透明（alpha=0），合成时视频透出、UI chrome 覆盖。
+ * 顶栏/侧边栏/卡片仍不透明。sim 不调用此函数 → 保持不透明预览。 */
 void ui_lvgl_set_overlay_mode(void)
 {
     lv_obj_t *scr = lv_screen_active();
     lv_obj_set_style_bg_opa(scr, LV_OPA_TRANSP, 0);
     if (g_video) {
         lv_obj_set_style_bg_opa(g_video, LV_OPA_TRANSP, 0);
+    }
+    /* 视频区占位文字在合成路径下会盖住相机画面,overlay 模式隐藏之(sim 不调用本函数,保留预览)。 */
+    if (g_video_ph) {
+        lv_obj_add_flag(g_video_ph, LV_OBJ_FLAG_HIDDEN);
     }
 }
 
